@@ -202,7 +202,8 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Specs file
+# Internal files
+Tasks.md
 Specs.md
 
 # Data folder
