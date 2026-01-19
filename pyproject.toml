@@ -5,6 +5,7 @@ version = "0.1.0"
 dependencies = [
     "dagster==1.12.2",
     "alpaca-py>=0.17.0",
+    "pyarrow>=23.0.0",
 ]
 
 [dependency-groups]

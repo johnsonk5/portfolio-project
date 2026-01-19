@@ -204,3 +204,20 @@ __marimo__/
 
 # Specs file
 Specs.md
+
+# Data folder
+data/
+
+/data/
+/dagster_storage/
+/storage/
+*.parquet
+*.duckdb
+*.db
+*.sqlite
+__pycache__/
+.pytest_cache/
+.venv/
+
+# Dagster temp home dirs / ephemeral instance state
+.tmp_dagster_home_*/
