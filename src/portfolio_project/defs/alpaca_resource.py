@@ -2,6 +2,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional
 
+import pandas as pd
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -71,3 +72,32 @@ class AlpacaClient:
         bars = self.client.get_stock_bars(request)
         
         return bars.df.to_dict() if hasattr(bars, 'df') else bars
+
+    def get_bars_df(
+        self,
+        symbol: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ) -> pd.DataFrame:
+        """
+        Fetch 5-minute bar (OHLCV) data for a given symbol as a DataFrame.
+        """
+        if end_date is None:
+            end_date = datetime.now()
+        if start_date is None:
+            start_date = end_date - timedelta(days=7)
+
+        tf = TimeFrame(5, TimeFrameUnit.Minute)
+
+        request = StockBarsRequest(
+            symbol_or_symbols=[symbol],
+            timeframe=tf,
+            start=start_date,
+            end=end_date,
+        )
+
+        bars = self.client.get_stock_bars(request)
+
+        if hasattr(bars, "df"):
+            return bars.df.copy()
+        return pd.DataFrame(bars)
