@@ -220,5 +220,8 @@ __pycache__/
 .pytest_cache/
 .venv/
 
+# Jupyter Notebooks - This might need to be changed at some point if there's a reason but leave it for now.
+*.ipynb
+
 # Dagster temp home dirs / ephemeral instance state
 .tmp_dagster_home_*/
