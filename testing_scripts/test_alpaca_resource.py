@@ -26,6 +26,14 @@ def main():
     with build_resources({"alpaca": alpaca_resource}) as resources:
         client = resources.alpaca  # This is your AlpacaClient instance
 
+        ## Use this to test the get_assets_df method
+
+        df = client.get_assets_df()
+
+        print(df.shape)
+
+        ## Use this to test the get_bars method
+
         # Define a small test window (last 3 days, daily bars)
         end_date = datetime.now()
         start_date = end_date - timedelta(days=3)

@@ -1,4 +1,5 @@
 import os
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -66,4 +67,33 @@ def bronze_alpaca_bars(context: AssetExecutionContext) -> None:
 
     context.add_output_metadata(
         {"path": str(out_path), "row_count": len(out_df)}
+    )
+
+
+@asset(
+    name="bronze_alpaca_assets",
+    required_resource_keys={"alpaca"},
+)
+def bronze_alpaca_assets(context: AssetExecutionContext) -> None:
+    """
+    Write Alpaca asset (ticker universe) snapshot to a reference parquet file.
+    """
+    df = context.resources.alpaca.get_assets_df()
+    if df is None or df.empty:
+        context.log.warning("No asset data returned.")
+        return
+
+    # Coerce UUID objects to strings for parquet compatibility.
+    for col in df.columns:
+        if df[col].apply(lambda v: isinstance(v, uuid.UUID)).any():
+            df[col] = df[col].astype(str)
+
+    df["ingested_ts"] = datetime.utcnow()
+    reference_dir = DATA_ROOT / "bronze" / "reference"
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    out_path = reference_dir / "alpaca_assets.parquet"
+    df.to_parquet(out_path, index=False)
+
+    context.add_output_metadata(
+        {"path": str(out_path), "row_count": len(df)}
     )

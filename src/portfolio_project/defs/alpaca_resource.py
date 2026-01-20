@@ -6,6 +6,9 @@ import pandas as pd
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+from alpaca.trading.client import TradingClient
+from alpaca.trading.enums import AssetClass, AssetStatus
+from alpaca.trading.requests import GetAssetsRequest
 from dagster import resource
 
 
@@ -34,6 +37,7 @@ class AlpacaClient:
         self.api_key = api_key
         self.secret_key = secret_key
         self.client = StockHistoricalDataClient(api_key, secret_key)
+        self.trading_client = TradingClient(api_key, secret_key)
     
     def get_bars(
         self,
@@ -101,3 +105,33 @@ class AlpacaClient:
         if hasattr(bars, "df"):
             return bars.df.copy()
         return pd.DataFrame(bars)
+
+    def get_assets(
+        self,
+        status: AssetStatus = AssetStatus.ACTIVE,
+        asset_class: AssetClass = AssetClass.US_EQUITY,
+    ) -> list:
+        """
+        Fetch the list of tradable assets (tickers) from Alpaca.
+        """
+        request = GetAssetsRequest(status=status, asset_class=asset_class)
+        return self.trading_client.get_all_assets(request)
+
+    def get_assets_df(
+        self,
+        status: AssetStatus = AssetStatus.ACTIVE,
+        asset_class: AssetClass = AssetClass.US_EQUITY,
+    ) -> pd.DataFrame:
+        """
+        Fetch the list of tradable assets as a DataFrame.
+        """
+        assets = self.get_assets(status=status, asset_class=asset_class)
+        rows = []
+        for asset in assets:
+            if hasattr(asset, "model_dump"):
+                rows.append(asset.model_dump())
+            elif hasattr(asset, "dict"):
+                rows.append(asset.dict())
+            else:
+                rows.append(asset.__dict__)
+        return pd.DataFrame(rows)
