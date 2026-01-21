@@ -225,3 +225,4 @@ __pycache__/
 
 # Dagster temp home dirs / ephemeral instance state
 .tmp_dagster_home_*/
+/dagster_home/
