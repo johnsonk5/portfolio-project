@@ -8,6 +8,7 @@ from portfolio_project.defs.silver_prices import (
     silver_alpaca_prices,
     silver_alpaca_prices_parquet,
 )
+from portfolio_project.defs.gold_prices import gold_alpaca_prices
 
 from portfolio_project.defs.alpaca_resource import alpaca_resource
 from portfolio_project.defs.duckdb_resource import duckdb_resource
@@ -24,6 +25,7 @@ defs = Definitions(
         silver_alpaca_assets,
         silver_alpaca_prices_parquet,
         silver_alpaca_prices,
+        gold_alpaca_prices,
     ],
     resources={
         "alpaca": alpaca_resource,
