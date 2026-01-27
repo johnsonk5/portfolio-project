@@ -33,47 +33,53 @@ def silver_alpaca_prices_parquet(context: AssetExecutionContext) -> None:
         context.log.warning("No bronze bars parquet file found at %s", parquet_paths[0])
         return
 
+    con = context.resources.duckdb
+    try:
+        con.execute("SELECT 1 FROM silver.assets LIMIT 1")
+    except Exception as exc:
+        context.log.warning("Silver assets table missing or unreadable: %s", exc)
+        return
+
     start_date = pd.Timestamp(partition_date, tz="UTC")
     end_date = pd.Timestamp(partition_date + timedelta(days=1), tz="UTC")
+    start_dt = start_date.to_pydatetime()
+    end_dt = end_date.to_pydatetime()
+    parquet_path = parquet_paths[0].as_posix()
 
-    frames = []
-    for path in parquet_paths:
-        df = pd.read_parquet(path)
-        if df is None or df.empty:
-            continue
-        frames.append(df)
-
-    if not frames:
-        context.log.warning("No bar data found in bronze parquet files.")
+    # Filter and join in DuckDB so we do not load an entire month into pandas.
+    prices_df = con.execute(
+        """
+        WITH bars AS (
+            SELECT *
+            FROM read_parquet(?)
+            WHERE timestamp >= ? AND timestamp < ?
+        ),
+        active_assets AS (
+            SELECT asset_id, symbol
+            FROM silver.assets
+            WHERE is_active = TRUE
+        )
+        SELECT
+            assets.asset_id,
+            bars.symbol,
+            bars.timestamp,
+            bars.open,
+            bars.high,
+            bars.low,
+            bars.close,
+            bars.volume,
+            bars.trade_count,
+            bars.vwap,
+            bars.ingested_ts
+        FROM bars
+        INNER JOIN active_assets AS assets
+            ON bars.symbol = assets.symbol
+        """,
+        [parquet_path, start_dt, end_dt],
+    ).fetch_df()
+    if prices_df is None or prices_df.empty:
+        context.log.warning("No active bar data for partition %s.", context.partition_key)
         return
-
-    bars_df = pd.concat(frames, ignore_index=True)
-    if "symbol" not in bars_df.columns:
-        context.log.warning("Bronze bars data missing symbol column.")
-        return
-    if "timestamp" not in bars_df.columns:
-        context.log.warning("Bronze bars data missing timestamp column.")
-        return
-
-    bars_df["timestamp"] = pd.to_datetime(bars_df["timestamp"], utc=True)
-    bars_df = bars_df[
-        (bars_df["timestamp"] >= start_date) & (bars_df["timestamp"] < end_date)
-    ]
-    if bars_df.empty:
-        context.log.warning("No bar data for partition %s.", context.partition_key)
-        return
-
-    con = context.resources.duckdb
-    assets_df = con.execute("SELECT asset_id, symbol FROM silver.assets").fetch_df()
-    if assets_df is None or assets_df.empty:
-        context.log.warning("Silver assets table is empty or missing.")
-        return
-
-    prices_df = bars_df.merge(assets_df, on="symbol", how="left")
-    missing_assets = prices_df["asset_id"].isna().sum()
-    if missing_assets:
-        context.log.warning("Missing asset_id for %s price rows.", missing_assets)
-        prices_df = prices_df[prices_df["asset_id"].notna()].copy()
 
     column_order = [
         "asset_id",

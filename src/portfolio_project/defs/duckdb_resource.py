@@ -12,6 +12,14 @@ def _acquire_duckdb_lock(
     poll_seconds: float = 1.0,
     stale_lock_seconds: int = 600,
 ) -> int:
+    def _pid_is_running(pid: int) -> bool:
+        try:
+            # signal 0 checks for process existence without sending a signal
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+
     start = time.time()
     while True:
         try:
@@ -19,6 +27,16 @@ def _acquire_duckdb_lock(
             os.write(fd, str(os.getpid()).encode("ascii"))
             return fd
         except FileExistsError:
+            try:
+                # If the recorded PID is not running, treat the lock as stale.
+                pid_text = path.read_text(encoding="ascii").strip()
+                lock_pid = int(pid_text)
+                if lock_pid != os.getpid() and not _pid_is_running(lock_pid):
+                    path.unlink()
+                    continue
+            except (FileNotFoundError, ValueError, OSError):
+                # If we cannot read the PID, fall back to age-based staleness.
+                pass
             try:
                 age_seconds = time.time() - path.stat().st_mtime
                 if age_seconds >= stale_lock_seconds:
