@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 from dagster import AssetExecutionContext, DailyPartitionsDefinition, asset
 
+from portfolio_project.defs.silver_assets import silver_alpaca_assets
 from portfolio_project.defs.silver_prices import silver_alpaca_prices
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
@@ -11,7 +12,7 @@ GOLD_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
 
 @asset(
     name="gold_alpaca_prices",
-    deps=[silver_alpaca_prices],
+    deps=[silver_alpaca_assets, silver_alpaca_prices],
     partitions_def=GOLD_PARTITIONS,
     required_resource_keys={"duckdb"},
 )
@@ -26,6 +27,11 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
         con.execute("SELECT 1 FROM silver.prices LIMIT 1")
     except Exception as exc:
         context.log.warning("Silver prices table missing or unreadable: %s", exc)
+        return
+    try:
+        con.execute("SELECT 1 FROM silver.assets LIMIT 1")
+    except Exception as exc:
+        context.log.warning("Silver assets table missing or unreadable: %s", exc)
         return
 
     con.execute("CREATE SCHEMA IF NOT EXISTS gold")
@@ -59,10 +65,17 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
     lookback_start = partition_date - timedelta(days=400)
 
     daily_sql = """
-        WITH target_assets AS (
-            SELECT DISTINCT asset_id, symbol
-            FROM silver.prices
-            WHERE CAST(timestamp AS DATE) = ?
+        WITH active_assets AS (
+            SELECT asset_id, symbol
+            FROM silver.assets
+            WHERE is_active = TRUE
+        ),
+        target_assets AS (
+            SELECT DISTINCT prices.asset_id, prices.symbol
+            FROM silver.prices AS prices
+            INNER JOIN active_assets AS assets
+                ON prices.asset_id = assets.asset_id
+            WHERE CAST(prices.timestamp AS DATE) = ?
         ),
         daily_prices AS (
             SELECT

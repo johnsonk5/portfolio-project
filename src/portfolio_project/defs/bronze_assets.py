@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 from dagster import Array, AssetExecutionContext, DailyPartitionsDefinition, Field, String, asset
+from dagster import AssetKey
 
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
@@ -16,7 +17,8 @@ TICKERS_ENV = "ALPACA_TICKERS"
 @asset(
     name="bronze_alpaca_bars",
     partitions_def=BRONZE_PARTITIONS,
-    required_resource_keys={"alpaca"},
+    required_resource_keys={"alpaca", "duckdb"},
+    deps=[AssetKey("silver_alpaca_assets")],
     config_schema={
         "symbols": Field(Array(String), is_required=False),
     },
@@ -28,7 +30,34 @@ def bronze_alpaca_bars(context: AssetExecutionContext) -> None:
     env_symbols = [
         s.strip() for s in os.getenv(TICKERS_ENV, "").split(",") if s.strip()
     ]
-    symbols = context.op_config.get("symbols", env_symbols or ["AAPL"])
+    config_symbols = context.op_config.get("symbols", None)
+    active_symbols = []
+    try:
+        active_symbols = [
+            row[0]
+            for row in context.resources.duckdb.execute(
+                "SELECT symbol FROM silver.assets WHERE is_active = TRUE"
+            ).fetchall()
+            if row and row[0]
+        ]
+    except Exception as exc:
+        context.log.warning("Unable to read silver.assets for active symbols: %s", exc)
+
+    if active_symbols:
+        symbols = active_symbols
+    elif env_symbols:
+        if config_symbols:
+            symbols = sorted(set(config_symbols) & set(env_symbols))
+            if not symbols:
+                context.log.warning(
+                    "No configured symbols are active; using active symbols from %s.",
+                    TICKERS_ENV,
+                )
+                symbols = env_symbols
+        else:
+            symbols = env_symbols
+    else:
+        symbols = config_symbols or ["AAPL"]
     partition_date = datetime.strptime(context.partition_key, "%Y-%m-%d")
     start_date = partition_date
     end_date = partition_date + timedelta(days=1)

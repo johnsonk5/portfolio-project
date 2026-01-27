@@ -17,7 +17,11 @@ from portfolio_project.defs.bronze_assets import (
     bronze_alpaca_assets,
     bronze_alpaca_bars,
 )
-from portfolio_project.defs.silver_assets import silver_alpaca_assets
+from portfolio_project.defs.silver_assets import (
+    silver_alpaca_active_assets_history,
+    silver_alpaca_assets,
+    silver_alpaca_assets_status_updates,
+)
 from portfolio_project.defs.silver_prices import (
     silver_alpaca_prices,
     silver_alpaca_prices_parquet,
@@ -39,6 +43,15 @@ daily_prices_job = define_asset_job(
     name="daily_prices_job",
     selection=prices_selection,
     partitions_def=BRONZE_PARTITIONS,
+)
+
+asset_status_updates_selection = AssetSelection.assets(
+    silver_alpaca_assets_status_updates,
+)
+
+asset_status_updates_job = define_asset_job(
+    name="asset_status_updates_job",
+    selection=asset_status_updates_selection,
 )
 
 def _daily_prices_schedule_fn(context):
@@ -71,11 +84,13 @@ defs = Definitions(
         bronze_alpaca_bars,
         bronze_alpaca_assets,
         silver_alpaca_assets,
+        silver_alpaca_active_assets_history,
+        silver_alpaca_assets_status_updates,
         silver_alpaca_prices_parquet,
         silver_alpaca_prices,
         gold_alpaca_prices,
     ],
-    jobs=[daily_prices_job],
+    jobs=[daily_prices_job, asset_status_updates_job],
     schedules=[daily_prices_schedule],
     resources={
         "alpaca": alpaca_resource,
