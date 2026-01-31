@@ -7,6 +7,7 @@ dependencies = [
     "alpaca-py>=0.17.0",
     "pyarrow>=23.0.0",
     "duckdb>=0.10.0",
+    "lxml>=6.0.2",
 ]
 
 [dependency-groups]

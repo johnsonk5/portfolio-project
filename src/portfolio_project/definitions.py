@@ -29,6 +29,10 @@ from portfolio_project.defs.silver_prices import (
     silver_alpaca_prices_parquet,
 )
 from portfolio_project.defs.gold_prices import gold_alpaca_prices
+from portfolio_project.defs.sp500_assets import (
+    bronze_sp500_companies,
+    silver_sp500_companies,
+)
 
 from portfolio_project.defs.alpaca_resource import alpaca_resource
 from portfolio_project.defs.duckdb_resource import duckdb_resource
@@ -55,6 +59,23 @@ asset_status_updates_selection = AssetSelection.assets(
 asset_status_updates_job = define_asset_job(
     name="asset_status_updates_job",
     selection=asset_status_updates_selection,
+)
+
+sp500_selection = AssetSelection.assets(
+    bronze_sp500_companies,
+    silver_sp500_companies,
+)
+
+sp500_update_job = define_asset_job(
+    name="sp500_update_job",
+    selection=sp500_selection,
+)
+
+sp500_weekly_schedule = ScheduleDefinition(
+    name="sp500_weekly_schedule",
+    cron_schedule="0 17 * * 5",
+    execution_timezone="America/New_York",
+    job=sp500_update_job,
 )
 
 def _daily_prices_schedule_fn(context):
@@ -93,9 +114,11 @@ defs = Definitions(
         silver_alpaca_prices_parquet,
         silver_alpaca_prices,
         gold_alpaca_prices,
+        bronze_sp500_companies,
+        silver_sp500_companies,
     ],
-    jobs=[daily_prices_job, asset_status_updates_job],
-    schedules=[daily_prices_schedule],
+    jobs=[daily_prices_job, asset_status_updates_job, sp500_update_job],
+    schedules=[daily_prices_schedule, sp500_weekly_schedule],
     resources={
         "alpaca": alpaca_resource,
         "duckdb": duckdb_resource,

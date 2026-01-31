@@ -43,6 +43,7 @@ def silver_alpaca_assets(context: AssetExecutionContext) -> None:
     else:
         df["is_active"] = False
         context.log.warning("No symbol column found; is_active set to False.")
+    df["is_sp500"] = False
 
     con = context.resources.duckdb
     con.execute("CREATE SCHEMA IF NOT EXISTS silver")
@@ -54,6 +55,16 @@ def silver_alpaca_assets(context: AssetExecutionContext) -> None:
         ).fetch_df()
     except Exception:
         existing_map_df = None
+
+    try:
+        sp500_df = con.execute(
+            "SELECT symbol FROM silver.ref_sp500"
+        ).fetch_df()
+        if sp500_df is not None and not sp500_df.empty and "symbol" in df.columns:
+            sp500_symbols = sp500_df["symbol"].astype(str).str.upper()
+            df["is_sp500"] = df["symbol"].astype(str).str.upper().isin(sp500_symbols)
+    except Exception:
+        pass
 
     if "alpaca_id" in df.columns:
         if existing_map_df is not None and not existing_map_df.empty:
