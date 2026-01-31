@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from dagster import build_resources
 from dotenv import load_dotenv
@@ -35,7 +35,7 @@ def main():
         ## Use this to test the get_bars method
 
         # Define a small test window (last 3 days, daily bars)
-        end_date = datetime.now()
+        end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=3)
 
         print("Requesting bars from Alpaca...")

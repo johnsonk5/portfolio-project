@@ -37,32 +37,57 @@ def silver_alpaca_assets(context: AssetExecutionContext) -> None:
     if rename_map:
         df = df.rename(columns=rename_map)
 
-    tickers = {
-        s.strip() for s in os.getenv(TICKERS_ENV, "").split(",") if s.strip()
-    }
+    tickers = _normalize_symbols(os.getenv(TICKERS_ENV, "").split(","))
     if "symbol" in df.columns:
         df["is_active"] = df["symbol"].isin(tickers)
     else:
         df["is_active"] = False
         context.log.warning("No symbol column found; is_active set to False.")
 
-    order_cols = []
-    if "symbol" in df.columns:
-        order_cols.append('"symbol"')
-    if "alpaca_id" in df.columns:
-        order_cols.append('"alpaca_id"')
-    order_sql = ", ".join(order_cols) if order_cols else "1"
-
     con = context.resources.duckdb
-    con.register("silver_assets_df", df)
     con.execute("CREATE SCHEMA IF NOT EXISTS silver")
-    con.execute("DROP TABLE IF EXISTS silver.assets")
+
+    existing_map_df = None
+    try:
+        existing_map_df = con.execute(
+            "SELECT asset_id, alpaca_id FROM silver.assets"
+        ).fetch_df()
+    except Exception:
+        existing_map_df = None
+
+    if "alpaca_id" in df.columns:
+        if existing_map_df is not None and not existing_map_df.empty:
+            existing_map_df["alpaca_id"] = existing_map_df["alpaca_id"].astype(str)
+            df["alpaca_id"] = df["alpaca_id"].astype(str)
+            df = df.merge(existing_map_df, on="alpaca_id", how="left")
+            max_id = int(existing_map_df["asset_id"].max())
+        else:
+            df["asset_id"] = pd.NA
+            max_id = 0
+
+        new_mask = df["asset_id"].isna()
+        if new_mask.any():
+            order_cols = [c for c in ["symbol", "alpaca_id"] if c in df.columns]
+            if order_cols:
+                df = df.sort_values(order_cols, kind="stable")
+                new_mask = df["asset_id"].isna()
+            new_ids = range(max_id + 1, max_id + 1 + int(new_mask.sum()))
+            df.loc[new_mask, "asset_id"] = list(new_ids)
+
+        df["asset_id"] = df["asset_id"].astype("int64")
+    else:
+        context.log.warning(
+            "No alpaca_id column found; asset_id stability cannot be guaranteed."
+        )
+        df["asset_id"] = range(1, len(df) + 1)
+
+    df = df[["asset_id"] + [c for c in df.columns if c != "asset_id"]]
+
+    con.register("silver_assets_df", df)
     con.execute(
         f"""
-        CREATE TABLE silver.assets AS
-        SELECT
-            row_number() OVER (ORDER BY {order_sql}) AS asset_id,
-            *
+        CREATE OR REPLACE TABLE silver.assets AS
+        SELECT *
         FROM silver_assets_df
         """
     )
@@ -112,7 +137,7 @@ def silver_alpaca_active_assets_history(context: AssetExecutionContext) -> None:
 
 @asset(
     name="silver_alpaca_assets_status_updates",
-    deps=[],
+    deps=[silver_alpaca_assets],
     required_resource_keys={"duckdb"},
     config_schema={
         "symbols_activate": Field(Array(String), is_required=False),
@@ -228,8 +253,8 @@ def silver_alpaca_assets_status_updates(context: AssetExecutionContext) -> None:
             alpaca_id,
             symbol,
             CASE WHEN new_is_active THEN 'activated' ELSE 'deactivated' END AS change_type,
-            CURRENT_DATE AS change_date,
-            CURRENT_TIMESTAMP AS change_ts,
+            CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) AS change_date,
+            CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS change_ts,
             previous_is_active,
             new_is_active
         FROM asset_status_updates_df
@@ -252,8 +277,8 @@ def silver_alpaca_assets_status_updates(context: AssetExecutionContext) -> None:
             alpaca_id,
             symbol,
             'snapshot' AS change_type,
-            CURRENT_DATE AS change_date,
-            CURRENT_TIMESTAMP AS change_ts,
+            CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) AS change_date,
+            CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS change_ts,
             NULL AS previous_is_active,
             TRUE AS new_is_active
         FROM silver.assets
@@ -261,10 +286,13 @@ def silver_alpaca_assets_status_updates(context: AssetExecutionContext) -> None:
         """
     )
 
+    active_snapshot_count = con.execute(
+        "SELECT count(*) FROM silver.assets WHERE is_active = TRUE"
+    ).fetchone()[0]
     context.add_output_metadata(
         {
             "updated_count": len(history_updates_df),
-            "history_appended_count": len(history_updates_df),
+            "history_appended_count": len(history_updates_df) + active_snapshot_count,
             "missing_symbols": missing_symbols,
         }
     )

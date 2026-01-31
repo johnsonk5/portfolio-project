@@ -26,13 +26,6 @@ def silver_alpaca_prices_parquet(context: AssetExecutionContext) -> None:
     Build a silver-layer parquet partition normalized on asset_id.
     """
     partition_date = datetime.strptime(context.partition_key, "%Y-%m-%d")
-    month_key = partition_date.strftime("%Y-%m")
-    bronze_root = DATA_ROOT / "bronze" / "alpaca_bars" / f"month={month_key}"
-    parquet_paths = [bronze_root / "bars.parquet"]
-    if not parquet_paths[0].exists():
-        context.log.warning("No bronze bars parquet file found at %s", parquet_paths[0])
-        return
-
     con = context.resources.duckdb
     try:
         con.execute("SELECT 1 FROM silver.assets LIMIT 1")
@@ -40,11 +33,32 @@ def silver_alpaca_prices_parquet(context: AssetExecutionContext) -> None:
         context.log.warning("Silver assets table missing or unreadable: %s", exc)
         return
 
+    active_symbols = [
+        row[0]
+        for row in con.execute(
+            "SELECT symbol FROM silver.assets WHERE is_active = TRUE"
+        ).fetchall()
+        if row and row[0]
+    ]
+    if not active_symbols:
+        context.log.warning("No active symbols found in silver.assets.")
+        return
+
+    month_key = partition_date.strftime("%Y-%m")
+    bronze_root = DATA_ROOT / "bronze" / "alpaca_bars" / f"month={month_key}"
+    parquet_paths = [
+        (bronze_root / f"symbol={symbol.upper()}.parquet").as_posix()
+        for symbol in active_symbols
+    ]
+    parquet_paths = [path for path in parquet_paths if Path(path).exists()]
+    if not parquet_paths:
+        context.log.warning("No bronze bars parquet files found at %s", bronze_root)
+        return
+
     start_date = pd.Timestamp(partition_date, tz="UTC")
     end_date = pd.Timestamp(partition_date + timedelta(days=1), tz="UTC")
     start_dt = start_date.to_pydatetime()
     end_dt = end_date.to_pydatetime()
-    parquet_path = parquet_paths[0].as_posix()
 
     # Filter and join in DuckDB so we do not load an entire month into pandas.
     prices_df = con.execute(
@@ -75,7 +89,7 @@ def silver_alpaca_prices_parquet(context: AssetExecutionContext) -> None:
         INNER JOIN active_assets AS assets
             ON bars.symbol = assets.symbol
         """,
-        [parquet_path, start_dt, end_dt],
+        [parquet_paths, start_dt, end_dt],
     ).fetch_df()
     if prices_df is None or prices_df.empty:
         context.log.warning("No active bar data for partition %s.", context.partition_key)
