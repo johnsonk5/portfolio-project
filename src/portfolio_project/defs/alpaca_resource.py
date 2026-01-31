@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import pandas as pd
@@ -58,7 +58,7 @@ class AlpacaClient:
         """
         # Set default dates if not provided
         if end_date is None:
-            end_date = datetime.now()
+            end_date = datetime.now(timezone.utc)
         if start_date is None:
             # Default to last 7 days
             start_date = end_date - timedelta(days=7)
@@ -87,7 +87,7 @@ class AlpacaClient:
         Fetch 5-minute bar (OHLCV) data for a given symbol as a DataFrame.
         """
         if end_date is None:
-            end_date = datetime.now()
+            end_date = datetime.now(timezone.utc)
         if start_date is None:
             start_date = end_date - timedelta(days=7)
 

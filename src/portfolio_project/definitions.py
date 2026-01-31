@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from zoneinfo import ZoneInfo
+from datetime import timedelta
 
 from dagster import (
     AssetSelection,
@@ -8,6 +9,7 @@ from dagster import (
     RunRequest,
     ScheduleDefinition,
     define_asset_job,
+    in_process_executor,
     definitions,
     load_from_defs_folder,
 )
@@ -43,6 +45,7 @@ daily_prices_job = define_asset_job(
     name="daily_prices_job",
     selection=prices_selection,
     partitions_def=BRONZE_PARTITIONS,
+    executor_def=in_process_executor,
 )
 
 asset_status_updates_selection = AssetSelection.assets(
@@ -58,8 +61,9 @@ def _daily_prices_schedule_fn(context):
     scheduled_time = context.scheduled_execution_time
     if scheduled_time is None:
         return []
-    local_time = scheduled_time.astimezone(ZoneInfo("America/New_York"))
-    partition_key = local_time.strftime("%Y-%m-%d")
+    scheduled_utc = scheduled_time.astimezone(ZoneInfo("UTC"))
+    partition_date = scheduled_utc.date() - timedelta(days=1)
+    partition_key = partition_date.strftime("%Y-%m-%d")
     return RunRequest(
         run_key=partition_key,
         partition_key=partition_key,
@@ -68,7 +72,7 @@ def _daily_prices_schedule_fn(context):
 
 daily_prices_schedule = ScheduleDefinition(
     name="daily_prices_schedule",
-    cron_schedule="45 17 * * *",
+    cron_schedule="0 9 * * *",
     execution_timezone="America/New_York",
     job=daily_prices_job,
     execution_fn=_daily_prices_schedule_fn,

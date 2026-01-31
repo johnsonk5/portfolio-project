@@ -1,6 +1,6 @@
 import os
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -58,9 +58,9 @@ def bronze_alpaca_bars(context: AssetExecutionContext) -> None:
             symbols = env_symbols
     else:
         symbols = config_symbols or ["AAPL"]
-    partition_date = datetime.strptime(context.partition_key, "%Y-%m-%d")
-    start_date = partition_date
-    end_date = partition_date + timedelta(days=1)
+    partition_date = datetime.strptime(context.partition_key, "%Y-%m-%d").date()
+    start_date = datetime.combine(partition_date, datetime.min.time(), tzinfo=timezone.utc)
+    end_date = start_date + timedelta(days=1)
 
     frames = []
     for symbol in symbols:
@@ -77,25 +77,47 @@ def bronze_alpaca_bars(context: AssetExecutionContext) -> None:
                 df["symbol"] = symbol
         if "timestamp" not in df.columns and df.index.name == "timestamp":
             df = df.reset_index()
-        df["ingested_ts"] = datetime.utcnow()
+        if "symbol" in df.columns:
+            df["symbol"] = df["symbol"].astype(str).str.upper()
+        df["ingested_ts"] = datetime.now(timezone.utc)
         frames.append(df)
 
     if not frames:
         context.log.warning("No bar data returned for partition %s", context.partition_key)
         return
 
-    out_df = pd.concat(frames, ignore_index=True)
     month_key = partition_date.strftime("%Y-%m")
     partition_dir = DATA_ROOT / "bronze" / "alpaca_bars" / f"month={month_key}"
     partition_dir.mkdir(parents=True, exist_ok=True)
-    out_path = partition_dir / "bars.parquet"
-    if out_path.exists():
-        existing = pd.read_parquet(out_path)
-        out_df = pd.concat([existing, out_df], ignore_index=True)
-    out_df.to_parquet(out_path, index=False)
+
+    day_start = start_date
+    day_end = end_date
+    total_rows = 0
+    written_files = []
+
+    for df in frames:
+        if df is None or df.empty:
+            continue
+        symbol = str(df["symbol"].iloc[0]).upper()
+        out_path = partition_dir / f"symbol={symbol}.parquet"
+
+        if out_path.exists():
+            existing = pd.read_parquet(out_path)
+            if "timestamp" in existing.columns:
+                existing_ts = pd.to_datetime(existing["timestamp"], utc=True, errors="coerce")
+                existing = existing[
+                    ~((existing_ts >= day_start) & (existing_ts < day_end))
+                ]
+            else:
+                existing = existing.iloc[0:0]
+            df = pd.concat([existing, df], ignore_index=True)
+
+        df.to_parquet(out_path, index=False)
+        total_rows += len(df)
+        written_files.append(str(out_path))
 
     context.add_output_metadata(
-        {"path": str(out_path), "row_count": len(out_df)}
+        {"partition": context.partition_key, "files_written": len(written_files), "row_count": total_rows}
     )
 
 
@@ -117,7 +139,7 @@ def bronze_alpaca_assets(context: AssetExecutionContext) -> None:
         if df[col].apply(lambda v: isinstance(v, uuid.UUID)).any():
             df[col] = df[col].astype(str)
 
-    df["ingested_ts"] = datetime.utcnow()
+    df["ingested_ts"] = datetime.now(timezone.utc)
     reference_dir = DATA_ROOT / "bronze" / "reference"
     reference_dir.mkdir(parents=True, exist_ok=True)
     out_path = reference_dir / "alpaca_assets.parquet"
