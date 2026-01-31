@@ -41,7 +41,7 @@ class AlpacaClient:
     
     def get_bars(
         self,
-        symbol: str,
+        symbol_or_symbols,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
     ) -> dict:
@@ -49,7 +49,7 @@ class AlpacaClient:
         Fetch 5-minute bar (OHLCV) data for a given symbol.
         
         Args:
-            symbol: Stock ticker symbol (e.g., "AAPL")
+            symbol_or_symbols: Stock ticker symbol or list of symbols (e.g., "AAPL" or ["AAPL", "MSFT"])
             start_date: Start date for data retrieval (defaults to last business day)
             end_date: End date for data retrieval (defaults to today)
         
@@ -66,8 +66,13 @@ class AlpacaClient:
         # 5-minute timeframe
         tf = TimeFrame(5, TimeFrameUnit.Minute)
         
+        if isinstance(symbol_or_symbols, str):
+            symbols = [symbol_or_symbols]
+        else:
+            symbols = list(symbol_or_symbols)
+
         request = StockBarsRequest(
-            symbol_or_symbols=[symbol],
+            symbol_or_symbols=symbols,
             timeframe=tf,
             start=start_date,
             end=end_date,
@@ -79,7 +84,7 @@ class AlpacaClient:
 
     def get_bars_df(
         self,
-        symbol: str,
+        symbol_or_symbols,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
     ) -> pd.DataFrame:
@@ -93,8 +98,13 @@ class AlpacaClient:
 
         tf = TimeFrame(5, TimeFrameUnit.Minute)
 
+        if isinstance(symbol_or_symbols, str):
+            symbols = [symbol_or_symbols]
+        else:
+            symbols = list(symbol_or_symbols)
+
         request = StockBarsRequest(
-            symbol_or_symbols=[symbol],
+            symbol_or_symbols=symbols,
             timeframe=tf,
             start=start_date,
             end=end_date,
