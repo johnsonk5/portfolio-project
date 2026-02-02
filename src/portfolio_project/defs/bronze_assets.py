@@ -62,25 +62,26 @@ def bronze_alpaca_bars(context: AssetExecutionContext) -> None:
     start_date = datetime.combine(partition_date, datetime.min.time(), tzinfo=timezone.utc)
     end_date = start_date + timedelta(days=1)
 
-    frames = []
-    for symbol in symbols:
-        df = context.resources.alpaca.get_bars_df(
-            symbol=symbol,
-            start_date=start_date,
-            end_date=end_date,
-        )
-        if df is None or df.empty:
-            continue
-        if "symbol" not in df.columns:
-            df = df.reset_index()
-            if "symbol" not in df.columns:
-                df["symbol"] = symbol
-        if "timestamp" not in df.columns and df.index.name == "timestamp":
-            df = df.reset_index()
-        if "symbol" in df.columns:
-            df["symbol"] = df["symbol"].astype(str).str.upper()
-        df["ingested_ts"] = datetime.now(timezone.utc)
-        frames.append(df)
+    df = context.resources.alpaca.get_bars_df(
+        symbol_or_symbols=symbols,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if df is None or df.empty:
+        context.log.warning("No bar data returned for partition %s", context.partition_key)
+        return
+    if "symbol" not in df.columns:
+        df = df.reset_index()
+    if "timestamp" not in df.columns and df.index.name == "timestamp":
+        df = df.reset_index()
+    if "symbol" in df.columns:
+        df["symbol"] = df["symbol"].astype(str).str.upper()
+    else:
+        context.log.warning("No symbol column found in bar data for partition %s", context.partition_key)
+        return
+    df["ingested_ts"] = datetime.now(timezone.utc)
+
+    frames = [group.copy() for _, group in df.groupby("symbol")]
 
     if not frames:
         context.log.warning("No bar data returned for partition %s", context.partition_key)
