@@ -76,6 +76,39 @@ html, body, [class*="css"]  {
   font-size: 0.9rem;
   color: var(--ink-2);
 }
+
+.tooltip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: help;
+}
+
+.tooltip::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: 120%;
+  left: 0;
+  z-index: 10;
+  width: 220px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.95);
+  color: var(--ink-1);
+  font-size: 0.82rem;
+  line-height: 1.25;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  pointer-events: none;
+}
+
+.tooltip:hover::after {
+  opacity: 1;
+  transform: translateY(0);
+}
 </style>
 """
 
@@ -90,7 +123,7 @@ def _resolve_duckdb_path() -> Path:
     return data_root / "duckdb" / "portfolio.duckdb"
 
 
-def _load_daily_returns(limit: int = 10) -> tuple[pd.DataFrame, str | None]:
+def _load_daily_returns(limit: int = 5) -> tuple[pd.DataFrame, str | None]:
     db_path = _resolve_duckdb_path()
     if not db_path.exists():
         return pd.DataFrame(), f"DuckDB not found at {db_path}"
@@ -136,6 +169,85 @@ def _load_daily_returns(limit: int = 10) -> tuple[pd.DataFrame, str | None]:
     return combined, label
 
 
+def _load_risky_bets(
+    hot_limit: int = 5,
+    crash_limit: int = 5,
+    sleepy_limit: int = 5,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str | None, str | None]:
+    db_path = _resolve_duckdb_path()
+    if not db_path.exists():
+        return (
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            None,
+            f"DuckDB not found at {db_path}",
+        )
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        latest_date_row = con.execute(
+            "SELECT MAX(trade_date) FROM gold.prices"
+        ).fetchone()
+        if not latest_date_row or latest_date_row[0] is None:
+            return (
+                pd.DataFrame(),
+                pd.DataFrame(),
+                pd.DataFrame(),
+                None,
+                "No gold.prices data found.",
+            )
+
+        trade_date = latest_date_row[0]
+        df = con.execute(
+            """
+            SELECT symbol, trade_date, realized_vol_21d, returns_21d
+            FROM gold.prices
+            WHERE trade_date = ?
+              AND realized_vol_21d IS NOT NULL
+            """,
+            [trade_date],
+        ).fetch_df()
+    except Exception as exc:
+        return (
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            None,
+            f"Failed to load data: {exc}",
+        )
+    finally:
+        con.close()
+
+    if df.empty:
+        return (
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            None,
+            "No volatility data available for the latest trade date.",
+        )
+
+    df = df.copy()
+    df["vol_pct"] = df["realized_vol_21d"] * 100.0
+    df["mom_pct"] = df["returns_21d"] * 100.0
+
+    hot = (
+        df[df["returns_21d"] > 0]
+        .sort_values("returns_21d", ascending=False)
+        .head(hot_limit)
+    )
+    crash = (
+        df[df["returns_21d"] < 0]
+        .sort_values("returns_21d", ascending=True)
+        .head(crash_limit)
+    )
+    sleepy = df.sort_values("realized_vol_21d", ascending=True).head(sleepy_limit)
+
+    label = pd.to_datetime(trade_date).strftime("%B %d, %Y")
+    return hot, crash, sleepy, label, None
+
+
 st.markdown(
     """
     <div class="header-hero">
@@ -148,13 +260,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-left, right = st.columns([2, 1], gap="large")
+left, right = st.columns([2, 4], gap="large")
 
 with left:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Top Gainers + Losers</div>', unsafe_allow_html=True)
 
-    df, label = _load_daily_returns(limit=10)
+    df, label = _load_daily_returns(limit=5)
     if df.empty:
         st.info(label or "No data available yet.")
     else:
@@ -187,11 +299,11 @@ with left:
                     alt.Tooltip("returns_pct:Q", title="Return (%)", format=".2f"),
                 ],
             )
-            .properties(height=chart_height)
+            .properties(height=chart_height, width=380)
             .configure_axis(gridColor="rgba(255,255,255,0.05)")
         )
 
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, use_container_width=False)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -203,7 +315,73 @@ with right:
 
     st.markdown('<div class="section-card" style="margin-top: 16px;">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Risky Bets</div>', unsafe_allow_html=True)
-    st.write("Coming soon: momentum clusters and speculative movers.")
+
+    hot, crash, sleepy, label, error = _load_risky_bets()
+    if error:
+        st.info(error)
+    else:
+        st.markdown(
+            f"<div class=\"metric-pill\">Latest trade date: {label}</div>",
+            unsafe_allow_html=True,
+        )
+
+        hot_col, crash_col, sleepy_col = st.columns([2, 2, 1.35], gap="small")
+        with hot_col:
+            st.markdown(
+                '<span class="tooltip" data-tip="High-volatility names with positive 20-day momentum."><strong>Hot Ones 🔥</strong></span>',
+                unsafe_allow_html=True,
+            )
+            if hot.empty:
+                st.write("No positive momentum names.")
+            else:
+                st.dataframe(
+                    hot[["symbol", "vol_pct", "mom_pct"]],
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "symbol": st.column_config.TextColumn("Symbol"),
+                        "vol_pct": st.column_config.NumberColumn("Vol", format="%.2f"),
+                        "mom_pct": st.column_config.NumberColumn("20D Mom (%)", format="%.2f"),
+                    },
+                )
+
+        with crash_col:
+            st.markdown(
+                '<span class="tooltip" data-tip="High-volatility names with negative 20-day momentum."><strong>Crashing Out 😢</strong></span>',
+                unsafe_allow_html=True,
+            )
+            if crash.empty:
+                st.write("No negative momentum names.")
+            else:
+                st.dataframe(
+                    crash[["symbol", "vol_pct", "mom_pct"]],
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "symbol": st.column_config.TextColumn("Symbol"),
+                        "vol_pct": st.column_config.NumberColumn("Vol", format="%.2f"),
+                        "mom_pct": st.column_config.NumberColumn("20D Mom (%)", format="%.2f"),
+                    },
+                )
+
+        with sleepy_col:
+            st.markdown(
+                '<span class="tooltip" data-tip="Lowest-volatility names on the latest trade date."><strong>Sleepy 😴</strong></span>',
+                unsafe_allow_html=True,
+            )
+            if sleepy.empty:
+                st.write("No low-volatility names.")
+            else:
+                st.dataframe(
+                    sleepy[["symbol", "vol_pct"]],
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "symbol": st.column_config.TextColumn("Symbol"),
+                        "vol_pct": st.column_config.NumberColumn("Vol", format="%.2f"),
+                    },
+                )
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="section-card" style="margin-top: 18px;">', unsafe_allow_html=True)
