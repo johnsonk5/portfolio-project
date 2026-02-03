@@ -248,6 +248,61 @@ def _load_risky_bets(
     return hot, crash, sleepy, label, None
 
 
+def _zscore(series: pd.Series) -> pd.Series:
+    std = series.std(ddof=0)
+    if std == 0 or pd.isna(std):
+        return pd.Series(0.0, index=series.index)
+    return (series - series.mean()) / std
+
+
+def _load_underrated_investments(
+    limit: int = 5,
+) -> tuple[pd.DataFrame, str | None, str | None]:
+    db_path = _resolve_duckdb_path()
+    if not db_path.exists():
+        return pd.DataFrame(), None, f"DuckDB not found at {db_path}"
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        latest_date_row = con.execute(
+            "SELECT MAX(trade_date) FROM gold.prices"
+        ).fetchone()
+        if not latest_date_row or latest_date_row[0] is None:
+            return pd.DataFrame(), None, "No gold.prices data found."
+
+        trade_date = latest_date_row[0]
+        df = con.execute(
+            """
+            SELECT
+                symbol,
+                trade_date,
+                momentum_12_1,
+                pct_below_52w_high
+            FROM gold.prices
+            WHERE trade_date = ?
+              AND momentum_12_1 IS NOT NULL
+              AND pct_below_52w_high IS NOT NULL
+            """,
+            [trade_date],
+        ).fetch_df()
+    except Exception as exc:
+        return pd.DataFrame(), None, f"Failed to load data: {exc}"
+    finally:
+        con.close()
+
+    if df.empty:
+        return df, None, "No underrated investment data available for the latest trade date."
+
+    df = df.copy()
+    df["score"] = _zscore(df["momentum_12_1"]) + _zscore(df["pct_below_52w_high"])
+    df["momentum_12_1_pct"] = df["momentum_12_1"] * 100.0
+    df["pct_below_52w_high_pct"] = df["pct_below_52w_high"] * 100.0
+    df = df.sort_values("score", ascending=False).head(limit)
+
+    label = pd.to_datetime(trade_date).strftime("%B %d, %Y")
+    return df, label, None
+
+
 def _load_big_picture(top_n: int = 7) -> tuple[dict, str | None, str | None]:
     db_path = _resolve_duckdb_path()
     if not db_path.exists():
@@ -503,6 +558,40 @@ with right:
                 )
 
     st.markdown("</div>", unsafe_allow_html=True)
+
+st.markdown('<div class="section-card" style="margin-top: 18px;">', unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-title"><span class="tooltip" '
+    'data-tip="Stocks with strong 12-1 momentum that are still well below their 52-week highs.">'
+    '<strong>Underrated Investments</strong></span></div>',
+    unsafe_allow_html=True,
+)
+
+underrated_df, label, error = _load_underrated_investments(limit=5)
+if error:
+    st.info(error)
+else:
+    st.markdown(
+        f"<div class=\"metric-pill\">Latest trade date: {label}</div>",
+        unsafe_allow_html=True,
+    )
+    st.dataframe(
+        underrated_df[
+            ["symbol", "momentum_12_1_pct", "pct_below_52w_high_pct", "score"]
+        ],
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "symbol": st.column_config.TextColumn("Symbol"),
+            "momentum_12_1_pct": st.column_config.NumberColumn("12-1 Mom (%)", format="%.2f"),
+            "pct_below_52w_high_pct": st.column_config.NumberColumn(
+                "Below 52W High (%)", format="%.2f"
+            ),
+            "score": st.column_config.NumberColumn("Score", format="%.2f"),
+        },
+    )
+
+st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="section-card" style="margin-top: 18px;">', unsafe_allow_html=True)
 st.markdown('<div class="section-title">On Deck</div>', unsafe_allow_html=True)

@@ -54,6 +54,7 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
             returns_21d DOUBLE,
             realized_vol_21d DOUBLE,
             momentum_12_1 DOUBLE,
+            pct_below_52w_high DOUBLE,
             sma_50 DOUBLE,
             sma_200 DOUBLE,
             dist_sma_50 DOUBLE,
@@ -98,9 +99,24 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
               AND asset_id IN (SELECT asset_id FROM target_assets)
             GROUP BY asset_id, symbol, CAST(timestamp AS DATE)
         ),
-        daily_features AS (
+        history_prices AS (
+            SELECT asset_id, symbol, trade_date, close
+            FROM gold.prices
+            WHERE trade_date < ?
+              AND asset_id IN (SELECT asset_id FROM target_assets)
+        ),
+        returns_base AS (
+            SELECT * FROM history_prices
+            UNION ALL
+            SELECT asset_id, symbol, trade_date, close
+            FROM daily_prices
+        ),
+        returns_features AS (
             SELECT
-                *,
+                asset_id,
+                symbol,
+                trade_date,
+                close,
                 close / lag(close, 1) OVER (PARTITION BY asset_id ORDER BY trade_date) - 1
                     AS returns_1d,
                 close / lag(close, 5) OVER (PARTITION BY asset_id ORDER BY trade_date) - 1
@@ -112,7 +128,11 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
                     / lag(close, 252) OVER (PARTITION BY asset_id ORDER BY trade_date)
                     - 1
                 ) AS momentum_12_1,
-                close * volume AS dollar_volume,
+                max(close) OVER (
+                    PARTITION BY asset_id
+                    ORDER BY trade_date
+                    ROWS BETWEEN 251 PRECEDING AND CURRENT ROW
+                ) AS high_52w,
                 avg(close) OVER (
                     PARTITION BY asset_id
                     ORDER BY trade_date
@@ -123,41 +143,55 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
                     ORDER BY trade_date
                     ROWS BETWEEN 199 PRECEDING AND CURRENT ROW
                 ) AS sma_200
-            FROM daily_prices
+            FROM returns_base
         ),
-        final AS (
+        vol_features AS (
             SELECT
-                asset_id,
-                symbol,
-                trade_date,
-                open,
-                high,
-                low,
-                close,
-                volume,
-                trade_count,
-                vwap,
-                dollar_volume,
-                returns_1d,
-                returns_5d,
-                returns_21d,
+                *,
                 stddev_samp(returns_1d) OVER (
                     PARTITION BY asset_id
                     ORDER BY trade_date
                     ROWS BETWEEN 20 PRECEDING AND CURRENT ROW
-                ) * sqrt(252) AS realized_vol_21d,
-                momentum_12_1,
-                sma_50,
-                sma_200,
+                ) * sqrt(252) AS realized_vol_21d
+            FROM returns_features
+        ),
+        final AS (
+            SELECT
+                d.asset_id,
+                d.symbol,
+                d.trade_date,
+                d.open,
+                d.high,
+                d.low,
+                d.close,
+                d.volume,
+                d.trade_count,
+                d.vwap,
+                d.close * d.volume AS dollar_volume,
+                v.returns_1d,
+                v.returns_5d,
+                v.returns_21d,
+                v.realized_vol_21d,
+                v.momentum_12_1,
                 CASE
-                    WHEN sma_50 IS NULL OR sma_50 = 0 THEN NULL
-                    ELSE close / sma_50 - 1
+                    WHEN v.high_52w IS NULL OR v.high_52w = 0 THEN NULL
+                    ELSE (v.high_52w - d.close) / v.high_52w
+                END AS pct_below_52w_high,
+                v.sma_50,
+                v.sma_200,
+                CASE
+                    WHEN v.sma_50 IS NULL OR v.sma_50 = 0 THEN NULL
+                    ELSE d.close / v.sma_50 - 1
                 END AS dist_sma_50,
                 CASE
-                    WHEN sma_200 IS NULL OR sma_200 = 0 THEN NULL
-                    ELSE close / sma_200 - 1
+                    WHEN v.sma_200 IS NULL OR v.sma_200 = 0 THEN NULL
+                    ELSE d.close / v.sma_200 - 1
                 END AS dist_sma_200
-            FROM daily_features
+            FROM daily_prices d
+            LEFT JOIN vol_features v
+                ON v.asset_id = d.asset_id
+               AND v.symbol = d.symbol
+               AND v.trade_date = d.trade_date
         )
         SELECT *
         FROM final
@@ -174,7 +208,13 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
     """
     con.execute(
         insert_sql,
-        [partition_date, lookback_start, partition_date, partition_date],
+        [
+            partition_date,
+            lookback_start,
+            partition_date,
+            partition_date,
+            partition_date,
+        ],
     )
 
     row_count = con.execute(
