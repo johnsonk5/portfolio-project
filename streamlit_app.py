@@ -1,4 +1,5 @@
 import os
+import random
 from pathlib import Path
 
 import altair as alt
@@ -113,6 +114,13 @@ html, body, [class*="css"]  {
 """
 
 st.markdown(CSS, unsafe_allow_html=True)
+
+QUOTES = [
+    '"Well then buy it...well then sell it, I don\'t know... *vomits*" - Eric Andre',
+    '"Don\'t Believe the Hype" - Flavor Flav',
+    '"Mo\' money, Mo\' problems" - The Buddha',
+    '"What\'s the most you ever lost on a coin toss?" - Anton Chigurh',
+]
 
 
 def _resolve_duckdb_path() -> Path:
@@ -399,6 +407,17 @@ st.markdown(
       </div>
     </div>
     """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <div class="section-card" style="margin-bottom: 16px;">
+      <div style="font-size: 1rem; color: var(--ink-2); font-style: italic; text-align: center;">
+        {quote}
+      </div>
+    </div>
+    """.format(quote=random.choice(QUOTES)),
     unsafe_allow_html=True,
 )
 
