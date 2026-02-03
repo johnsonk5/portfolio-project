@@ -248,6 +248,93 @@ def _load_risky_bets(
     return hot, crash, sleepy, label, None
 
 
+def _load_big_picture(top_n: int = 7) -> tuple[dict, str | None, str | None]:
+    db_path = _resolve_duckdb_path()
+    if not db_path.exists():
+        return {}, None, f"DuckDB not found at {db_path}"
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        latest_date_row = con.execute(
+            "SELECT MAX(trade_date) FROM gold.prices"
+        ).fetchone()
+        if not latest_date_row or latest_date_row[0] is None:
+            return {}, None, "No gold.prices data found."
+
+        trade_date = latest_date_row[0]
+        df = con.execute(
+            """
+            SELECT
+                symbol,
+                close,
+                returns_1d,
+                sma_50,
+                sma_200,
+                dollar_volume
+            FROM gold.prices
+            WHERE trade_date = ?
+            """,
+            [trade_date],
+        ).fetch_df()
+    except Exception as exc:
+        return {}, None, f"Failed to load data: {exc}"
+    finally:
+        con.close()
+
+    if df.empty:
+        return {}, None, "No data available for the latest trade date."
+
+    df = df.copy()
+    valid_returns = df[df["returns_1d"].notna()]
+    total_count = len(valid_returns)
+    if total_count == 0:
+        return {}, None, "No return data available for the latest trade date."
+
+    pct_up = (valid_returns["returns_1d"] > 0).mean() * 100.0
+
+    sma_50_mask = valid_returns["sma_50"].notna() & valid_returns["close"].notna()
+    sma_200_mask = valid_returns["sma_200"].notna() & valid_returns["close"].notna()
+
+    pct_above_50 = (
+        (valid_returns.loc[sma_50_mask, "close"]
+        > valid_returns.loc[sma_50_mask, "sma_50"]).mean()
+        * 100.0
+        if sma_50_mask.any()
+        else None
+    )
+    pct_above_200 = (
+        (valid_returns.loc[sma_200_mask, "close"]
+        > valid_returns.loc[sma_200_mask, "sma_200"]).mean()
+        * 100.0
+        if sma_200_mask.any()
+        else None
+    )
+
+    dv_mask = valid_returns["dollar_volume"].notna()
+    contrib_pct = None
+    if dv_mask.any():
+        dv = valid_returns.loc[dv_mask, ["returns_1d", "dollar_volume"]].copy()
+        dv = dv[dv["dollar_volume"] > 0]
+        if not dv.empty:
+            dv["weighted_return"] = dv["returns_1d"] * dv["dollar_volume"]
+            total_weighted = dv["weighted_return"].sum()
+            top = dv.sort_values("dollar_volume", ascending=False).head(top_n)
+            top_weighted = top["weighted_return"].sum()
+            if total_weighted != 0:
+                contrib_pct = (top_weighted / total_weighted) * 100.0
+
+    label = pd.to_datetime(trade_date).strftime("%B %d, %Y")
+    metrics = {
+        "pct_up": pct_up,
+        "pct_above_50": pct_above_50,
+        "pct_above_200": pct_above_200,
+        "top_contrib": contrib_pct,
+        "top_n": top_n,
+        "universe": total_count,
+    }
+    return metrics, label, None
+
+
 st.markdown(
     """
     <div class="header-hero">
@@ -259,6 +346,44 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+st.markdown('<div class="section-card" style="margin-bottom: 16px;">', unsafe_allow_html=True)
+st.markdown('<div class="section-title">Big Picture</div>', unsafe_allow_html=True)
+
+big_picture, label, error = _load_big_picture(top_n=7)
+if error:
+    st.info(error)
+else:
+    st.markdown(
+        f"<div class=\"metric-pill\">Latest trade date: {label}</div>",
+        unsafe_allow_html=True,
+    )
+
+    bp_cols = st.columns(4, gap="large")
+    with bp_cols[0]:
+        st.metric("% of stocks up", f"{big_picture['pct_up']:.1f}%")
+    with bp_cols[1]:
+        if big_picture["pct_above_50"] is None:
+            st.metric("% above 50D SMA", "n/a")
+        else:
+            st.metric("% above 50D SMA", f"{big_picture['pct_above_50']:.1f}%")
+    with bp_cols[2]:
+        if big_picture["pct_above_200"] is None:
+            st.metric("% above 200D SMA", "n/a")
+        else:
+            st.metric("% above 200D SMA", f"{big_picture['pct_above_200']:.1f}%")
+    with bp_cols[3]:
+        if big_picture["top_contrib"] is None:
+            st.metric(
+                f"Top {big_picture['top_n']} contrib", "n/a"
+            )
+        else:
+            st.metric(
+                f"Top {big_picture['top_n']} contrib",
+                f"{big_picture['top_contrib']:.1f}%",
+            )
+
+st.markdown("</div>", unsafe_allow_html=True)
 
 left, right = st.columns([2, 4], gap="large")
 
@@ -308,11 +433,6 @@ with left:
     st.markdown("</div>", unsafe_allow_html=True)
 
 with right:
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">Market Breadth</div>', unsafe_allow_html=True)
-    st.write("Coming soon: advance/decline ratio, sector heat, volatility regime.")
-    st.markdown("</div>", unsafe_allow_html=True)
-
     st.markdown('<div class="section-card" style="margin-top: 16px;">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Risky Bets</div>', unsafe_allow_html=True)
 
