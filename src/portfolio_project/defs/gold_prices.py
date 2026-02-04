@@ -1,33 +1,30 @@
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from dagster import AssetExecutionContext, DailyPartitionsDefinition, asset
 
 from portfolio_project.defs.silver_assets import silver_alpaca_assets
-from portfolio_project.defs.silver_prices import silver_alpaca_prices
+from portfolio_project.defs.silver_prices import silver_alpaca_prices_parquet
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 GOLD_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
+DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 
 
 @asset(
     name="gold_alpaca_prices",
-    deps=[silver_alpaca_assets, silver_alpaca_prices],
+    deps=[silver_alpaca_assets, silver_alpaca_prices_parquet],
     partitions_def=GOLD_PARTITIONS,
     required_resource_keys={"duckdb"},
 )
 def gold_alpaca_prices(context: AssetExecutionContext) -> None:
     """
-    Build daily gold-layer prices and factor features from silver.prices.
+    Build daily gold-layer prices and factor features from silver parquet.
     """
     partition_date = datetime.strptime(context.partition_key, "%Y-%m-%d").date()
     con = context.resources.duckdb
 
-    try:
-        con.execute("SELECT 1 FROM silver.prices LIMIT 1")
-    except Exception as exc:
-        context.log.warning("Silver prices table missing or unreadable: %s", exc)
-        return
     try:
         con.execute("SELECT 1 FROM silver.assets LIMIT 1")
     except Exception as exc:
@@ -64,6 +61,27 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
     )
 
     lookback_start = partition_date - timedelta(days=400)
+    parquet_paths = []
+    cursor = lookback_start
+    while cursor <= partition_date:
+        parquet_path = (
+            DATA_ROOT
+            / "silver"
+            / "prices"
+            / f"date={cursor.strftime('%Y-%m-%d')}"
+            / "prices.parquet"
+        )
+        if parquet_path.exists():
+            parquet_paths.append(parquet_path.as_posix())
+        cursor += timedelta(days=1)
+
+    if not parquet_paths:
+        context.log.warning(
+            "No silver parquet partitions found between %s and %s.",
+            lookback_start,
+            partition_date,
+        )
+        return
 
     daily_sql = """
         WITH active_assets AS (
@@ -73,7 +91,7 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
         ),
         target_assets AS (
             SELECT DISTINCT prices.asset_id, prices.symbol
-            FROM silver.prices AS prices
+            FROM prices AS prices
             INNER JOIN active_assets AS assets
                 ON prices.asset_id = assets.asset_id
             WHERE CAST(prices.timestamp AS DATE) = ?
@@ -94,7 +112,7 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
                         THEN sum(vwap * volume) / sum(volume)
                     ELSE NULL
                 END AS vwap
-            FROM silver.prices
+            FROM prices
             WHERE CAST(timestamp AS DATE) BETWEEN ? AND ?
               AND asset_id IN (SELECT asset_id FROM target_assets)
             GROUP BY asset_id, symbol, CAST(timestamp AS DATE)
@@ -203,12 +221,17 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
         [partition_date],
     )
     insert_sql = f"""
+        WITH prices AS (
+            SELECT *
+            FROM read_parquet(?)
+        )
         INSERT INTO gold.prices
         {daily_sql}
     """
     con.execute(
         insert_sql,
         [
+            parquet_paths,
             partition_date,
             lookback_start,
             partition_date,
