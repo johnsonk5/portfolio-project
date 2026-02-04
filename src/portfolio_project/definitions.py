@@ -25,7 +25,6 @@ from portfolio_project.defs.silver_assets import (
     silver_alpaca_assets_status_updates,
 )
 from portfolio_project.defs.silver_prices import (
-    silver_alpaca_prices,
     silver_alpaca_prices_parquet,
 )
 from portfolio_project.defs.gold_prices import gold_alpaca_prices
@@ -41,7 +40,6 @@ from portfolio_project.defs.duckdb_resource import duckdb_resource
 prices_selection = AssetSelection.assets(
     bronze_alpaca_bars,
     silver_alpaca_prices_parquet,
-    silver_alpaca_prices,
     gold_alpaca_prices,
 )
 
@@ -112,7 +110,6 @@ defs = Definitions(
         silver_alpaca_active_assets_history,
         silver_alpaca_assets_status_updates,
         silver_alpaca_prices_parquet,
-        silver_alpaca_prices,
         gold_alpaca_prices,
         bronze_sp500_companies,
         silver_sp500_companies,
