@@ -5,6 +5,8 @@ version = "0.1.0"
 dependencies = [
     "dagster==1.12.2",
     "alpaca-py>=0.17.0",
+    "pandas>=2.0.0",
+    "requests>=2.31.0",
     "pyarrow>=23.0.0",
     "duckdb>=0.10.0",
     "lxml>=6.0.2",
