@@ -33,6 +33,11 @@ from portfolio_project.defs.sp500_assets import (
     silver_sp500_companies,
 )
 from portfolio_project.defs.yahoo_news_assets import bronze_yahoo_news
+from portfolio_project.defs.silver_news_assets import (
+    silver_ref_publishers,
+    silver_news,
+)
+from portfolio_project.defs.gold_news_assets import gold_headlines
 
 from portfolio_project.defs.alpaca_resource import alpaca_resource
 from portfolio_project.defs.duckdb_resource import duckdb_resource
@@ -108,6 +113,9 @@ defs = Definitions(
         bronze_alpaca_bars,
         bronze_alpaca_assets,
         bronze_yahoo_news,
+        silver_ref_publishers,
+        silver_news,
+        gold_headlines,
         silver_alpaca_assets,
         silver_alpaca_active_assets_history,
         silver_alpaca_assets_status_updates,
