@@ -194,14 +194,15 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
                     ELSE NULL
                 END AS vwap
             FROM prices
-            WHERE CAST(timestamp AS DATE) BETWEEN ? AND ?
+            WHERE CAST(timestamp AS DATE) = ?
               AND asset_id IN (SELECT asset_id FROM target_assets)
             GROUP BY asset_id, symbol, CAST(timestamp AS DATE)
         ),
         history_prices AS (
             SELECT asset_id, symbol, trade_date, close
             FROM gold.prices
-            WHERE trade_date < ?
+            WHERE trade_date >= ?
+              AND trade_date < ?
               AND asset_id IN (SELECT asset_id FROM target_assets)
         ),
         returns_base AS (
@@ -306,13 +307,36 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
             SELECT *
             FROM read_parquet(?)
         )
-        INSERT INTO gold.prices
+        INSERT INTO gold.prices (
+            asset_id,
+            symbol,
+            trade_date,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            trade_count,
+            vwap,
+            dollar_volume,
+            returns_1d,
+            returns_5d,
+            returns_21d,
+            realized_vol_21d,
+            momentum_12_1,
+            pct_below_52w_high,
+            sma_50,
+            sma_200,
+            dist_sma_50,
+            dist_sma_200,
+            sentiment_score
+        )
         {daily_sql}
     """
     base_params = [
         partition_date,
-        lookback_start,
         partition_date,
+        lookback_start,
         partition_date,
     ]
     query_params = base_params + sentiment_params + [partition_date]
