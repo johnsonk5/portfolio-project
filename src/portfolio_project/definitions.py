@@ -117,7 +117,7 @@ def _daily_prices_schedule_fn(context):
 
 daily_prices_schedule = ScheduleDefinition(
     name="daily_prices_schedule",
-    cron_schedule="0 9 * * *",
+    cron_schedule="30 9 * * *",
     execution_timezone="America/New_York",
     job=daily_prices_job,
     execution_fn=_daily_prices_schedule_fn,
@@ -137,7 +137,7 @@ def _daily_news_schedule_fn(context):
 
 daily_news_schedule = ScheduleDefinition(
     name="daily_news_schedule",
-    cron_schedule="15 9 * * *",
+    cron_schedule="0 9 * * *",
     execution_timezone="America/New_York",
     job=daily_news_job,
     execution_fn=_daily_news_schedule_fn,
