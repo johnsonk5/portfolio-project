@@ -145,7 +145,7 @@ daily_news_schedule = ScheduleDefinition(
 
 tranco_monthly_schedule = ScheduleDefinition(
     name="tranco_monthly_schedule",
-    cron_schedule="0 6 1 * *",
+    cron_schedule="0 18 1 * *",
     execution_timezone="America/New_York",
     job=tranco_update_job,
 )
