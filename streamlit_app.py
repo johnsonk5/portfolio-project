@@ -449,11 +449,11 @@ else:
     with bp_cols[3]:
         if big_picture["top_contrib"] is None:
             st.metric(
-                f"Top {big_picture['top_n']} contrib", "n/a"
+                f"Top {big_picture['top_n']} Contribution", "n/a"
             )
         else:
             st.metric(
-                f"Top {big_picture['top_n']} contrib",
+                f"Top {big_picture['top_n']} Contribution",
                 f"{big_picture['top_contrib']:.1f}%",
             )
 
