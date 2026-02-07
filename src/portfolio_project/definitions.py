@@ -78,7 +78,6 @@ sp500_update_job = define_asset_job(
 news_selection = AssetSelection.assets(
     bronze_yahoo_news,
     silver_ref_publishers,
-    silver_alpaca_assets,
     silver_news,
     gold_headlines,
 )
