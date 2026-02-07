@@ -92,6 +92,18 @@ def gold_headlines(context: AssetExecutionContext) -> None:
             partition_date,
         )
         return
+    cutoff_date = partition_date - timedelta(days=30)
+    silver_path_sql = silver_path.as_posix().replace("'", "''")
+
+    eligible_count = con.execute(
+        """
+        SELECT count(*)
+        FROM read_parquet(?)
+        WHERE provider_publish_time IS NOT NULL
+          AND CAST(provider_publish_time AS DATE) >= ?
+        """,
+        [silver_path_sql, cutoff_date],
+    ).fetchone()[0]
 
     con.execute(
         """
