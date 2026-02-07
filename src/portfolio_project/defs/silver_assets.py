@@ -7,7 +7,6 @@ from dagster import Array, AssetExecutionContext, Field, String, asset
 from portfolio_project.defs.bronze_assets import bronze_alpaca_assets
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
-TICKERS_ENV = "ALPACA_TICKERS"
 
 
 @asset(
@@ -37,9 +36,8 @@ def silver_alpaca_assets(context: AssetExecutionContext) -> None:
     if rename_map:
         df = df.rename(columns=rename_map)
 
-    tickers = _normalize_symbols(os.getenv(TICKERS_ENV, "").split(","))
     if "symbol" in df.columns:
-        df["is_active"] = df["symbol"].isin(tickers)
+        df["is_active"] = False
     else:
         df["is_active"] = False
         context.log.warning("No symbol column found; is_active set to False.")
@@ -51,7 +49,7 @@ def silver_alpaca_assets(context: AssetExecutionContext) -> None:
     existing_map_df = None
     try:
         existing_map_df = con.execute(
-            "SELECT asset_id, alpaca_id FROM silver.assets"
+            "SELECT asset_id, alpaca_id, symbol, is_active FROM silver.assets"
         ).fetch_df()
     except Exception:
         existing_map_df = None
@@ -70,7 +68,13 @@ def silver_alpaca_assets(context: AssetExecutionContext) -> None:
         if existing_map_df is not None and not existing_map_df.empty:
             existing_map_df["alpaca_id"] = existing_map_df["alpaca_id"].astype(str)
             df["alpaca_id"] = df["alpaca_id"].astype(str)
-            df = df.merge(existing_map_df, on="alpaca_id", how="left")
+            existing_by_id = existing_map_df[["alpaca_id", "asset_id", "is_active"]]
+            df = df.merge(
+                existing_by_id,
+                on="alpaca_id",
+                how="left",
+                suffixes=("", "_existing"),
+            )
             max_id = int(existing_map_df["asset_id"].max())
         else:
             df["asset_id"] = pd.NA
@@ -91,6 +95,21 @@ def silver_alpaca_assets(context: AssetExecutionContext) -> None:
             "No alpaca_id column found; asset_id stability cannot be guaranteed."
         )
         df["asset_id"] = range(1, len(df) + 1)
+
+    if "is_active_existing" in df.columns:
+        df["is_active"] = df["is_active_existing"].fillna(False).astype(bool)
+        df = df.drop(columns=["is_active_existing"])
+    elif existing_map_df is not None and not existing_map_df.empty and "symbol" in df.columns:
+        existing_map_df["symbol_norm"] = existing_map_df["symbol"].astype(str).str.upper()
+        df["symbol_norm"] = df["symbol"].astype(str).str.upper()
+        df = df.merge(
+            existing_map_df[["symbol_norm", "is_active"]],
+            on="symbol_norm",
+            how="left",
+            suffixes=("", "_existing"),
+        )
+        df["is_active"] = df["is_active_existing"].fillna(False).astype(bool)
+        df = df.drop(columns=["symbol_norm", "is_active_existing"])
 
     df = df[["asset_id"] + [c for c in df.columns if c != "asset_id"]]
 

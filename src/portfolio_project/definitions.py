@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from zoneinfo import ZoneInfo
 from datetime import timedelta
 
@@ -10,8 +8,6 @@ from dagster import (
     ScheduleDefinition,
     define_asset_job,
     in_process_executor,
-    definitions,
-    load_from_defs_folder,
 )
 
 from portfolio_project.defs.bronze_assets import (
@@ -28,15 +24,20 @@ from portfolio_project.defs.silver_prices import (
     silver_alpaca_prices_parquet,
 )
 from portfolio_project.defs.gold_prices import gold_alpaca_prices
+from portfolio_project.defs.gold_news_assets import gold_headlines
 from portfolio_project.defs.sp500_assets import (
     bronze_sp500_companies,
     silver_sp500_companies,
 )
-from portfolio_project.defs.yahoo_news_assets import bronze_yahoo_news
+from portfolio_project.defs.yahoo_news_assets import (
+    BRONZE_NEWS_PARTITIONS,
+    bronze_yahoo_news,
+)
 from portfolio_project.defs.silver_news_assets import (
     silver_ref_publishers,
     silver_news,
 )
+from portfolio_project.defs.tranco_assets import bronze_tranco_snapshot
 from portfolio_project.defs.gold_news_assets import gold_headlines
 
 from portfolio_project.defs.alpaca_resource import alpaca_resource
@@ -75,6 +76,25 @@ sp500_update_job = define_asset_job(
     selection=sp500_selection,
 )
 
+news_selection = AssetSelection.assets(
+    bronze_yahoo_news,
+    silver_ref_publishers,
+    silver_news,
+    gold_headlines,
+)
+
+daily_news_job = define_asset_job(
+    name="daily_news_job",
+    selection=news_selection,
+    partitions_def=BRONZE_NEWS_PARTITIONS,
+    executor_def=in_process_executor,
+)
+
+tranco_update_job = define_asset_job(
+    name="tranco_update_job",
+    selection=AssetSelection.assets(bronze_tranco_snapshot),
+)
+
 sp500_weekly_schedule = ScheduleDefinition(
     name="sp500_weekly_schedule",
     cron_schedule="0 17 * * 5",
@@ -97,22 +117,45 @@ def _daily_prices_schedule_fn(context):
 
 daily_prices_schedule = ScheduleDefinition(
     name="daily_prices_schedule",
-    cron_schedule="0 9 * * *",
+    cron_schedule="30 9 * * *",
     execution_timezone="America/New_York",
     job=daily_prices_job,
     execution_fn=_daily_prices_schedule_fn,
 )
 
+def _daily_news_schedule_fn(context):
+    scheduled_time = context.scheduled_execution_time
+    if scheduled_time is None:
+        return []
+    scheduled_local = scheduled_time.astimezone(ZoneInfo("America/New_York"))
+    partition_key = scheduled_local.date().strftime("%Y-%m-%d")
+    return RunRequest(
+        run_key=partition_key,
+        partition_key=partition_key,
+    )
 
-@definitions
-def defs():
-    return load_from_defs_folder(path_within_project=Path(__file__).parent)
+
+daily_news_schedule = ScheduleDefinition(
+    name="daily_news_schedule",
+    cron_schedule="0 9 * * *",
+    execution_timezone="America/New_York",
+    job=daily_news_job,
+    execution_fn=_daily_news_schedule_fn,
+)
+
+tranco_monthly_schedule = ScheduleDefinition(
+    name="tranco_monthly_schedule",
+    cron_schedule="0 18 1 * *",
+    execution_timezone="America/New_York",
+    job=tranco_update_job,
+)
 
 defs = Definitions(
     assets=[
         bronze_alpaca_bars,
         bronze_alpaca_assets,
         bronze_yahoo_news,
+        bronze_tranco_snapshot,
         silver_ref_publishers,
         silver_news,
         gold_headlines,
@@ -124,8 +167,19 @@ defs = Definitions(
         bronze_sp500_companies,
         silver_sp500_companies,
     ],
-    jobs=[daily_prices_job, asset_status_updates_job, sp500_update_job],
-    schedules=[daily_prices_schedule, sp500_weekly_schedule],
+    jobs=[
+        daily_prices_job,
+        daily_news_job,
+        asset_status_updates_job,
+        sp500_update_job,
+        tranco_update_job,
+    ],
+    schedules=[
+        daily_prices_schedule,
+        daily_news_schedule,
+        sp500_weekly_schedule,
+        tranco_monthly_schedule,
+    ],
     resources={
         "alpaca": alpaca_resource,
         "duckdb": duckdb_resource,
