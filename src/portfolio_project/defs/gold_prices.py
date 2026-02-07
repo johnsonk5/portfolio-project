@@ -12,6 +12,22 @@ GOLD_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 
 
+def _table_exists(con, schema: str, table: str) -> bool:
+    return (
+        con.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = ?
+              AND table_name = ?
+            LIMIT 1
+            """,
+            [schema, table],
+        ).fetchone()
+        is not None
+    )
+
+
 @asset(
     name="gold_alpaca_prices",
     deps=[silver_alpaca_assets, silver_alpaca_prices_parquet],
@@ -55,10 +71,20 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
             sma_50 DOUBLE,
             sma_200 DOUBLE,
             dist_sma_50 DOUBLE,
-            dist_sma_200 DOUBLE
+            dist_sma_200 DOUBLE,
+            sentiment_score DOUBLE
         )
         """
     )
+    con.execute(
+        "ALTER TABLE gold.prices ADD COLUMN IF NOT EXISTS sentiment_score DOUBLE"
+    )
+
+    sentiment_enabled = _table_exists(con, "gold", "headlines") and _table_exists(
+        con, "silver", "ref_publishers"
+    )
+    sentiment_window_start = partition_date - timedelta(days=6)
+    sentiment_window_end = partition_date + timedelta(days=1)
 
     lookback_start = partition_date - timedelta(days=400)
     parquet_paths = []
@@ -83,7 +109,62 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
         )
         return
 
-    daily_sql = """
+    if sentiment_enabled:
+        sentiment_cte = """
+        , sentiment_scores AS (
+            SELECT
+                scored.asset_id,
+                CAST(? AS DATE) AS trade_date,
+                sum(scored.sentiment_value * scored.publisher_weight)
+                    / nullif(sum(scored.publisher_weight), 0) AS sentiment_score
+            FROM (
+                SELECT
+                    h.asset_id,
+                    CASE
+                        WHEN lower(h.sentiment) = 'positive' THEN 1
+                        WHEN lower(h.sentiment) = 'neutral' THEN 0
+                        WHEN lower(h.sentiment) = 'negative' THEN -1
+                        ELSE NULL
+                    END AS sentiment_value,
+                    p.publisher_weight
+                FROM gold.headlines AS h
+                LEFT JOIN silver.ref_publishers AS p
+                    ON h.publisher_id = p.publisher_id
+                WHERE h.provider_publish_time >= ?
+                  AND h.provider_publish_time < ?
+                  AND h.asset_id IS NOT NULL
+            ) AS scored
+            WHERE scored.sentiment_value IS NOT NULL
+              AND scored.publisher_weight IS NOT NULL
+              AND scored.publisher_weight > 0
+            GROUP BY scored.asset_id
+        )
+        """
+        sentiment_select = """
+        SELECT
+            final.*,
+            sentiment_scores.sentiment_score
+        FROM final
+        LEFT JOIN sentiment_scores
+            ON sentiment_scores.asset_id = final.asset_id
+           AND sentiment_scores.trade_date = final.trade_date
+        """
+        sentiment_params = [
+            partition_date,
+            sentiment_window_start,
+            sentiment_window_end,
+        ]
+    else:
+        sentiment_cte = ""
+        sentiment_select = """
+        SELECT
+            final.*,
+            CAST(NULL AS DOUBLE) AS sentiment_score
+        FROM final
+        """
+        sentiment_params = []
+
+    daily_sql = f"""
         WITH active_assets AS (
             SELECT asset_id, symbol
             FROM silver.assets
@@ -211,9 +292,9 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
                AND v.symbol = d.symbol
                AND v.trade_date = d.trade_date
         )
-        SELECT *
-        FROM final
-        WHERE trade_date = ?
+        {sentiment_cte}
+        {sentiment_select}
+        WHERE final.trade_date = ?
     """
 
     con.execute(
@@ -228,15 +309,18 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
         INSERT INTO gold.prices
         {daily_sql}
     """
+    base_params = [
+        partition_date,
+        lookback_start,
+        partition_date,
+        partition_date,
+    ]
+    query_params = base_params + sentiment_params + [partition_date]
     con.execute(
         insert_sql,
         [
             parquet_paths,
-            partition_date,
-            lookback_start,
-            partition_date,
-            partition_date,
-            partition_date,
+            *query_params,
         ],
     )
 
