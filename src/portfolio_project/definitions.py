@@ -39,6 +39,7 @@ from portfolio_project.defs.silver_news_assets import (
 )
 from portfolio_project.defs.tranco_assets import bronze_tranco_snapshot
 from portfolio_project.defs.gold_news_assets import gold_headlines
+
 from portfolio_project.defs.wikipedia_pageviews import (
     bronze_wikipedia_pageviews,
     silver_wikipedia_pageviews,
