@@ -88,7 +88,11 @@ def bronze_wikipedia_pageviews(context: AssetExecutionContext) -> None:
     con = context.resources.duckdb
     try:
         assets_df = con.execute(
-            "SELECT symbol, name FROM silver.assets WHERE is_active = TRUE AND name IS NOT NULL"
+            """
+            SELECT symbol, name, wikipedia_title
+            FROM silver.assets
+            WHERE is_active = TRUE AND name IS NOT NULL
+            """
         ).fetch_df()
     except Exception as exc:
         context.log.warning("Silver assets table missing or unreadable: %s", exc)
@@ -100,7 +104,7 @@ def bronze_wikipedia_pageviews(context: AssetExecutionContext) -> None:
         names_df = pd.DataFrame({"name": config_names})
         names_df["symbol"] = None
     else:
-        names_df = assets_df[["symbol", "name"]].dropna(subset=["name"])
+        names_df = assets_df[["symbol", "name", "wikipedia_title"]].dropna(subset=["name"])
 
     if names_df.empty:
         context.log.warning("No company names available for Wikipedia pageviews.")
@@ -127,9 +131,13 @@ def bronze_wikipedia_pageviews(context: AssetExecutionContext) -> None:
 
     for _, row in names_df.iterrows():
         name = str(row["name"]).strip()
-        if not name:
+        title = row.get("wikipedia_title")
+        if isinstance(title, str) and title.strip():
+            article = title.strip()
+        else:
+            article = _article_from_name(name)
+        if not article:
             continue
-        article = _article_from_name(name)
         context.log.info("Wikipedia pageviews: name=%s article=%s", name, article)
         try:
             items = _fetch_pageviews(
