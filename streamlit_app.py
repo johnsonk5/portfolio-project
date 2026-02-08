@@ -311,6 +311,123 @@ def _load_underrated_investments(
     return df, label, None
 
 
+def _load_sentiment_movers(
+    limit: int = 5,
+    ascending: bool = False,
+) -> tuple[pd.DataFrame, str | None, str | None]:
+    db_path = _resolve_duckdb_path()
+    if not db_path.exists():
+        return pd.DataFrame(), None, f"DuckDB not found at {db_path}"
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        latest_date_row = con.execute(
+            "SELECT MAX(trade_date) FROM gold.prices"
+        ).fetchone()
+        if not latest_date_row or latest_date_row[0] is None:
+            return pd.DataFrame(), None, "No gold.prices data found."
+
+        trade_date = latest_date_row[0]
+        df = con.execute(
+            """
+            SELECT
+                symbol,
+                trade_date,
+                sentiment_score,
+                returns_5d
+            FROM gold.prices
+            WHERE trade_date = ?
+              AND sentiment_score IS NOT NULL
+            """,
+            [trade_date],
+        ).fetch_df()
+    except Exception as exc:
+        return pd.DataFrame(), None, f"Failed to load data: {exc}"
+    finally:
+        con.close()
+
+    if df.empty:
+        return df, None, "No sentiment data available for the latest trade date."
+
+    df = df.copy()
+    df = df.sort_values("sentiment_score", ascending=ascending).head(limit)
+    returns_abs_max = df["returns_5d"].abs().max()
+    if pd.notna(returns_abs_max) and returns_abs_max <= 1.5:
+        df["returns_5d_pct"] = df["returns_5d"] * 100.0
+    else:
+        df["returns_5d_pct"] = df["returns_5d"]
+
+    label = pd.to_datetime(trade_date).strftime("%B %d, %Y")
+    return df, label, None
+
+
+def _build_sentiment_returns_chart(df: pd.DataFrame) -> alt.Chart:
+    sentiment_min = float(df["sentiment_score"].min())
+    sentiment_max = float(df["sentiment_score"].max())
+    sentiment_pad = max((sentiment_max - sentiment_min) * 0.08, 0.01)
+    returns_min = float(df["returns_5d_pct"].min())
+    returns_max = float(df["returns_5d_pct"].max())
+    returns_pad = max((returns_max - returns_min) * 0.08, 0.05)
+
+    sentiment_pos = max(0.0, sentiment_max) + sentiment_pad
+    returns_pos = max(0.0, returns_max) + returns_pad
+    ratio = 0.1
+    if returns_pos > 0:
+        ratio = max(ratio, abs(min(0.0, returns_min)) / returns_pos)
+    if ratio > 0:
+        sentiment_pos = max(sentiment_pos, abs(min(0.0, sentiment_min)) / ratio)
+
+    sentiment_domain = [-sentiment_pos * ratio, sentiment_pos]
+    returns_domain = [-returns_pos * ratio, returns_pos]
+
+    sentiment_chart = (
+        alt.Chart(df)
+        .mark_bar(size=14, cornerRadiusEnd=4)
+        .encode(
+            x=alt.X("symbol:N", title="", sort=None),
+            y=alt.Y(
+                "sentiment_score:Q",
+                title="",
+                scale=alt.Scale(domain=sentiment_domain, zero=True),
+            ),
+            xOffset=alt.value(-8),
+            color=alt.value("#3b82f6"),
+            tooltip=[
+                alt.Tooltip("symbol:N", title="Symbol"),
+                alt.Tooltip("sentiment_score:Q", title="Sentiment", format=".2f"),
+            ],
+        )
+    )
+    returns_chart = (
+        alt.Chart(df)
+        .mark_bar(size=14, cornerRadiusEnd=4)
+        .encode(
+            x=alt.X("symbol:N", title="", sort=None),
+            y=alt.Y(
+                "returns_5d_pct:Q",
+                title="",
+                scale=alt.Scale(domain=returns_domain, zero=True),
+            ),
+            xOffset=alt.value(8),
+            color=alt.condition(
+                alt.datum.returns_5d_pct < 0,
+                alt.value("#ef4444"),
+                alt.value("#22c55e"),
+            ),
+            tooltip=[
+                alt.Tooltip("symbol:N", title="Symbol"),
+                alt.Tooltip("returns_5d_pct:Q", title="5D return (%)", format=".2f"),
+            ],
+        )
+    )
+    return (
+        alt.layer(sentiment_chart, returns_chart)
+        .resolve_scale(y="independent")
+        .properties(height=280)
+        .configure_axis(gridColor="rgba(255,255,255,0.05)")
+    )
+
+
 def _load_big_picture(top_n: int = 7) -> tuple[dict, str | None, str | None]:
     db_path = _resolve_duckdb_path()
     if not db_path.exists():
@@ -578,39 +695,88 @@ with right:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-st.markdown('<div class="section-card" style="margin-top: 18px;">', unsafe_allow_html=True)
-st.markdown(
-    '<div class="section-title"><span class="tooltip" '
-    'data-tip="Stocks with strong 12-1 momentum that are still well below their 52-week highs.">'
-    '<strong>Underrated Investments</strong></span></div>',
-    unsafe_allow_html=True,
+underrated_col, good_news_col, bad_news_col = st.columns(
+    [1.15, 0.925, 0.925], gap="large"
 )
 
-underrated_df, label, error = _load_underrated_investments(limit=5)
-if error:
-    st.info(error)
-else:
+with underrated_col:
+    st.markdown('<div class="section-card" style="margin-top: 18px;">', unsafe_allow_html=True)
     st.markdown(
-        f"<div class=\"metric-pill\">Latest trade date: {label}</div>",
+        '<div class="section-title"><span class="tooltip" '
+        'data-tip="Stocks with strong 12-1 momentum that are still well below their 52-week highs.">'
+        '<strong>Underrated Investments</strong></span></div>',
         unsafe_allow_html=True,
     )
-    st.dataframe(
-        underrated_df[
-            ["symbol", "momentum_12_1_pct", "pct_below_52w_high_pct", "score"]
-        ],
-        hide_index=True,
-        use_container_width=True,
-        column_config={
-            "symbol": st.column_config.TextColumn("Symbol"),
-            "momentum_12_1_pct": st.column_config.NumberColumn("12-1 Mom (%)", format="%.2f"),
-            "pct_below_52w_high_pct": st.column_config.NumberColumn(
-                "Below 52W High (%)", format="%.2f"
-            ),
-            "score": st.column_config.NumberColumn("Score", format="%.2f"),
-        },
+
+    underrated_df, label, error = _load_underrated_investments(limit=5)
+    if error:
+        st.info(error)
+    else:
+        st.markdown(
+            f"<div class=\"metric-pill\">Latest trade date: {label}</div>",
+            unsafe_allow_html=True,
+        )
+        st.dataframe(
+            underrated_df[
+                ["symbol", "momentum_12_1_pct", "pct_below_52w_high_pct", "score"]
+            ],
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "symbol": st.column_config.TextColumn("Symbol"),
+                "momentum_12_1_pct": st.column_config.NumberColumn("12-1 Mom (%)", format="%.2f"),
+                "pct_below_52w_high_pct": st.column_config.NumberColumn(
+                    "Below 52W High (%)", format="%.2f"
+                ),
+                "score": st.column_config.NumberColumn("Score", format="%.2f"),
+            },
+        )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with good_news_col:
+    st.markdown('<div class="section-card" style="margin-top: 18px;">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-title"><span class="tooltip" '
+        'data-tip="Highest headline sentiment scores with 5-day returns for context.">'
+        '<strong>The Good News 🙏</strong></span></div>',
+        unsafe_allow_html=True,
     )
 
-st.markdown("</div>", unsafe_allow_html=True)
+    good_news_df, label, error = _load_sentiment_movers(limit=5, ascending=False)
+    if error:
+        st.info(error)
+    else:
+        st.markdown(
+            f"<div class=\"metric-pill\">Latest trade date: {label}</div>",
+            unsafe_allow_html=True,
+        )
+        chart = _build_sentiment_returns_chart(good_news_df)
+        st.altair_chart(chart, use_container_width=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with bad_news_col:
+    st.markdown('<div class="section-card" style="margin-top: 18px;">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-title"><span class="tooltip" '
+        'data-tip="Lowest headline sentiment scores with 5-day returns for context.">'
+        '<strong>The Bad News 😈</strong></span></div>',
+        unsafe_allow_html=True,
+    )
+
+    bad_news_df, label, error = _load_sentiment_movers(limit=5, ascending=True)
+    if error:
+        st.info(error)
+    else:
+        st.markdown(
+            f"<div class=\"metric-pill\">Latest trade date: {label}</div>",
+            unsafe_allow_html=True,
+        )
+        chart = _build_sentiment_returns_chart(bad_news_df)
+        st.altair_chart(chart, use_container_width=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="section-card" style="margin-top: 18px;">', unsafe_allow_html=True)
 st.markdown('<div class="section-title">On Deck</div>', unsafe_allow_html=True)
