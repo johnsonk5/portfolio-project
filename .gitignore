@@ -211,6 +211,9 @@ Wishlist.md
 # Data folder
 data/
 
+# Backfill scripts
+backfill_scripts/
+
 /data/
 /dagster_storage/
 /storage/

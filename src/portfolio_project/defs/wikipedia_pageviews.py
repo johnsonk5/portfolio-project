@@ -69,6 +69,18 @@ def _fetch_pageviews(
         time.sleep(backoff_seconds * attempt)
 
 
+def _normalize_view_date(value, partition_date):
+    if value is None or value == "":
+        return partition_date
+    text = str(value)
+    for fmt in ("%Y%m%d", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text[:10], fmt).date()
+        except ValueError:
+            continue
+    return partition_date
+
+
 @asset(
     name="bronze_wikipedia_pageviews",
     partitions_def=BRONZE_WIKIPEDIA_PARTITIONS,
@@ -193,4 +205,76 @@ def bronze_wikipedia_pageviews(context: AssetExecutionContext) -> None:
 
     context.add_output_metadata(
         {"path": str(out_path), "row_count": len(df), "articles": len(set(df["article"]))}
+    )
+
+
+@asset(
+    name="silver_wikipedia_pageviews",
+    partitions_def=BRONZE_WIKIPEDIA_PARTITIONS,
+    required_resource_keys={"duckdb"},
+    deps=[bronze_wikipedia_pageviews, silver_alpaca_assets],
+)
+def silver_wikipedia_pageviews(context: AssetExecutionContext) -> None:
+    """
+    Normalize bronze Wikipedia pageviews into silver parquet partitions.
+    """
+    partition_date = datetime.strptime(context.partition_key, "%Y-%m-%d").date()
+    bronze_path = (
+        DATA_ROOT
+        / "bronze"
+        / "wikipedia_pageviews"
+        / f"date={partition_date}"
+        / "pageviews.parquet"
+    )
+    if not bronze_path.exists():
+        context.log.warning("Bronze Wikipedia pageviews parquet not found at %s", bronze_path)
+        return
+
+    con = context.resources.duckdb
+    try:
+        con.execute("SELECT 1 FROM silver.assets LIMIT 1")
+    except Exception as exc:
+        context.log.warning("silver.assets is missing or unreadable: %s", exc)
+        return
+
+    bronze_path_sql = str(bronze_path).replace("'", "''")
+    enriched_sql = f"""
+        SELECT
+            COALESCE(assets_symbol.asset_id, assets_name.asset_id) AS asset_id,
+            bronze.granularity,
+            bronze.view_date,
+            bronze.views,
+            bronze.ingested_ts
+        FROM read_parquet('{bronze_path_sql}') AS bronze
+        LEFT JOIN silver.assets AS assets_symbol
+            ON upper(bronze.symbol) = upper(assets_symbol.symbol)
+        LEFT JOIN silver.assets AS assets_name
+            ON assets_symbol.asset_id IS NULL
+            AND lower(trim(bronze.company_name)) = lower(trim(assets_name.name))
+    """
+    bronze_df = con.execute(enriched_sql).fetch_df()
+    if bronze_df is None or bronze_df.empty:
+        context.log.warning("No bronze Wikipedia pageviews rows available for %s.", partition_date)
+        return
+
+    bronze_df["view_date"] = bronze_df["view_date"].apply(
+        lambda value: _normalize_view_date(value, partition_date)
+    )
+
+    out_dir = DATA_ROOT / "silver" / "wikipedia_pageviews" / f"view_date={partition_date}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "data_0.parquet"
+
+    df = bronze_df[["asset_id", "granularity", "view_date", "views", "ingested_ts"]].copy()
+    if out_path.exists():
+        existing = pd.read_parquet(out_path)
+        df = pd.concat([existing, df], ignore_index=True)
+        subset_cols = [c for c in ["asset_id", "view_date", "granularity"] if c in df.columns]
+        if subset_cols:
+            df = df.drop_duplicates(subset=subset_cols, keep="last")
+
+    df.to_parquet(out_path, index=False)
+
+    context.add_output_metadata(
+        {"path": str(out_path), "row_count": len(df)}
     )
