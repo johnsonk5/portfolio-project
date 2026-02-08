@@ -24,7 +24,6 @@ from portfolio_project.defs.silver_prices import (
     silver_alpaca_prices_parquet,
 )
 from portfolio_project.defs.gold_prices import gold_alpaca_prices
-from portfolio_project.defs.gold_news_assets import gold_headlines
 from portfolio_project.defs.sp500_assets import (
     bronze_sp500_companies,
     silver_sp500_companies,
@@ -39,6 +38,7 @@ from portfolio_project.defs.silver_news_assets import (
 )
 from portfolio_project.defs.tranco_assets import bronze_tranco_snapshot
 from portfolio_project.defs.gold_news_assets import gold_headlines
+from portfolio_project.defs.wikipedia_pageviews import bronze_wikipedia_pageviews
 
 from portfolio_project.defs.alpaca_resource import alpaca_resource
 from portfolio_project.defs.duckdb_resource import duckdb_resource
@@ -156,6 +156,7 @@ defs = Definitions(
         bronze_alpaca_assets,
         bronze_yahoo_news,
         bronze_tranco_snapshot,
+        bronze_wikipedia_pageviews,
         silver_ref_publishers,
         silver_news,
         gold_headlines,
