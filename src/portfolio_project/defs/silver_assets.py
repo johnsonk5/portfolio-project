@@ -1,12 +1,81 @@
 import os
+import time
 from pathlib import Path
 
 import pandas as pd
+import requests
 from dagster import Array, AssetExecutionContext, Field, String, asset
 
 from portfolio_project.defs.bronze_assets import bronze_alpaca_assets
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
+WIKIDATA_SPARQL_URL = "https://query.wikidata.org/sparql"
+WIKIDATA_USER_AGENT_ENV = "WIKIDATA_USER_AGENT"
+WIKIDATA_MAX_TICKER_BATCH = int(os.getenv("WIKIDATA_MAX_TICKER_BATCH", "200"))
+WIKIDATA_RETRY_SLEEP_SECONDS = float(os.getenv("WIKIDATA_RETRY_SLEEP_SECONDS", "2"))
+
+
+def _chunked(values: list[str], size: int) -> list[list[str]]:
+    return [values[i : i + size] for i in range(0, len(values), size)]
+
+
+def _fetch_wikipedia_titles(context: AssetExecutionContext, symbols: list[str]) -> dict[str, str]:
+    if not symbols:
+        return {}
+    user_agent = os.getenv(
+        WIKIDATA_USER_AGENT_ENV,
+        os.getenv("WIKIMEDIA_USER_AGENT", "portfolio-project/0.1 (contact: data@portfolio.local)"),
+    )
+    headers = {
+        "Accept": "application/sparql-results+json",
+        "User-Agent": user_agent,
+    }
+    session = requests.Session()
+    session.headers.update(headers)
+
+    mapping: dict[str, str] = {}
+    for batch in _chunked(symbols, WIKIDATA_MAX_TICKER_BATCH):
+        ticker_values = " ".join(f'"{ticker}"' for ticker in batch)
+        query = f"""
+        SELECT ?ticker ?enwiki WHERE {{
+          VALUES ?ticker {{ {ticker_values} }}
+          ?item p:P414 ?listingStatement .
+          ?listingStatement pq:P249 ?ticker .
+          OPTIONAL {{
+            ?enwiki schema:about ?item ;
+                   schema:isPartOf <https://en.wikipedia.org/> .
+          }}
+        }}
+        """
+        try:
+            response = session.get(
+                WIKIDATA_SPARQL_URL,
+                params={"query": query},
+                timeout=60,
+            )
+            if response.status_code == 429:
+                context.log.warning("Wikidata throttled; sleeping before retry.")
+                time.sleep(WIKIDATA_RETRY_SLEEP_SECONDS)
+                response = session.get(
+                    WIKIDATA_SPARQL_URL,
+                    params={"query": query},
+                    timeout=60,
+                )
+            response.raise_for_status()
+            data = response.json().get("results", {}).get("bindings", [])
+        except Exception as exc:
+            context.log.warning("Wikidata lookup failed: %s", exc)
+            continue
+
+        for row in data:
+            ticker = row.get("ticker", {}).get("value")
+            enwiki_url = row.get("enwiki", {}).get("value")
+            if not ticker or not enwiki_url:
+                continue
+            title = enwiki_url.replace("https://en.wikipedia.org/wiki/", "")
+            if title:
+                mapping[ticker.upper()] = title
+    return mapping
 
 
 @asset(
@@ -42,6 +111,7 @@ def silver_alpaca_assets(context: AssetExecutionContext) -> None:
         df["is_active"] = False
         context.log.warning("No symbol column found; is_active set to False.")
     df["is_sp500"] = False
+    df["wikipedia_title"] = pd.NA
 
     con = context.resources.duckdb
     con.execute("CREATE SCHEMA IF NOT EXISTS silver")
@@ -110,6 +180,19 @@ def silver_alpaca_assets(context: AssetExecutionContext) -> None:
         )
         df["is_active"] = df["is_active_existing"].fillna(False).astype(bool)
         df = df.drop(columns=["symbol_norm", "is_active_existing"])
+
+    if "symbol" in df.columns:
+        symbols = (
+            df["symbol"]
+            .astype(str)
+            .str.upper()
+            .dropna()
+            .unique()
+            .tolist()
+        )
+        title_map = _fetch_wikipedia_titles(context, symbols)
+        if title_map:
+            df["wikipedia_title"] = df["symbol"].astype(str).str.upper().map(title_map)
 
     df = df[["asset_id"] + [c for c in df.columns if c != "asset_id"]]
 
