@@ -207,9 +207,13 @@ Tasks.md
 Specs.md
 Dashboard Tasks.md
 Wishlist.md
+docs/
 
 # Data folder
 data/
+
+# Backfill scripts
+backfill_scripts/
 
 /data/
 /dagster_storage/

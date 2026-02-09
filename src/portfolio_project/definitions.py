@@ -24,7 +24,7 @@ from portfolio_project.defs.silver_prices import (
     silver_alpaca_prices_parquet,
 )
 from portfolio_project.defs.gold_prices import gold_alpaca_prices
-from portfolio_project.defs.gold_news_assets import gold_headlines
+from portfolio_project.defs.gold_activity import gold_activity
 from portfolio_project.defs.sp500_assets import (
     bronze_sp500_companies,
     silver_sp500_companies,
@@ -39,6 +39,12 @@ from portfolio_project.defs.silver_news_assets import (
 )
 from portfolio_project.defs.tranco_assets import bronze_tranco_snapshot
 from portfolio_project.defs.gold_news_assets import gold_headlines
+
+from portfolio_project.defs.wikipedia_pageviews import (
+    BRONZE_WIKIPEDIA_PARTITIONS,
+    bronze_wikipedia_pageviews,
+    silver_wikipedia_pageviews,
+)
 
 from portfolio_project.defs.alpaca_resource import alpaca_resource
 from portfolio_project.defs.duckdb_resource import duckdb_resource
@@ -87,6 +93,19 @@ daily_news_job = define_asset_job(
     name="daily_news_job",
     selection=news_selection,
     partitions_def=BRONZE_NEWS_PARTITIONS,
+    executor_def=in_process_executor,
+)
+
+wikipedia_activity_selection = AssetSelection.assets(
+    bronze_wikipedia_pageviews,
+    silver_wikipedia_pageviews,
+    gold_activity,
+)
+
+wikipedia_activity_job = define_asset_job(
+    name="wikipedia_activity_job",
+    selection=wikipedia_activity_selection,
+    partitions_def=BRONZE_WIKIPEDIA_PARTITIONS,
     executor_def=in_process_executor,
 )
 
@@ -143,6 +162,27 @@ daily_news_schedule = ScheduleDefinition(
     execution_fn=_daily_news_schedule_fn,
 )
 
+def _daily_wikipedia_schedule_fn(context):
+    scheduled_time = context.scheduled_execution_time
+    if scheduled_time is None:
+        return []
+    scheduled_utc = scheduled_time.astimezone(ZoneInfo("UTC"))
+    partition_date = scheduled_utc.date() - timedelta(days=1)
+    partition_key = partition_date.strftime("%Y-%m-%d")
+    return RunRequest(
+        run_key=partition_key,
+        partition_key=partition_key,
+    )
+
+
+wikipedia_daily_schedule = ScheduleDefinition(
+    name="wikipedia_daily_schedule",
+    cron_schedule="45 8 * * *",
+    execution_timezone="America/New_York",
+    job=wikipedia_activity_job,
+    execution_fn=_daily_wikipedia_schedule_fn,
+)
+
 tranco_monthly_schedule = ScheduleDefinition(
     name="tranco_monthly_schedule",
     cron_schedule="0 18 1 * *",
@@ -156,6 +196,8 @@ defs = Definitions(
         bronze_alpaca_assets,
         bronze_yahoo_news,
         bronze_tranco_snapshot,
+        bronze_wikipedia_pageviews,
+        silver_wikipedia_pageviews,
         silver_ref_publishers,
         silver_news,
         gold_headlines,
@@ -164,12 +206,14 @@ defs = Definitions(
         silver_alpaca_assets_status_updates,
         silver_alpaca_prices_parquet,
         gold_alpaca_prices,
+        gold_activity,
         bronze_sp500_companies,
         silver_sp500_companies,
     ],
     jobs=[
         daily_prices_job,
         daily_news_job,
+        wikipedia_activity_job,
         asset_status_updates_job,
         sp500_update_job,
         tranco_update_job,
@@ -177,6 +221,7 @@ defs = Definitions(
     schedules=[
         daily_prices_schedule,
         daily_news_schedule,
+        wikipedia_daily_schedule,
         sp500_weekly_schedule,
         tranco_monthly_schedule,
     ],
