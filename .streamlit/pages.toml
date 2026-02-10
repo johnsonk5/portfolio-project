@@ -1,0 +1,7 @@
+[[pages]]
+path = "streamlit_app.py"
+name = "Market Vibecheck"
+
+[[pages]]
+path = "pages/Deep_Dive.py"
+name = "Deep Dive"

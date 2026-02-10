@@ -14,6 +14,10 @@ st.set_page_config(
     layout="wide",
 )
 
+with st.sidebar:
+    st.page_link("streamlit_app.py", label="Market Vibecheck")
+    st.page_link("pages/Deep_Dive.py", label="Deep Dive")
+
 
 CSS = """
 <style>
@@ -109,6 +113,10 @@ html, body, [class*="css"]  {
 .tooltip:hover::after {
   opacity: 1;
   transform: translateY(0);
+}
+
+[data-testid="stSidebarNav"] {
+  display: none;
 }
 </style>
 """
