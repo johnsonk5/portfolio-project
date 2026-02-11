@@ -385,10 +385,51 @@ else:
                     alt.Tooltip("ReturnPct:Q", title="Cumulative return (%)", format=".2f"),
                 ],
             )
-            .properties(height=220)
+            .properties(height=240)
             .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
         )
         st.altair_chart(returns_chart, use_container_width=True)
+
+        st.markdown(
+            '<div class="section-title" style="margin: 10px 0 -8px 0; line-height: 1;">'
+            "Drawdown</div>",
+            unsafe_allow_html=True,
+        )
+        drawdown_df = prices_df[["trade_date", "close"]].copy()
+        drawdown_df = drawdown_df.dropna(subset=["close"])
+        if not drawdown_df.empty:
+            drawdown_df["running_peak"] = drawdown_df["close"].cummax()
+            drawdown_df["drawdown_pct"] = (
+                (drawdown_df["close"] / drawdown_df["running_peak"]) - 1.0
+            ) * 100.0
+        drawdown_df = drawdown_df.dropna(subset=["drawdown_pct"])
+
+        if drawdown_df.empty:
+            st.caption("Drawdown unavailable for the selected horizon.")
+        else:
+            drawdown_chart = (
+                alt.Chart(drawdown_df)
+                .mark_area(opacity=0.35, color="#ef4444")
+                .encode(
+                    x=alt.X("trade_date:T", title="Date", axis=alt.Axis(format=x_axis_format)),
+                    y=alt.Y(
+                        "drawdown_pct:Q",
+                        title="Drawdown (%)",
+                        scale=alt.Scale(domain=[drawdown_df["drawdown_pct"].min(), 0]),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("trade_date:T", title="Date"),
+                        alt.Tooltip(
+                            "drawdown_pct:Q",
+                            title="Drawdown (%)",
+                            format=".2f",
+                        ),
+                    ],
+                )
+                .properties(height=240)
+                .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
+            )
+            st.altair_chart(drawdown_chart, use_container_width=True)
 st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
