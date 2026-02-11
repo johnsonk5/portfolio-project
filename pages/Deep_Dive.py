@@ -124,7 +124,10 @@ def _load_price_history(symbol: str) -> tuple[pd.DataFrame, str | None]:
                 high,
                 low,
                 close,
-                volume
+                volume,
+                returns_1d,
+                returns_5d,
+                returns_21d
             FROM gold.prices
             WHERE upper(symbol) = upper(?)
               AND trade_date IS NOT NULL
@@ -273,50 +276,119 @@ else:
     price_pad = max((price_max - price_min) * 0.06, 0.01)
     y_domain = [price_min - price_pad, price_max + price_pad]
 
-    latest_close = float(prices_df["close"].iloc[-1])
-    latest_open = float(prices_df["open"].iloc[-1])
-    latest_date = prices_df["trade_date"].iloc[-1].strftime("%B %d, %Y")
+    latest_row = prices_df.iloc[-1]
+    latest_close = float(latest_row["close"])
+    latest_open = float(latest_row["open"])
+    latest_date = latest_row["trade_date"].strftime("%B %d, %Y")
     delta_pct = ((latest_close / latest_open) - 1.0) * 100.0
-    st.metric("Latest close", f"${latest_close:,.2f}", f"{delta_pct:.2f}%")
+    latest_5d = latest_row.get("returns_5d")
+    latest_21d = latest_row.get("returns_21d")
+
+    kpi_cols = st.columns(3, gap="large")
+    with kpi_cols[0]:
+        st.metric("Latest close", f"${latest_close:,.2f}", f"{delta_pct:.2f}%")
+    with kpi_cols[1]:
+        if pd.isna(latest_5d):
+            st.metric("5D return", "n/a")
+        else:
+            st.metric("5D return", f"{latest_5d * 100.0:.2f}%")
+    with kpi_cols[2]:
+        if pd.isna(latest_21d):
+            st.metric("21D return", "n/a")
+        else:
+            st.metric("21D return", f"{latest_21d * 100.0:.2f}%")
+
     st.caption(f"Viewing {horizon} through {latest_date}")
 
-    wick = (
-        alt.Chart(prices_df)
-        .mark_rule(color="#93c5fd")
-        .encode(
-            x=alt.X("trade_date:T", title="Date", axis=alt.Axis(format=x_axis_format)),
-            y=alt.Y("low:Q", title="Price", scale=alt.Scale(domain=y_domain, zero=False)),
-            y2="high:Q",
-            tooltip=[
-                alt.Tooltip("trade_date:T", title="Date"),
-                alt.Tooltip("open:Q", title="Open", format=",.2f"),
-                alt.Tooltip("high:Q", title="High", format=",.2f"),
-                alt.Tooltip("low:Q", title="Low", format=",.2f"),
-                alt.Tooltip("close:Q", title="Close", format=",.2f"),
-                alt.Tooltip("volume:Q", title="Volume", format=","),
-            ],
+    main_col, side_col = st.columns([2.2, 1], gap="large")
+    with main_col:
+        wick = (
+            alt.Chart(prices_df)
+            .mark_rule(color="#93c5fd")
+            .encode(
+                x=alt.X("trade_date:T", title="Date", axis=alt.Axis(format=x_axis_format)),
+                y=alt.Y(
+                    "low:Q",
+                    title="Price",
+                    scale=alt.Scale(domain=y_domain, zero=False),
+                ),
+                y2="high:Q",
+                tooltip=[
+                    alt.Tooltip("trade_date:T", title="Date"),
+                    alt.Tooltip("open:Q", title="Open", format=",.2f"),
+                    alt.Tooltip("high:Q", title="High", format=",.2f"),
+                    alt.Tooltip("low:Q", title="Low", format=",.2f"),
+                    alt.Tooltip("close:Q", title="Close", format=",.2f"),
+                    alt.Tooltip("volume:Q", title="Volume", format=","),
+                ],
+            )
         )
-    )
-    body = (
-        alt.Chart(prices_df)
-        .mark_bar(size=7)
-        .encode(
-            x=alt.X("trade_date:T", title="Date", axis=alt.Axis(format=x_axis_format)),
-            y=alt.Y("body_low:Q", title="Price", scale=alt.Scale(domain=y_domain, zero=False)),
-            y2="body_high:Q",
-            color=alt.Color(
-                "direction:N",
-                scale=alt.Scale(domain=["up", "down"], range=["#22c55e", "#ef4444"]),
-                legend=None,
-            ),
+        body = (
+            alt.Chart(prices_df)
+            .mark_bar(size=7)
+            .encode(
+                x=alt.X("trade_date:T", title="Date", axis=alt.Axis(format=x_axis_format)),
+                y=alt.Y(
+                    "body_low:Q",
+                    title="Price",
+                    scale=alt.Scale(domain=y_domain, zero=False),
+                ),
+                y2="body_high:Q",
+                color=alt.Color(
+                    "direction:N",
+                    scale=alt.Scale(domain=["up", "down"], range=["#22c55e", "#ef4444"]),
+                    legend=None,
+                ),
+            )
         )
-    )
-    chart = (
-        alt.layer(wick, body)
-        .properties(height=540)
-        .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
-    )
-    st.altair_chart(chart, use_container_width=True)
+        chart = (
+            alt.layer(wick, body)
+            .properties(height=540)
+            .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+    with side_col:
+        st.markdown(
+            '<div class="section-title" style="margin: 0 0 -8px 0; line-height: 1;">'
+            "Returns</div>",
+            unsafe_allow_html=True,
+        )
+        returns_df = prices_df[["trade_date", "returns_1d"]].copy()
+        returns_df = returns_df.rename(columns={"returns_1d": "Daily"})
+        valid_mask = returns_df["Daily"].notna()
+        if valid_mask.any():
+            cumulative = (1 + returns_df.loc[valid_mask, "Daily"]).cumprod() - 1
+            returns_df.loc[valid_mask, "Daily"] = cumulative
+
+        returns_df = returns_df.dropna(subset=["Daily"])
+        returns_long = returns_df.rename(
+            columns={"Daily": "ReturnPct"}
+        )
+        returns_long["Horizon"] = "1D"
+        returns_long["ReturnPct"] = returns_long["ReturnPct"] * 100.0
+
+        returns_chart = (
+            alt.Chart(returns_long)
+            .mark_line(strokeWidth=2)
+            .encode(
+                x=alt.X("trade_date:T", title="Date", axis=alt.Axis(format=x_axis_format)),
+                y=alt.Y("ReturnPct:Q", title="Cumulative return (%)"),
+                color=alt.Color(
+                    "Horizon:N",
+                    scale=alt.Scale(domain=["1D"], range=["#22c55e"]),
+                    legend=None,
+                ),
+                tooltip=[
+                    alt.Tooltip("trade_date:T", title="Date"),
+                    alt.Tooltip("Horizon:N", title="Horizon"),
+                    alt.Tooltip("ReturnPct:Q", title="Cumulative return (%)", format=".2f"),
+                ],
+            )
+            .properties(height=220)
+            .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
+        )
+        st.altair_chart(returns_chart, use_container_width=True)
 st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
