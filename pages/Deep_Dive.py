@@ -127,7 +127,8 @@ def _load_price_history(symbol: str) -> tuple[pd.DataFrame, str | None]:
                 volume,
                 returns_1d,
                 returns_5d,
-                returns_21d
+                returns_21d,
+                realized_vol_21d
             FROM gold.prices
             WHERE upper(symbol) = upper(?)
               AND trade_date IS NOT NULL
@@ -234,20 +235,11 @@ symbols_df["label"] = symbols_df.apply(
     axis=1,
 )
 
-control_left, control_right = st.columns([2, 3], gap="large")
-with control_left:
-    selected_label = st.selectbox(
-        "Select symbol",
-        options=symbols_df["label"].tolist(),
-        index=0,
-    )
-with control_right:
-    horizon = st.radio(
-        "Time horizon",
-        options=["1M", "3M", "1Y", "3Y", "5Y"],
-        index=0,
-        horizontal=True,
-    )
+selected_label = st.selectbox(
+    "Select symbol",
+    options=symbols_df["label"].tolist(),
+    index=0,
+)
 
 selected_symbol = symbols_df.loc[
     symbols_df["label"] == selected_label, "symbol"
@@ -255,16 +247,15 @@ selected_symbol = symbols_df.loc[
 
 prices_df, prices_error = _load_price_history(selected_symbol)
 news_df, news_error = _load_headlines(selected_symbol, limit=50)
-x_axis_format = "%b %Y" if horizon in {"3Y", "5Y"} else "%b"
+base_prices_df = prices_df.copy() if not prices_error else pd.DataFrame()
 
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.markdown('<div class="section-title">Historical Prices</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title">Snapshot</div>', unsafe_allow_html=True)
 if prices_error:
     st.info(prices_error)
 else:
     prices_df = prices_df.copy()
     prices_df["trade_date"] = pd.to_datetime(prices_df["trade_date"])
-    prices_df = _filter_by_horizon(prices_df, horizon)
     prices_df["body_low"] = prices_df[["open", "close"]].min(axis=1)
     prices_df["body_high"] = prices_df[["open", "close"]].max(axis=1)
     prices_df["direction"] = prices_df.apply(
@@ -283,8 +274,15 @@ else:
     delta_pct = ((latest_close / latest_open) - 1.0) * 100.0
     latest_5d = latest_row.get("returns_5d")
     latest_21d = latest_row.get("returns_21d")
+    latest_vol = None
+    if "realized_vol_21d" in prices_df.columns and prices_df["realized_vol_21d"].notna().any():
+        latest_vol = prices_df["realized_vol_21d"].dropna().iloc[-1]
+    elif "returns_1d" in prices_df.columns:
+        vol_series = prices_df["returns_1d"].rolling(21).std() * (252 ** 0.5)
+        if vol_series.notna().any():
+            latest_vol = vol_series.dropna().iloc[-1]
 
-    kpi_cols = st.columns(3, gap="large")
+    kpi_cols = st.columns(4, gap="large")
     with kpi_cols[0]:
         st.metric("Latest close", f"${latest_close:,.2f}", f"{delta_pct:.2f}%")
     with kpi_cols[1]:
@@ -297,13 +295,35 @@ else:
             st.metric("21D return", "n/a")
         else:
             st.metric("21D return", f"{latest_21d * 100.0:.2f}%")
+    with kpi_cols[3]:
+        if latest_vol is None:
+            st.metric("21D volatility", "n/a")
+        else:
+            st.metric("21D volatility", f"{latest_vol * 100.0:.2f}%")
 
-    st.caption(f"Viewing {horizon} through {latest_date}")
+st.markdown("</div>", unsafe_allow_html=True)
+
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.markdown('<div class="section-title">History</div>', unsafe_allow_html=True)
+if prices_error:
+    st.info(prices_error)
+else:
+    horizon = st.radio(
+        "Time horizon",
+        options=["1M", "3M", "1Y", "3Y", "5Y"],
+        index=0,
+        horizontal=True,
+    )
+    x_axis_format = "%b %Y" if horizon in {"3Y", "5Y"} else "%b"
+    history_df = _filter_by_horizon(prices_df, horizon)
+    latest_history_date = history_df["trade_date"].max()
+    if pd.notna(latest_history_date):
+        st.caption(f"Viewing {horizon} through {latest_history_date.strftime('%B %d, %Y')}")
 
     main_col, side_col = st.columns([2.2, 1], gap="large")
     with main_col:
         wick = (
-            alt.Chart(prices_df)
+            alt.Chart(history_df)
             .mark_rule(color="#93c5fd")
             .encode(
                 x=alt.X("trade_date:T", title="Date", axis=alt.Axis(format=x_axis_format)),
@@ -324,7 +344,7 @@ else:
             )
         )
         body = (
-            alt.Chart(prices_df)
+            alt.Chart(history_df)
             .mark_bar(size=7)
             .encode(
                 x=alt.X("trade_date:T", title="Date", axis=alt.Axis(format=x_axis_format)),
@@ -354,7 +374,7 @@ else:
             "Returns</div>",
             unsafe_allow_html=True,
         )
-        returns_df = prices_df[["trade_date", "returns_1d"]].copy()
+        returns_df = history_df[["trade_date", "returns_1d"]].copy()
         returns_df = returns_df.rename(columns={"returns_1d": "Daily"})
         valid_mask = returns_df["Daily"].notna()
         if valid_mask.any():
@@ -395,7 +415,7 @@ else:
             "Drawdown</div>",
             unsafe_allow_html=True,
         )
-        drawdown_df = prices_df[["trade_date", "close"]].copy()
+        drawdown_df = history_df[["trade_date", "close"]].copy()
         drawdown_df = drawdown_df.dropna(subset=["close"])
         if not drawdown_df.empty:
             drawdown_df["running_peak"] = drawdown_df["close"].cummax()
@@ -430,6 +450,46 @@ else:
                 .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
             )
             st.altair_chart(drawdown_chart, use_container_width=True)
+st.markdown("</div>", unsafe_allow_html=True)
+
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.markdown('<div class="section-title">Volatility</div>', unsafe_allow_html=True)
+if prices_error:
+    st.info(prices_error)
+else:
+    vol_df = base_prices_df.copy()
+    vol_df["trade_date"] = pd.to_datetime(vol_df["trade_date"])
+    if "realized_vol_21d" in vol_df.columns and vol_df["realized_vol_21d"].notna().any():
+        vol_df["vol"] = vol_df["realized_vol_21d"]
+    else:
+        vol_df["vol"] = (
+            vol_df["returns_1d"].rolling(21).std() * (252 ** 0.5)
+        )
+
+    max_date = vol_df["trade_date"].max()
+    if pd.notna(max_date):
+        cutoff = max_date - pd.Timedelta(days=31)
+        vol_df = vol_df[vol_df["trade_date"] >= cutoff].copy()
+
+    vol_chart = (
+        alt.Chart(vol_df.dropna(subset=["vol"]))
+        .mark_line(strokeWidth=2)
+        .encode(
+            x=alt.X("trade_date:T", title="Date", axis=alt.Axis(format="%b %d")),
+            y=alt.Y("vol:Q", title="Annualized volatility"),
+            tooltip=[
+                alt.Tooltip("trade_date:T", title="Date"),
+                alt.Tooltip("vol:Q", title="Volatility", format=".2%"),
+            ],
+        )
+        .properties(height=260)
+        .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
+    )
+    vol_left, vol_right = st.columns([1, 2], gap="large")
+    with vol_left:
+        st.altair_chart(vol_chart, use_container_width=True)
+    with vol_right:
+        st.write("")
 st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
