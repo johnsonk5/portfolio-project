@@ -126,9 +126,11 @@ def _load_price_history(symbol: str) -> tuple[pd.DataFrame, str | None]:
                 close,
                 volume,
                 returns_1d,
-                returns_5d,
-                returns_21d,
-                realized_vol_21d
+            returns_5d,
+            returns_21d,
+            realized_vol_21d,
+            sma_50,
+            dist_sma_50
             FROM gold.prices
             WHERE upper(symbol) = upper(?)
               AND trade_date IS NOT NULL
@@ -266,10 +268,12 @@ else:
     latest_close = float(latest_row["close"])
     latest_open = float(latest_row["open"])
     latest_date = latest_row["trade_date"].strftime("%B %d, %Y")
+    delta_pct = None
     if len(prices_df) > 1 and pd.notna(prices_df.iloc[-2]["close"]):
         prior_close = float(prices_df.iloc[-2]["close"])
-        delta_pct = ((latest_close / prior_close) - 1.0) * 100.0
-    else:
+        if prior_close != 0:
+            delta_pct = ((latest_close / prior_close) - 1.0) * 100.0
+    if delta_pct is None and latest_open != 0:
         delta_pct = ((latest_close / latest_open) - 1.0) * 100.0
     latest_5d = latest_row.get("returns_5d")
     latest_21d = latest_row.get("returns_21d")
@@ -283,7 +287,8 @@ else:
 
     kpi_cols = st.columns(4, gap="large")
     with kpi_cols[0]:
-        st.metric("Latest close", f"${latest_close:,.2f}", f"{delta_pct:.2f}%")
+        delta_label = "n/a" if delta_pct is None else f"{delta_pct:.2f}%"
+        st.metric("Latest close", f"${latest_close:,.2f}", delta_label)
     with kpi_cols[1]:
         if pd.isna(latest_5d):
             st.metric("5D return", "n/a")
@@ -303,7 +308,7 @@ else:
 st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.markdown('<div class="section-title">History</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-title">Performance History</div>', unsafe_allow_html=True)
 if prices_error:
     st.info(prices_error)
 else:
@@ -324,7 +329,15 @@ else:
         st.caption(f"Viewing {horizon} through {latest_history_date.strftime('%B %d, %Y')}")
 
     main_col, side_col = st.columns([2.2, 1], gap="large")
+    chart_height = 540
+    side_gap = 44
+    side_chart_height = (chart_height - side_gap) / 2
     with main_col:
+        st.markdown(
+            '<div class="section-title" style="margin: 0 0 -8px 0; line-height: 1;">'
+            "Prices</div>",
+            unsafe_allow_html=True,
+        )
         wick = (
             alt.Chart(history_df)
             .mark_rule(color="#93c5fd")
@@ -364,9 +377,31 @@ else:
                 ),
             )
         )
+        overlay = None
+        if history_df["sma_50"].notna().any():
+            overlay = (
+                alt.Chart(history_df.dropna(subset=["sma_50"]))
+                .mark_line(color="#fbbf24", strokeWidth=2)
+                .encode(
+                    x=alt.X("trade_date:T", title="Date", axis=alt.Axis(format=x_axis_format)),
+                    y=alt.Y(
+                        "sma_50:Q",
+                        title="Price",
+                        scale=alt.Scale(domain=y_domain, zero=False),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("trade_date:T", title="Date"),
+                        alt.Tooltip("sma_50:Q", title="SMA 50", format=",.2f"),
+                    ],
+                )
+            )
+
+        layers = [wick, body]
+        if overlay is not None:
+            layers.append(overlay)
         chart = (
-            alt.layer(wick, body)
-            .properties(height=540)
+            alt.layer(*layers)
+            .properties(height=chart_height)
             .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
         )
         st.altair_chart(chart, use_container_width=True)
@@ -408,10 +443,49 @@ else:
                     alt.Tooltip("ReturnPct:Q", title="Cumulative return (%)", format=".2f"),
                 ],
             )
-            .properties(height=240)
+            .properties(height=side_chart_height)
             .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
         )
         st.altair_chart(returns_chart, use_container_width=True)
+
+        st.markdown(
+            '<div class="section-title" style="margin: 12px 0 -8px 0; line-height: 1;">'
+            "Distance From SMA50</div>",
+            unsafe_allow_html=True,
+        )
+        dist_df = history_df[["trade_date", "dist_sma_50"]].copy()
+        dist_df = dist_df.dropna(subset=["dist_sma_50"])
+        if dist_df.empty:
+            st.caption("SMA50 distance unavailable for the selected horizon.")
+        else:
+            dist_df["dist_pct"] = dist_df["dist_sma_50"] * 100.0
+            dist_min = float(dist_df["dist_pct"].min())
+            dist_max = float(dist_df["dist_pct"].max())
+            dist_pad = max((dist_max - dist_min) * 0.08, 0.5)
+            dist_domain = [dist_min - dist_pad, dist_max + dist_pad]
+            dist_chart = (
+                alt.Chart(dist_df)
+                .mark_line(strokeWidth=2, color="#fbbf24")
+                .encode(
+                    x=alt.X("trade_date:T", title="Date", axis=alt.Axis(format=x_axis_format)),
+                    y=alt.Y(
+                        "dist_pct:Q",
+                        title="Distance from SMA50 (%)",
+                        scale=alt.Scale(domain=dist_domain, zero=False),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("trade_date:T", title="Date"),
+                        alt.Tooltip(
+                            "dist_pct:Q",
+                            title="Distance from SMA50 (%)",
+                            format=".2f",
+                        ),
+                    ],
+                )
+                .properties(height=side_chart_height)
+                .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
+            )
+            st.altair_chart(dist_chart, use_container_width=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
