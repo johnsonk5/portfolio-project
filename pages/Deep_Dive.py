@@ -237,15 +237,43 @@ symbols_df["label"] = symbols_df.apply(
     axis=1,
 )
 
+query_symbol = None
+try:
+    query_symbol = st.query_params.get("symbol")
+except Exception:
+    query_symbol = st.experimental_get_query_params().get("symbol")
+
+if isinstance(query_symbol, list):
+    query_symbol = query_symbol[0] if query_symbol else None
+
+if not query_symbol:
+    query_symbol = st.session_state.get("selected_symbol")
+
+selected_index = 0
+if isinstance(query_symbol, str) and query_symbol.strip():
+    match = symbols_df["symbol"].str.upper() == query_symbol.strip().upper()
+    if match.any():
+        selected_index = int(match.idxmax())
+
 selected_label = st.selectbox(
     "Select symbol",
     options=symbols_df["label"].tolist(),
-    index=0,
+    index=selected_index,
 )
 
 selected_symbol = symbols_df.loc[
     symbols_df["label"] == selected_label, "symbol"
 ].iloc[0]
+
+try:
+    if st.query_params.get("symbol") != selected_symbol:
+        st.query_params["symbol"] = selected_symbol
+except Exception:
+    params = st.experimental_get_query_params()
+    if params.get("symbol", [None])[0] != selected_symbol:
+        st.experimental_set_query_params(symbol=selected_symbol)
+
+st.session_state["selected_symbol"] = selected_symbol
 
 prices_df, prices_error = _load_price_history(selected_symbol)
 news_df, news_error = _load_headlines(selected_symbol, limit=50)

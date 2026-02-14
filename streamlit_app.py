@@ -2,11 +2,14 @@ import os
 import random
 from pathlib import Path
 
-import altair as alt
+import html
 import duckdb
 import pandas as pd
 import streamlit as st
+from streamlit_plotly_events import plotly_events
+import plotly.graph_objects as go
 
+from portfolio_project.components.hover_bar import hover_bar_chart, hover_grouped_bar_chart
 
 st.set_page_config(
     page_title="Market Vibecheck",
@@ -118,6 +121,63 @@ html, body, [class*="css"]  {
 [data-testid="stSidebarNav"] {
   display: none;
 }
+
+.ticker-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+  background: rgba(6, 10, 20, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.ticker-table thead th {
+  text-align: left;
+  color: var(--ink-2);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+}
+
+.ticker-table thead th.mom-tight {
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+}
+
+.ticker-table tbody td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ticker-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ticker-table a {
+  color: var(--ink-1);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.ticker-table a:hover {
+  text-decoration: underline;
+}
+
+.stPlotlyChart,
+.stPlotlyChart > div,
+.js-plotly-plot,
+.plotly {
+  overflow: visible !important;
+}
+
+.section-card.no-clip {
+  overflow: visible;
+}
 </style>
 """
 
@@ -130,6 +190,71 @@ QUOTES = [
     '"What\'s the most you ever lost on a coin toss?" - Anton Chigurh',
 ]
 
+def _navigate_to_symbol(symbol: str) -> None:
+    if not symbol:
+        return
+    symbol = str(symbol).strip().upper()
+    st.session_state["selected_symbol"] = symbol
+
+    # update query params robustly
+    try:
+        st.query_params.update({"symbol": symbol})
+    except Exception:
+        st.experimental_set_query_params(symbol=symbol)
+
+    st.switch_page("pages/Deep_Dive.py")
+
+
+def _render_symbol_table(
+    df: pd.DataFrame,
+    columns: list[str],
+    labels: list[str],
+    formats: list[str],
+    min_rows: int | None = None,
+) -> None:
+    if df.empty:
+        st.write("No data available.")
+        return
+    header_cells = []
+    for label in labels:
+        cls = "mom-tight" if label == "20D Mom (%)" else ""
+        class_attr = f' class="{cls}"' if cls else ""
+        header_cells.append(f"<th{class_attr}>{html.escape(label)}</th>")
+    headers = "".join(header_cells)
+    rows = []
+    for _, row in df.iterrows():
+        symbol = str(row[columns[0]])
+        symbol_cell = (
+            f'<td><a href="/Deep_Dive?symbol={html.escape(symbol)}" target="_self">'
+            f"{html.escape(symbol)}</a></td>"
+        )
+        other_cells = []
+        for col_idx, col_name in enumerate(columns[1:], start=1):
+            value = row[col_name]
+            fmt = formats[col_idx]
+            if value is None or pd.isna(value):
+                display = "n/a"
+            else:
+                display = fmt.format(value)
+            other_cells.append(f'<td class="num">{html.escape(display)}</td>')
+        rows.append(f"<tr>{symbol_cell}{''.join(other_cells)}</tr>")
+
+    if min_rows is not None and len(rows) < min_rows:
+        empty_cells = "<td>&nbsp;</td>" + "".join(
+            '<td class="num">&nbsp;</td>' for _ in columns[1:]
+        )
+        for _ in range(min_rows - len(rows)):
+            rows.append(f"<tr>{empty_cells}</tr>")
+    table_html = f"""
+    <table class="ticker-table">
+      <thead><tr>{headers}</tr></thead>
+      <tbody>
+        {''.join(rows)}
+      </tbody>
+    </table>
+    """
+    st.markdown(table_html, unsafe_allow_html=True)
+
 
 def _resolve_duckdb_path() -> Path:
     env_path = os.getenv("PORTFOLIO_DUCKDB_PATH")
@@ -139,7 +264,7 @@ def _resolve_duckdb_path() -> Path:
     return data_root / "duckdb" / "portfolio.duckdb"
 
 
-def _load_daily_returns(limit: int = 5) -> tuple[pd.DataFrame, str | None]:
+def _load_daily_returns() -> tuple[pd.DataFrame, str | None]:
     db_path = _resolve_duckdb_path()
     if not db_path.exists():
         return pd.DataFrame(), f"DuckDB not found at {db_path}"
@@ -170,19 +295,10 @@ def _load_daily_returns(limit: int = 5) -> tuple[pd.DataFrame, str | None]:
     if df.empty:
         return df, "No return data available for the latest trade date."
 
-    df = df.copy()
-    df["returns_pct"] = df["returns_1d"] * 100.0
-    df = df.sort_values("returns_pct", ascending=False)
-
-    gainers = df.head(limit)
-    losers = df.tail(limit).sort_values("returns_pct", ascending=True)
-
-    combined = pd.concat([gainers, losers], axis=0)
-    combined = combined.drop_duplicates(subset=["symbol"], keep="first")
-    combined = combined.sort_values("returns_pct", ascending=True)
-
     label = pd.to_datetime(trade_date).strftime("%B %d, %Y")
-    return combined, label
+    df = df.copy()
+    df["returns_pct"] = pd.to_numeric(df["returns_1d"], errors="coerce") * 100.0
+    return df, label
 
 
 def _load_risky_bets(
@@ -369,71 +485,58 @@ def _load_sentiment_movers(
     return df, label, None
 
 
-def _build_sentiment_returns_chart(df: pd.DataFrame) -> alt.Chart:
-    sentiment_min = float(df["sentiment_score"].min())
-    sentiment_max = float(df["sentiment_score"].max())
-    sentiment_pad = max((sentiment_max - sentiment_min) * 0.08, 0.01)
-    returns_min = float(df["returns_5d_pct"].min())
-    returns_max = float(df["returns_5d_pct"].max())
-    returns_pad = max((returns_max - returns_min) * 0.08, 0.05)
+def _build_sentiment_returns_chart(df: pd.DataFrame) -> go.Figure:
+    symbols = df["symbol"].tolist()
+    sentiment = df["sentiment_score"].tolist()
+    returns = df["returns_5d_pct"].tolist()
 
-    sentiment_pos = max(0.0, sentiment_max) + sentiment_pad
-    returns_pos = max(0.0, returns_max) + returns_pad
-    ratio = 0.1
-    if returns_pos > 0:
-        ratio = max(ratio, abs(min(0.0, returns_min)) / returns_pos)
-    if ratio > 0:
-        sentiment_pos = max(sentiment_pos, abs(min(0.0, sentiment_min)) / ratio)
+    sentiment_color = "#3b82f6"
+    returns_colors = ["#ef4444" if val < 0 else "#22c55e" for val in returns]
 
-    sentiment_domain = [-sentiment_pos * ratio, sentiment_pos]
-    returns_domain = [-returns_pos * ratio, returns_pos]
-
-    sentiment_chart = (
-        alt.Chart(df)
-        .mark_bar(size=14, cornerRadiusEnd=4)
-        .encode(
-            x=alt.X("symbol:N", title="", sort=None),
-            y=alt.Y(
-                "sentiment_score:Q",
-                title="",
-                scale=alt.Scale(domain=sentiment_domain, zero=True),
-            ),
-            xOffset=alt.value(-8),
-            color=alt.value("#3b82f6"),
-            tooltip=[
-                alt.Tooltip("symbol:N", title="Symbol"),
-                alt.Tooltip("sentiment_score:Q", title="Sentiment", format=".2f"),
-            ],
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=symbols,
+            y=sentiment,
+            name="Sentiment",
+            marker_color=sentiment_color,
+            customdata=symbols,
+            hovertemplate="Symbol: %{x}<br>Sentiment: %{y:.2f}<extra></extra>",
+            offsetgroup="sentiment",
+            yaxis="y1",
         )
     )
-    returns_chart = (
-        alt.Chart(df)
-        .mark_bar(size=14, cornerRadiusEnd=4)
-        .encode(
-            x=alt.X("symbol:N", title="", sort=None),
-            y=alt.Y(
-                "returns_5d_pct:Q",
-                title="",
-                scale=alt.Scale(domain=returns_domain, zero=True),
-            ),
-            xOffset=alt.value(8),
-            color=alt.condition(
-                alt.datum.returns_5d_pct < 0,
-                alt.value("#ef4444"),
-                alt.value("#22c55e"),
-            ),
-            tooltip=[
-                alt.Tooltip("symbol:N", title="Symbol"),
-                alt.Tooltip("returns_5d_pct:Q", title="5D return (%)", format=".2f"),
-            ],
+    fig.add_trace(
+        go.Bar(
+            x=symbols,
+            y=returns,
+            name="5D Return (%)",
+            marker_color=returns_colors,
+            customdata=symbols,
+            hovertemplate="Symbol: %{x}<br>5D return: %{y:.2f}%<extra></extra>",
+            offsetgroup="returns",
+            yaxis="y2",
         )
     )
-    return (
-        alt.layer(sentiment_chart, returns_chart)
-        .resolve_scale(y="independent")
-        .properties(height=280)
-        .configure_axis(gridColor="rgba(255,255,255,0.05)")
+    fig.update_layout(
+        barmode="group",
+        height=280,
+        margin=dict(l=12, r=12, t=10, b=30),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#f4f7ff"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        yaxis=dict(title="Sentiment", gridcolor="rgba(255,255,255,0.08)"),
+        yaxis2=dict(
+            title="5D Return (%)",
+            overlaying="y",
+            side="right",
+            gridcolor="rgba(255,255,255,0.05)",
+            showgrid=False,
+        ),
+        xaxis=dict(title="", tickfont=dict(color="#f4f7ff")),
     )
+    return fig
 
 
 def _load_big_picture(top_n: int = 7) -> tuple[dict, str | None, str | None]:
@@ -584,13 +687,13 @@ else:
 
 st.markdown("</div>", unsafe_allow_html=True)
 
-left, right = st.columns([2, 4], gap="large")
+left, right = st.columns([2.6, 3.4], gap="large")
 
 with left:
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown('<div class="section-card no-clip">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Top Gainers + Losers</div>', unsafe_allow_html=True)
 
-    df, label = _load_daily_returns(limit=5)
+    df, label = _load_daily_returns()
     if df.empty:
         st.info(label or "No data available yet.")
     else:
@@ -599,35 +702,38 @@ with left:
             unsafe_allow_html=True,
         )
 
-        row_height = 26
-        chart_height = max(320, row_height * len(df))
-
-        chart = (
-            alt.Chart(df)
-            .mark_bar(size=16, cornerRadiusEnd=4)
-            .encode(
-                x=alt.X("returns_pct:Q", title="Daily return (%)"),
-                y=alt.Y(
-                    "symbol:N",
-                    sort=alt.SortField("returns_pct", order="descending"),
-                    title="",
-                    axis=alt.Axis(labelLimit=0),
-                ),
-                color=alt.condition(
-                    alt.datum.returns_pct > 0,
-                    alt.value("#22c55e"),
-                    alt.value("#ef4444"),
-                ),
-                tooltip=[
-                    alt.Tooltip("symbol:N", title="Symbol"),
-                    alt.Tooltip("returns_pct:Q", title="Return (%)", format=".2f"),
-                ],
-            )
-            .properties(height=chart_height, width=380)
-            .configure_axis(gridColor="rgba(255,255,255,0.05)")
+        gainers = df[df["returns_pct"] > 0].sort_values("returns_pct", ascending=False).head(5)
+        losers = df[df["returns_pct"] < 0].sort_values("returns_pct", ascending=True).head(5)
+        ordered = pd.concat([gainers, losers], axis=0)
+        if ordered.empty:
+            st.info("No return data available for the latest trade date.")
+            st.markdown("</div>", unsafe_allow_html=True)
+            st.stop()
+        row_height = 30
+        chart_height = max(320, row_height * len(ordered))
+        ordered = ordered.copy()
+        ordered["returns_pct"] = pd.to_numeric(
+            ordered["returns_pct"], errors="coerce"
+        ).fillna(0.0)
+        x_vals = ordered["returns_pct"].astype(float).tolist()
+        y_vals = ordered["symbol"].astype(str).tolist()
+        max_abs = max(abs(val) for val in x_vals) if x_vals else 1.0
+        if max_abs == 0 or pd.isna(max_abs):
+            max_abs = 1.0
+        colors = ["#22c55e" if val >= 0 else "#ef4444" for val in x_vals]
+        clicked_symbol = hover_bar_chart(
+            x=x_vals,
+            y=y_vals,
+            colors=colors,
+            height=chart_height,
+            x_range=[-max_abs * 1.15, max_abs * 1.15],
+            key="top-gainers-losers",
+            open_in_new_tab=False,
         )
-
-        st.altair_chart(chart, use_container_width=False)
+        if isinstance(clicked_symbol, dict):
+            clicked_symbol = clicked_symbol.get("symbol")
+        if clicked_symbol:
+            _navigate_to_symbol(clicked_symbol)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -644,7 +750,7 @@ with right:
             unsafe_allow_html=True,
         )
 
-        hot_col, crash_col, sleepy_col = st.columns([2, 2, 1.35], gap="small")
+        hot_col, crash_col, sleepy_col = st.columns([2.0, 2.0, 1.6], gap="medium")
         with hot_col:
             st.markdown(
                 '<span class="tooltip" data-tip="High-volatility names with positive 20-day momentum."><strong>Hot Ones 🔥</strong></span>',
@@ -653,15 +759,12 @@ with right:
             if hot.empty:
                 st.write("No positive momentum names.")
             else:
-                st.dataframe(
-                    hot[["symbol", "vol_pct", "mom_pct"]],
-                    hide_index=True,
-                    use_container_width=True,
-                    column_config={
-                        "symbol": st.column_config.TextColumn("Symbol"),
-                        "vol_pct": st.column_config.NumberColumn("Vol", format="%.2f"),
-                        "mom_pct": st.column_config.NumberColumn("20D Mom (%)", format="%.2f"),
-                    },
+                _render_symbol_table(
+                    hot,
+                    columns=["symbol", "vol_pct", "mom_pct"],
+                    labels=["Symbol", "Vol", "20D Mom (%)"],
+                    formats=["{}", "{:.2f}", "{:.2f}"],
+                    min_rows=5,
                 )
 
         with crash_col:
@@ -672,15 +775,12 @@ with right:
             if crash.empty:
                 st.write("No negative momentum names.")
             else:
-                st.dataframe(
-                    crash[["symbol", "vol_pct", "mom_pct"]],
-                    hide_index=True,
-                    use_container_width=True,
-                    column_config={
-                        "symbol": st.column_config.TextColumn("Symbol"),
-                        "vol_pct": st.column_config.NumberColumn("Vol", format="%.2f"),
-                        "mom_pct": st.column_config.NumberColumn("20D Mom (%)", format="%.2f"),
-                    },
+                _render_symbol_table(
+                    crash,
+                    columns=["symbol", "vol_pct", "mom_pct"],
+                    labels=["Symbol", "Vol", "20D Mom (%)"],
+                    formats=["{}", "{:.2f}", "{:.2f}"],
+                    min_rows=5,
                 )
 
         with sleepy_col:
@@ -691,20 +791,18 @@ with right:
             if sleepy.empty:
                 st.write("No low-volatility names.")
             else:
-                st.dataframe(
-                    sleepy[["symbol", "vol_pct"]],
-                    hide_index=True,
-                    use_container_width=True,
-                    column_config={
-                        "symbol": st.column_config.TextColumn("Symbol"),
-                        "vol_pct": st.column_config.NumberColumn("Vol", format="%.2f"),
-                    },
+                _render_symbol_table(
+                    sleepy,
+                    columns=["symbol", "vol_pct"],
+                    labels=["Symbol", "Vol"],
+                    formats=["{}", "{:.2f}"],
+                    min_rows=5,
                 )
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 underrated_col, good_news_col, bad_news_col = st.columns(
-    [1.15, 0.925, 0.925], gap="large"
+    [1.2, 0.9, 0.9], gap="medium"
 )
 
 with underrated_col:
@@ -724,20 +822,11 @@ with underrated_col:
             f"<div class=\"metric-pill\">Latest trade date: {label}</div>",
             unsafe_allow_html=True,
         )
-        st.dataframe(
-            underrated_df[
-                ["symbol", "momentum_12_1_pct", "pct_below_52w_high_pct", "score"]
-            ],
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "symbol": st.column_config.TextColumn("Symbol"),
-                "momentum_12_1_pct": st.column_config.NumberColumn("12-1 Mom (%)", format="%.2f"),
-                "pct_below_52w_high_pct": st.column_config.NumberColumn(
-                    "Below 52W High (%)", format="%.2f"
-                ),
-                "score": st.column_config.NumberColumn("Score", format="%.2f"),
-            },
+        _render_symbol_table(
+            underrated_df,
+            columns=["symbol", "momentum_12_1_pct", "pct_below_52w_high_pct", "score"],
+            labels=["Symbol", "12-1 Mom (%)", "Below 52W High (%)", "Score"],
+            formats=["{}", "{:.2f}", "{:.2f}", "{:.2f}"],
         )
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -759,8 +848,46 @@ with good_news_col:
             f"<div class=\"metric-pill\">Latest trade date: {label}</div>",
             unsafe_allow_html=True,
         )
-        chart = _build_sentiment_returns_chart(good_news_df)
-        st.altair_chart(chart, use_container_width=True)
+        symbols = good_news_df["symbol"].tolist()
+        sentiment = good_news_df["sentiment_score"].tolist()
+        returns = good_news_df["returns_5d_pct"].tolist()
+        returns_colors = ["#ef4444" if val < 0 else "#22c55e" for val in returns]
+        sent_abs = abs(pd.Series(sentiment).dropna().abs().max() or 0)
+        ret_abs = abs(pd.Series(returns).dropna().abs().max() or 0)
+        y_range = [-sent_abs * 1.1, sent_abs * 1.1] if sent_abs else [-1, 1]
+        y2_range = [-ret_abs * 1.1, ret_abs * 1.1] if ret_abs else [-1, 1]
+        clicked_symbol = hover_grouped_bar_chart(
+            categories=symbols,
+            series=[
+                {
+                    "name": "Sentiment",
+                    "values": sentiment,
+                    "colors": "#3b82f6",
+                    "yaxis": "y",
+                    "suffix": "",
+                },
+                {
+                    "name": "5D Return",
+                    "values": returns,
+                    "colors": returns_colors,
+                    "yaxis": "y2",
+                    "suffix": "%",
+                },
+            ],
+            height=280,
+            key="good-news-chart",
+            open_in_new_tab=False,
+            yaxis_title="Sentiment / 5D Return (%)",
+            yaxis2_title="5D Return (%)",
+            y_range=y_range,
+            y2_range=y2_range,
+            bar_gap=0.22,
+            group_gap=0.14,
+        )
+        if isinstance(clicked_symbol, dict):
+            clicked_symbol = clicked_symbol.get("symbol")
+        if clicked_symbol:
+            _navigate_to_symbol(clicked_symbol)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -781,8 +908,46 @@ with bad_news_col:
             f"<div class=\"metric-pill\">Latest trade date: {label}</div>",
             unsafe_allow_html=True,
         )
-        chart = _build_sentiment_returns_chart(bad_news_df)
-        st.altair_chart(chart, use_container_width=True)
+        symbols = bad_news_df["symbol"].tolist()
+        sentiment = bad_news_df["sentiment_score"].tolist()
+        returns = bad_news_df["returns_5d_pct"].tolist()
+        returns_colors = ["#ef4444" if val < 0 else "#22c55e" for val in returns]
+        sent_abs = abs(pd.Series(sentiment).dropna().abs().max() or 0)
+        ret_abs = abs(pd.Series(returns).dropna().abs().max() or 0)
+        y_range = [-sent_abs * 1.1, sent_abs * 1.1] if sent_abs else [-1, 1]
+        y2_range = [-ret_abs * 1.1, ret_abs * 1.1] if ret_abs else [-1, 1]
+        clicked_symbol = hover_grouped_bar_chart(
+            categories=symbols,
+            series=[
+                {
+                    "name": "Sentiment",
+                    "values": sentiment,
+                    "colors": "#3b82f6",
+                    "yaxis": "y",
+                    "suffix": "",
+                },
+                {
+                    "name": "5D Return",
+                    "values": returns,
+                    "colors": returns_colors,
+                    "yaxis": "y2",
+                    "suffix": "%",
+                },
+            ],
+            height=280,
+            key="bad-news-chart",
+            open_in_new_tab=False,
+            yaxis_title="Sentiment / 5D Return (%)",
+            yaxis2_title="5D Return (%)",
+            y_range=y_range,
+            y2_range=y2_range,
+            bar_gap=0.22,
+            group_gap=0.14,
+        )
+        if isinstance(clicked_symbol, dict):
+            clicked_symbol = clicked_symbol.get("symbol")
+        if clicked_symbol:
+            _navigate_to_symbol(clicked_symbol)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
