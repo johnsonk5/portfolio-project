@@ -12,6 +12,8 @@ dependencies = [
     "lxml>=6.0.2",
     "streamlit>=1.31.0",
     "altair>=5.0.0",
+    "plotly>=5.19.0",
+    "streamlit-plotly-events>=0.0.6",
     "transformers>=4.38.0",
     "torch>=2.1.0",
 ]
