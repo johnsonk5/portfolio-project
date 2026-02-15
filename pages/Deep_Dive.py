@@ -348,8 +348,17 @@ else:
     )
     x_axis_format = "%b %Y" if horizon in {"3Y", "5Y"} else "%b"
     history_df = _filter_by_horizon(prices_df, horizon)
+    if history_df.empty:
+        st.info("No price history available for the selected horizon.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.stop()
     price_min = float(history_df["low"].min())
     price_max = float(history_df["high"].max())
+    if history_df["sma_50"].notna().any():
+        sma_min = float(history_df["sma_50"].min())
+        sma_max = float(history_df["sma_50"].max())
+        price_min = min(price_min, sma_min)
+        price_max = max(price_max, sma_max)
     price_pad = max((price_max - price_min) * 0.06, 0.01)
     y_domain = [price_min - price_pad, price_max + price_pad]
     latest_history_date = history_df["trade_date"].max()
@@ -362,7 +371,7 @@ else:
     side_chart_height = (chart_height - side_gap) / 2
     with main_col:
         st.markdown(
-            '<div class="section-title" style="margin: 0 0 -8px 0; line-height: 1;">'
+            '<div class="section-title" style="margin: 0 0 8px 0; line-height: 1.1;">'
             "Prices</div>",
             unsafe_allow_html=True,
         )
@@ -436,7 +445,7 @@ else:
 
     with side_col:
         st.markdown(
-            '<div class="section-title" style="margin: 0 0 -8px 0; line-height: 1;">'
+            '<div class="section-title" style="margin: 0 0 8px 0; line-height: 1.1;">'
             "Returns</div>",
             unsafe_allow_html=True,
         )
@@ -477,7 +486,7 @@ else:
         st.altair_chart(returns_chart, use_container_width=True)
 
         st.markdown(
-            '<div class="section-title" style="margin: 12px 0 -8px 0; line-height: 1;">'
+            '<div class="section-title" style="margin: 12px 0 8px 0; line-height: 1.1;">'
             "Distance From SMA50</div>",
             unsafe_allow_html=True,
         )
@@ -562,7 +571,7 @@ else:
     vol_left, drawdown_col, volume_col = st.columns([1, 1, 1], gap="medium")
     with vol_left:
         st.markdown(
-            '<div class="section-title" style="margin: 0 0 -8px 0; line-height: 1;">'
+            '<div class="section-title" style="margin: 0 0 8px 0; line-height: 1.1;">'
             "Volatility</div>",
             unsafe_allow_html=True,
         )
@@ -570,7 +579,7 @@ else:
 
     with drawdown_col:
         st.markdown(
-            '<div class="section-title" style="margin: 0 0 -8px 0; line-height: 1;">'
+            '<div class="section-title" style="margin: 0 0 8px 0; line-height: 1.1;">'
             "Drawdown</div>",
             unsafe_allow_html=True,
         )
@@ -603,7 +612,7 @@ else:
 
     with volume_col:
         st.markdown(
-            '<div class="section-title" style="margin: 0 0 -8px 0; line-height: 1;">'
+            '<div class="section-title" style="margin: 0 0 8px 0; line-height: 1.1;">'
             "Volume</div>",
             unsafe_allow_html=True,
         )
@@ -664,13 +673,3 @@ else:
     )
 st.markdown("</div>", unsafe_allow_html=True)
 
-st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.markdown('<div class="section-title">Coming Next</div>', unsafe_allow_html=True)
-placeholder_cols = st.columns(3, gap="large")
-with placeholder_cols[0]:
-    st.write("Headline volume trend chart is coming soon.")
-with placeholder_cols[1]:
-    st.write("Volatility context chart is coming soon.")
-with placeholder_cols[2]:
-    st.write("Wikipedia attention chart is coming soon.")
-st.markdown("</div>", unsafe_allow_html=True)

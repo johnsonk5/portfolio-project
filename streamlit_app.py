@@ -951,15 +951,3 @@ with bad_news_col:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-st.markdown('<div class="section-card" style="margin-top: 18px;">', unsafe_allow_html=True)
-st.markdown('<div class="section-title">On Deck</div>', unsafe_allow_html=True)
-
-on_deck = st.columns(3, gap="large")
-with on_deck[0]:
-    st.write("Sector pulse and leadership tables.")
-with on_deck[1]:
-    st.write("Factor spotlight and breadth metrics.")
-with on_deck[2]:
-    st.write("Portfolio impact and watchlist flags.")
-
-st.markdown("</div>", unsafe_allow_html=True)
