@@ -16,6 +16,8 @@ def _acquire_duckdb_lock(
         try:
             # signal 0 checks for process existence without sending a signal
             os.kill(pid, 0)
+        except PermissionError:
+            return True
         except OSError:
             return False
         return True
