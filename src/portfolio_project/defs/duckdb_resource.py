@@ -55,8 +55,15 @@ def _release_duckdb_lock(path: Path, fd: int) -> None:
     try:
         os.close(fd)
     finally:
-        if path.exists():
-            path.unlink()
+        try:
+            lock_pid = int(path.read_text(encoding="ascii").strip())
+        except (FileNotFoundError, ValueError, OSError):
+            lock_pid = None
+        if lock_pid == os.getpid():
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 @resource(

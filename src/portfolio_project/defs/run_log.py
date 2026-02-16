@@ -50,6 +50,7 @@ def _get_run_records(context, run_id: str):
 
 
 def _collect_materialization_metrics(records) -> dict:
+    assets_materialized_count = 0
     row_count_total = 0
     rows_inserted_total = 0
     rows_updated_total = 0
@@ -62,6 +63,7 @@ def _collect_materialization_metrics(records) -> dict:
         event = getattr(entry, "dagster_event", None)
         if event is None or event.event_type != DagsterEventType.ASSET_MATERIALIZATION:
             continue
+        assets_materialized_count += 1
         if event.event_specific_data is None:
             continue
         materialization = event.event_specific_data.materialization
@@ -85,7 +87,7 @@ def _collect_materialization_metrics(records) -> dict:
                 found_mutations = True
 
     return {
-        "assets_materialized_count": len(records),
+        "assets_materialized_count": assets_materialized_count,
         "row_count": row_count_total if found_row_count else None,
         "rows_inserted": rows_inserted_total if found_mutations else None,
         "rows_updated": rows_updated_total if found_mutations else None,
