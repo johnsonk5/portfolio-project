@@ -14,6 +14,7 @@ from dagster import (
     success_hook,
 )
 
+from portfolio_project.defs.data_quality import write_data_quality_checks
 from portfolio_project.defs.duckdb_resource import _acquire_duckdb_lock, _release_duckdb_lock
 
 
@@ -795,6 +796,11 @@ def dagster_run_log_success(context) -> None:
     except Exception as exc:
         errors.append(f"freshness_check_write_failed: {exc}")
         context.log.warning("Freshness check write failed: %s", exc)
+    try:
+        # DQ check failures are logged in observability.data_quality_checks.
+        write_data_quality_checks(context)
+    except Exception as exc:
+        context.log.warning("Data quality check write failed: %s", exc)
     if errors:
         raise RuntimeError("Observability failure(s): " + " | ".join(errors))
 

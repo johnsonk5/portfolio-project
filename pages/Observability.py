@@ -105,6 +105,8 @@ def _load_observability_data() -> dict:
             "recent_runs": pd.DataFrame(),
             "run_failures": pd.DataFrame(),
             "freshness_issues": pd.DataFrame(),
+            "data_quality_issues": pd.DataFrame(),
+            "data_quality_recent": pd.DataFrame(),
             "durations": pd.DataFrame(),
             "job_options": sorted(KNOWN_JOBS),
         }
@@ -113,12 +115,15 @@ def _load_observability_data() -> dict:
     try:
         has_run_log = _table_exists(con, "observability", "run_log")
         has_freshness = _table_exists(con, "observability", "data_freshness_checks")
+        has_data_quality = _table_exists(con, "observability", "data_quality_checks")
         if not has_run_log:
             return {
                 "error": "Table observability.run_log does not exist yet.",
                 "recent_runs": pd.DataFrame(),
                 "run_failures": pd.DataFrame(),
                 "freshness_issues": pd.DataFrame(),
+                "data_quality_issues": pd.DataFrame(),
+                "data_quality_recent": pd.DataFrame(),
                 "durations": pd.DataFrame(),
                 "job_options": sorted(KNOWN_JOBS),
             }
@@ -196,6 +201,48 @@ def _load_observability_data() -> dict:
         else:
             freshness_issues = pd.DataFrame()
 
+        if has_data_quality:
+            data_quality_issues = con.execute(
+                """
+                SELECT
+                    run_id,
+                    job_name,
+                    partition_key,
+                    check_name,
+                    severity,
+                    status,
+                    measured_value,
+                    threshold_value,
+                    details_json,
+                    logged_ts
+                FROM observability.data_quality_checks
+                WHERE status IN ('FAIL', 'SKIPPED')
+                ORDER BY logged_ts DESC
+                LIMIT 100
+                """
+            ).fetch_df()
+            data_quality_recent = con.execute(
+                """
+                SELECT
+                    run_id,
+                    job_name,
+                    partition_key,
+                    check_name,
+                    severity,
+                    status,
+                    measured_value,
+                    threshold_value,
+                    details_json,
+                    logged_ts
+                FROM observability.data_quality_checks
+                ORDER BY logged_ts DESC
+                LIMIT 200
+                """
+            ).fetch_df()
+        else:
+            data_quality_issues = pd.DataFrame()
+            data_quality_recent = pd.DataFrame()
+
         observed_jobs = con.execute(
             "SELECT DISTINCT job_name FROM observability.run_log WHERE job_name IS NOT NULL ORDER BY job_name"
         ).fetch_df()
@@ -207,6 +254,8 @@ def _load_observability_data() -> dict:
             "recent_runs": recent_runs,
             "run_failures": run_failures,
             "freshness_issues": freshness_issues,
+            "data_quality_issues": data_quality_issues,
+            "data_quality_recent": data_quality_recent,
             "durations": durations,
             "job_options": job_options,
         }
@@ -216,6 +265,8 @@ def _load_observability_data() -> dict:
             "recent_runs": pd.DataFrame(),
             "run_failures": pd.DataFrame(),
             "freshness_issues": pd.DataFrame(),
+            "data_quality_issues": pd.DataFrame(),
+            "data_quality_recent": pd.DataFrame(),
             "durations": pd.DataFrame(),
             "job_options": sorted(KNOWN_JOBS),
         }
@@ -231,7 +282,7 @@ def _display_df(df: pd.DataFrame, empty_message: str) -> None:
 
 
 st.title("Observability")
-st.caption("Monitor run health, freshness checks, and runtime trends.")
+st.caption("Monitor run health, freshness checks, data quality checks, and runtime trends.")
 
 data = _load_observability_data()
 if data["error"]:
@@ -253,6 +304,26 @@ with fresh_col:
     _display_df(
         data["freshness_issues"],
         "No freshness check failures or skipped checks found.",
+    )
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.markdown('<div class="section-title">Data Quality Checks</div>', unsafe_allow_html=True)
+
+dq_issue_col, dq_recent_col = st.columns([1, 1], gap="medium")
+with dq_issue_col:
+    st.markdown("**DQ Issues (FAIL or SKIPPED)**")
+    _display_df(
+        data["data_quality_issues"],
+        "No data quality failures or skipped checks found.",
+    )
+
+with dq_recent_col:
+    st.markdown("**Recent DQ Results (All Statuses)**")
+    _display_df(
+        data["data_quality_recent"],
+        "No data quality checks found yet.",
     )
 
 st.markdown("</div>", unsafe_allow_html=True)
