@@ -50,6 +50,7 @@ def _get_run_records(context, run_id: str):
 
 
 def _collect_materialization_metrics(records) -> dict:
+    assets_materialized_count = 0
     row_count_total = 0
     rows_inserted_total = 0
     rows_updated_total = 0
@@ -62,6 +63,7 @@ def _collect_materialization_metrics(records) -> dict:
         event = getattr(entry, "dagster_event", None)
         if event is None or event.event_type != DagsterEventType.ASSET_MATERIALIZATION:
             continue
+        assets_materialized_count += 1
         if event.event_specific_data is None:
             continue
         materialization = event.event_specific_data.materialization
@@ -85,7 +87,7 @@ def _collect_materialization_metrics(records) -> dict:
                 found_mutations = True
 
     return {
-        "assets_materialized_count": len(records),
+        "assets_materialized_count": assets_materialized_count,
         "row_count": row_count_total if found_row_count else None,
         "rows_inserted": rows_inserted_total if found_mutations else None,
         "rows_updated": rows_updated_total if found_mutations else None,
@@ -176,6 +178,317 @@ def _record_timestamp(record) -> Optional[datetime]:
             if value is not None:
                 return _to_utc_datetime(value)
     return None
+
+
+def _write_freshness_check_rows(con, rows: list[dict]) -> None:
+    con.execute("CREATE SCHEMA IF NOT EXISTS observability")
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS observability.data_freshness_checks (
+            run_id VARCHAR,
+            job_name VARCHAR,
+            partition_key VARCHAR,
+            check_name VARCHAR,
+            severity VARCHAR,
+            status VARCHAR,
+            measured_value DOUBLE,
+            threshold_value DOUBLE,
+            details_json VARCHAR,
+            logged_ts TIMESTAMP
+        )
+        """
+    )
+    if not rows:
+        return
+    con.execute("DELETE FROM observability.data_freshness_checks WHERE run_id = ?", [rows[0]["run_id"]])
+    for row in rows:
+        con.execute(
+            """
+            INSERT INTO observability.data_freshness_checks (
+                run_id,
+                job_name,
+                partition_key,
+                check_name,
+                severity,
+                status,
+                measured_value,
+                threshold_value,
+                details_json,
+                logged_ts
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                row["run_id"],
+                row["job_name"],
+                row["partition_key"],
+                row["check_name"],
+                row["severity"],
+                row["status"],
+                row["measured_value"],
+                row["threshold_value"],
+                row["details_json"],
+                row["logged_ts"],
+            ],
+        )
+
+
+def _is_us_trading_day(partition_key: str) -> bool:
+    try:
+        day = datetime.strptime(partition_key, "%Y-%m-%d").date()
+    except ValueError:
+        return False
+
+    # Fast fallback: weekends are never trading days.
+    if day.weekday() >= 5:
+        return False
+
+    # Prefer NYSE calendar if available to account for market holidays.
+    try:
+        import pandas_market_calendars as mcal
+
+        nyse = mcal.get_calendar("NYSE")
+        schedule = nyse.schedule(start_date=day, end_date=day)
+        return not schedule.empty
+    except Exception:
+        return True
+
+
+def _check_prices_freshness(con, run_id: str, job_name: str, partition_key: Optional[str]) -> list[dict]:
+    if job_name != "daily_prices_job":
+        return []
+
+    now = datetime.now(timezone.utc)
+    if not partition_key:
+        return [
+            {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": "prices_active_symbol_coverage",
+                "severity": "RED",
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": json.dumps({"reason": "missing_partition_key"}),
+                "logged_ts": now,
+            }
+        ]
+
+    if not _is_us_trading_day(partition_key):
+        return [
+            {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": "prices_active_symbol_coverage",
+                "severity": "RED",
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": 0.0,
+                "details_json": json.dumps(
+                    {
+                        "reason": "non_trading_day",
+                        "market": "NYSE",
+                    }
+                ),
+                "logged_ts": now,
+            }
+        ]
+
+    active_symbol_count = con.execute(
+        """
+        SELECT count(*)
+        FROM silver.assets
+        WHERE is_active = TRUE
+        """
+    ).fetchone()[0]
+
+    data_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
+    silver_path = data_root / "silver" / "prices" / f"date={partition_key}" / "prices.parquet"
+    present_symbol_count = 0
+    if silver_path.exists():
+        present_symbol_count = con.execute(
+            """
+            SELECT count(DISTINCT upper(symbol))
+            FROM read_parquet(?)
+            WHERE symbol IS NOT NULL
+            """,
+            [silver_path.as_posix()],
+        ).fetchone()[0]
+
+    missing_symbol_count = max(int(active_symbol_count) - int(present_symbol_count), 0)
+    status = "PASS" if missing_symbol_count == 0 else "FAIL"
+
+    return [
+        {
+            "run_id": run_id,
+            "job_name": job_name,
+            "partition_key": partition_key,
+            "check_name": "prices_active_symbol_coverage",
+            "severity": "RED",
+            "status": status,
+            "measured_value": float(missing_symbol_count),
+            "threshold_value": 0.0,
+            "details_json": json.dumps(
+                {
+                    "active_symbol_count": int(active_symbol_count),
+                    "symbols_with_prices": int(present_symbol_count),
+                    "missing_symbol_count": int(missing_symbol_count),
+                    "silver_partition_path": silver_path.as_posix(),
+                }
+            ),
+            "logged_ts": now,
+        }
+    ]
+
+
+def _check_wikipedia_freshness(con, run_id: str, job_name: str, partition_key: Optional[str]) -> list[dict]:
+    if job_name != "wikipedia_activity_job":
+        return []
+
+    now = datetime.now(timezone.utc)
+    if not partition_key:
+        return [
+            {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": "wikipedia_assets_with_views_min_count",
+                "severity": "RED",
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": json.dumps({"reason": "missing_partition_key"}),
+                "logged_ts": now,
+            },
+        ]
+
+    min_assets_with_views = int(os.getenv("WIKIPEDIA_MIN_ASSETS_WITH_VIEWS", "400"))
+
+    eligible_asset_count = con.execute(
+        """
+        SELECT count(*)
+        FROM silver.assets
+        WHERE is_active = TRUE
+          AND wikipedia_title IS NOT NULL
+          AND trim(wikipedia_title) <> ''
+        """
+    ).fetchone()[0]
+
+    data_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
+    wiki_path = data_root / "silver" / "wikipedia_pageviews" / f"view_date={partition_key}" / "data_0.parquet"
+    assets_with_views = 0
+    if wiki_path.exists():
+        assets_with_views = con.execute(
+            """
+            SELECT count(DISTINCT asset_id)
+            FROM read_parquet(?)
+            WHERE asset_id IS NOT NULL
+              AND views IS NOT NULL
+            """,
+            [wiki_path.as_posix()],
+        ).fetchone()[0]
+
+    missing_assets = max(int(eligible_asset_count) - int(assets_with_views), 0)
+    min_count_status = "PASS" if int(assets_with_views) >= min_assets_with_views else "FAIL"
+
+    details = {
+        "eligible_asset_count": int(eligible_asset_count),
+        "assets_with_views": int(assets_with_views),
+        "missing_assets": int(missing_assets),
+        "wikipedia_partition_path": wiki_path.as_posix(),
+    }
+    return [
+        {
+            "run_id": run_id,
+            "job_name": job_name,
+            "partition_key": partition_key,
+            "check_name": "wikipedia_assets_with_views_min_count",
+            "severity": "RED",
+            "status": min_count_status,
+            "measured_value": float(assets_with_views),
+            "threshold_value": float(min_assets_with_views),
+            "details_json": json.dumps(details),
+            "logged_ts": now,
+        },
+    ]
+
+
+def _check_news_freshness(con, run_id: str, job_name: str, partition_key: Optional[str]) -> list[dict]:
+    if job_name != "daily_news_job":
+        return []
+
+    now = datetime.now(timezone.utc)
+    if not partition_key:
+        return [
+            {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": "daily_news_partition_row_count",
+                "severity": "RED",
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": json.dumps({"reason": "missing_partition_key"}),
+                "logged_ts": now,
+            }
+        ]
+
+    data_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
+    news_path = data_root / "silver" / "news" / f"date={partition_key}" / "news.parquet"
+    row_count = 0
+    if news_path.exists():
+        row_count = con.execute(
+            "SELECT count(*) FROM read_parquet(?)",
+            [news_path.as_posix()],
+        ).fetchone()[0]
+
+    return [
+        {
+            "run_id": run_id,
+            "job_name": job_name,
+            "partition_key": partition_key,
+            "check_name": "daily_news_partition_row_count",
+            "severity": "RED",
+            "status": "PASS" if int(row_count) > 0 else "FAIL",
+            "measured_value": float(row_count),
+            "threshold_value": 1.0,
+            "details_json": json.dumps({"silver_news_partition_path": news_path.as_posix()}),
+            "logged_ts": now,
+        }
+    ]
+
+
+def _write_freshness_checks(context) -> None:
+    run = _get_run_from_context(context)
+    run_id = getattr(run, "run_id", None) or getattr(context, "run_id", None)
+    job_name = getattr(run, "job_name", None) or getattr(context, "job_name", None)
+    tags = run.tags or {} if run else {}
+    partition_key = tags.get("dagster/partition")
+    if not run_id or not job_name:
+        return
+
+    con, _ = _get_duckdb_connection(context)
+    if con is None:
+        for owned_con in _with_duckdb_connection():
+            check_rows = []
+            check_rows.extend(_check_prices_freshness(owned_con, run_id, job_name, partition_key))
+            check_rows.extend(_check_wikipedia_freshness(owned_con, run_id, job_name, partition_key))
+            check_rows.extend(_check_news_freshness(owned_con, run_id, job_name, partition_key))
+            _write_freshness_check_rows(owned_con, check_rows)
+        return
+
+    check_rows = []
+    check_rows.extend(_check_prices_freshness(con, run_id, job_name, partition_key))
+    check_rows.extend(_check_wikipedia_freshness(con, run_id, job_name, partition_key))
+    check_rows.extend(_check_news_freshness(con, run_id, job_name, partition_key))
+    _write_freshness_check_rows(con, check_rows)
+    try:
+        con.commit()
+    except Exception:
+        pass
 
 
 def _write_run_log(context, status: str, error_message: Optional[str] = None) -> None:
@@ -391,6 +704,10 @@ def dagster_run_log_success(context) -> None:
         _write_run_log(context, status="SUCCESS")
     except Exception as exc:
         context.log.warning("Run log write failed: %s", exc)
+    try:
+        _write_freshness_checks(context)
+    except Exception as exc:
+        context.log.warning("Freshness check write failed: %s", exc)
 
 
 @failure_hook(required_resource_keys={"duckdb"})

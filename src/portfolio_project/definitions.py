@@ -47,9 +47,7 @@ from portfolio_project.defs.wikipedia_pageviews import (
 )
 from portfolio_project.defs.run_log import (
     dagster_run_log_failure,
-    dagster_run_log_failure_sensor,
     dagster_run_log_success,
-    dagster_run_log_success_sensor,
 )
 
 from portfolio_project.defs.alpaca_resource import alpaca_resource
@@ -247,10 +245,6 @@ defs = Definitions(
         wikipedia_daily_schedule,
         sp500_weekly_schedule,
         tranco_monthly_schedule,
-    ],
-    sensors=[
-        dagster_run_log_success_sensor,
-        dagster_run_log_failure_sensor,
     ],
     resources={
         "alpaca": alpaca_resource,
