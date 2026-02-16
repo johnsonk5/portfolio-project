@@ -9,35 +9,55 @@ from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import AssetClass, AssetStatus
 from alpaca.trading.requests import GetAssetsRequest
-from dagster import resource
+from dagster import Bool, Field, resource
 
 
-@resource
+@resource(
+    config_schema={
+        "paper": Field(Bool, is_required=False),
+    }
+)
 def alpaca_resource(context) -> "AlpacaClient":
     """
     Dagster resource for Alpaca Markets API client.
     
-    Configuration:
+    Configuration (resource config):
+    - paper: Whether to use Alpaca paper trading endpoints for trading API calls.
+
+    Environment:
     - ALPACA_API_KEY: API key for Alpaca (from environment)
     - ALPACA_SECRET_KEY: Secret key for Alpaca (from environment)
+    - ALPACA_PAPER: Optional boolean override when `paper` is not provided.
     """
     api_key = os.getenv("ALPACA_API_KEY")
     secret_key = os.getenv("ALPACA_SECRET_KEY")
-    
+
     if not api_key or not secret_key:
         raise ValueError("ALPACA_API_KEY and ALPACA_SECRET_KEY environment variables must be set")
-    
-    return AlpacaClient(api_key, secret_key)
+
+    env_paper = os.getenv("ALPACA_PAPER")
+    if env_paper is not None:
+        env_paper = env_paper.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+    config_paper = context.resource_config.get("paper")
+    if config_paper is not None:
+        paper = config_paper
+    elif env_paper is not None:
+        paper = env_paper
+    else:
+        paper = True
+
+    return AlpacaClient(api_key, secret_key, paper=paper)
 
 
 class AlpacaClient:
     """Client for interacting with the Alpaca Markets API."""
     
-    def __init__(self, api_key: str, secret_key: str):
+    def __init__(self, api_key: str, secret_key: str, paper: bool = True):
         self.api_key = api_key
         self.secret_key = secret_key
+        self.paper = paper
         self.client = StockHistoricalDataClient(api_key, secret_key)
-        self.trading_client = TradingClient(api_key, secret_key)
+        self.trading_client = TradingClient(api_key, secret_key, paper=paper)
     
     def get_bars(
         self,

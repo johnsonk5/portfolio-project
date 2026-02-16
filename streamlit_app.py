@@ -20,6 +20,7 @@ st.set_page_config(
 with st.sidebar:
     st.page_link("streamlit_app.py", label="Market Vibecheck")
     st.page_link("pages/Deep_Dive.py", label="Deep Dive")
+    st.page_link("pages/Observability.py", label="Observability")
 
 
 CSS = """
@@ -217,7 +218,7 @@ def _render_symbol_table(
         return
     header_cells = []
     for label in labels:
-        cls = "mom-tight" if label == "20D Mom (%)" else ""
+        cls = "mom-tight" if label == "21D Ret (%)" else ""
         class_attr = f' class="{cls}"' if cls else ""
         header_cells.append(f"<th{class_attr}>{html.escape(label)}</th>")
     headers = "".join(header_cells)
@@ -753,7 +754,7 @@ with right:
         hot_col, crash_col, sleepy_col = st.columns([2.0, 2.0, 1.6], gap="medium")
         with hot_col:
             st.markdown(
-                '<span class="tooltip" data-tip="High-volatility names with positive 20-day momentum."><strong>Hot Ones 🔥</strong></span>',
+                '<span class="tooltip" data-tip="High-volatility names with positive 21-day returns."><strong>Hot Ones 🔥</strong></span>',
                 unsafe_allow_html=True,
             )
             if hot.empty:
@@ -762,14 +763,14 @@ with right:
                 _render_symbol_table(
                     hot,
                     columns=["symbol", "vol_pct", "mom_pct"],
-                    labels=["Symbol", "Vol", "20D Mom (%)"],
+                    labels=["Symbol", "Vol", "21D Ret (%)"],
                     formats=["{}", "{:.2f}", "{:.2f}"],
                     min_rows=5,
                 )
 
         with crash_col:
             st.markdown(
-                '<span class="tooltip" data-tip="High-volatility names with negative 20-day momentum."><strong>Crashing Out 😢</strong></span>',
+                '<span class="tooltip" data-tip="High-volatility names with negative 21-day returns."><strong>Crashing Out 😢</strong></span>',
                 unsafe_allow_html=True,
             )
             if crash.empty:
@@ -778,7 +779,7 @@ with right:
                 _render_symbol_table(
                     crash,
                     columns=["symbol", "vol_pct", "mom_pct"],
-                    labels=["Symbol", "Vol", "20D Mom (%)"],
+                    labels=["Symbol", "Vol", "21D Ret (%)"],
                     formats=["{}", "{:.2f}", "{:.2f}"],
                     min_rows=5,
                 )
