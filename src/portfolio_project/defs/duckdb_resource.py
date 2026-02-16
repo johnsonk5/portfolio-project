@@ -16,6 +16,8 @@ def _acquire_duckdb_lock(
         try:
             # signal 0 checks for process existence without sending a signal
             os.kill(pid, 0)
+        except PermissionError:
+            return True
         except OSError:
             return False
         return True
@@ -53,8 +55,15 @@ def _release_duckdb_lock(path: Path, fd: int) -> None:
     try:
         os.close(fd)
     finally:
-        if path.exists():
-            path.unlink()
+        try:
+            lock_pid = int(path.read_text(encoding="ascii").strip())
+        except (FileNotFoundError, ValueError, OSError):
+            lock_pid = None
+        if lock_pid == os.getpid():
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 @resource(
