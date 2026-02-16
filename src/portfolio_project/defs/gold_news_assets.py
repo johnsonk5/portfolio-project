@@ -42,7 +42,7 @@ def gold_headlines(context: AssetExecutionContext) -> None:
     Maintain a rolling 30-day headlines table in DuckDB.
     """
     partition_date = datetime.strptime(context.partition_key, "%Y-%m-%d").date()
-    window_start = partition_date - timedelta(days=29)
+    window_start = partition_date - timedelta(days=30)
     window_end = partition_date + timedelta(days=1)
 
     parquet_paths = []

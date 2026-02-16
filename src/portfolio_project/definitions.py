@@ -45,10 +45,6 @@ from portfolio_project.defs.wikipedia_pageviews import (
     bronze_wikipedia_pageviews,
     silver_wikipedia_pageviews,
 )
-from portfolio_project.defs.run_log import (
-    dagster_run_log_failure,
-    dagster_run_log_success,
-)
 
 from portfolio_project.defs.alpaca_resource import alpaca_resource
 from portfolio_project.defs.duckdb_resource import duckdb_resource
@@ -65,7 +61,6 @@ daily_prices_job = define_asset_job(
     selection=prices_selection,
     partitions_def=BRONZE_PARTITIONS,
     executor_def=in_process_executor,
-    hooks={dagster_run_log_success, dagster_run_log_failure},
 )
 
 asset_status_updates_selection = AssetSelection.assets(
@@ -75,7 +70,6 @@ asset_status_updates_selection = AssetSelection.assets(
 asset_status_updates_job = define_asset_job(
     name="asset_status_updates_job",
     selection=asset_status_updates_selection,
-    hooks={dagster_run_log_success, dagster_run_log_failure},
 )
 
 sp500_selection = AssetSelection.assets(
@@ -86,7 +80,6 @@ sp500_selection = AssetSelection.assets(
 sp500_update_job = define_asset_job(
     name="sp500_update_job",
     selection=sp500_selection,
-    hooks={dagster_run_log_success, dagster_run_log_failure},
 )
 
 news_selection = AssetSelection.assets(
@@ -101,7 +94,6 @@ daily_news_job = define_asset_job(
     selection=news_selection,
     partitions_def=BRONZE_NEWS_PARTITIONS,
     executor_def=in_process_executor,
-    hooks={dagster_run_log_success, dagster_run_log_failure},
 )
 
 wikipedia_activity_selection = AssetSelection.assets(
@@ -115,13 +107,11 @@ wikipedia_activity_job = define_asset_job(
     selection=wikipedia_activity_selection,
     partitions_def=BRONZE_WIKIPEDIA_PARTITIONS,
     executor_def=in_process_executor,
-    hooks={dagster_run_log_success, dagster_run_log_failure},
 )
 
 tranco_update_job = define_asset_job(
     name="tranco_update_job",
     selection=AssetSelection.assets(bronze_tranco_snapshot),
-    hooks={dagster_run_log_success, dagster_run_log_failure},
 )
 
 sp500_weekly_schedule = ScheduleDefinition(
@@ -131,23 +121,12 @@ sp500_weekly_schedule = ScheduleDefinition(
     job=sp500_update_job,
 )
 
-def _previous_trading_day(local_date):
-    weekday = local_date.weekday()
-    if weekday == 0:
-        return local_date - timedelta(days=3)
-    if weekday == 6:
-        return local_date - timedelta(days=2)
-    if weekday == 5:
-        return local_date - timedelta(days=1)
-    return local_date - timedelta(days=1)
-
-
 def _daily_prices_schedule_fn(context):
     scheduled_time = context.scheduled_execution_time
     if scheduled_time is None:
         return []
-    scheduled_local = scheduled_time.astimezone(ZoneInfo("America/New_York"))
-    partition_date = _previous_trading_day(scheduled_local.date())
+    scheduled_utc = scheduled_time.astimezone(ZoneInfo("UTC"))
+    partition_date = scheduled_utc.date() - timedelta(days=1)
     partition_key = partition_date.strftime("%Y-%m-%d")
     return RunRequest(
         run_key=partition_key,
@@ -187,8 +166,8 @@ def _daily_wikipedia_schedule_fn(context):
     scheduled_time = context.scheduled_execution_time
     if scheduled_time is None:
         return []
-    scheduled_local = scheduled_time.astimezone(ZoneInfo("America/New_York"))
-    partition_date = _previous_trading_day(scheduled_local.date())
+    scheduled_utc = scheduled_time.astimezone(ZoneInfo("UTC"))
+    partition_date = scheduled_utc.date() - timedelta(days=1)
     partition_key = partition_date.strftime("%Y-%m-%d")
     return RunRequest(
         run_key=partition_key,
