@@ -299,25 +299,80 @@ def _check_prices_freshness(con, run_id: str, job_name: str, partition_key: Opti
     active_symbol_count = con.execute(
         """
         SELECT count(*)
-        FROM silver.assets
-        WHERE is_active = TRUE
+        FROM (
+            SELECT DISTINCT upper(trim(symbol)) AS symbol
+            FROM silver.assets
+            WHERE is_active = TRUE
+              AND symbol IS NOT NULL
+              AND trim(symbol) <> ''
+        )
         """
     ).fetchone()[0]
 
     data_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
     silver_path = data_root / "silver" / "prices" / f"date={partition_key}" / "prices.parquet"
     present_symbol_count = 0
+    missing_symbol_count = int(active_symbol_count)
+    missing_symbol_samples = []
     if silver_path.exists():
-        present_symbol_count = con.execute(
+        present_symbol_count, missing_symbol_count = con.execute(
             """
-            SELECT count(DISTINCT upper(symbol))
-            FROM read_parquet(?)
-            WHERE symbol IS NOT NULL
+            WITH active_symbols AS (
+                SELECT DISTINCT upper(trim(symbol)) AS symbol
+                FROM silver.assets
+                WHERE is_active = TRUE
+                  AND symbol IS NOT NULL
+                  AND trim(symbol) <> ''
+            ),
+            present_symbols AS (
+                SELECT DISTINCT upper(trim(symbol)) AS symbol
+                FROM read_parquet(?)
+                WHERE symbol IS NOT NULL
+                  AND trim(symbol) <> ''
+            ),
+            missing_symbols AS (
+                SELECT a.symbol
+                FROM active_symbols AS a
+                LEFT JOIN present_symbols AS p
+                    ON a.symbol = p.symbol
+                WHERE p.symbol IS NULL
+            )
+            SELECT
+                (SELECT count(*) FROM present_symbols) AS present_symbol_count,
+                (SELECT count(*) FROM missing_symbols) AS missing_symbol_count
             """,
             [silver_path.as_posix()],
-        ).fetchone()[0]
+        ).fetchone()
+        missing_symbol_samples = [
+            row[0]
+            for row in con.execute(
+                """
+                WITH active_symbols AS (
+                    SELECT DISTINCT upper(trim(symbol)) AS symbol
+                    FROM silver.assets
+                    WHERE is_active = TRUE
+                      AND symbol IS NOT NULL
+                      AND trim(symbol) <> ''
+                ),
+                present_symbols AS (
+                    SELECT DISTINCT upper(trim(symbol)) AS symbol
+                    FROM read_parquet(?)
+                    WHERE symbol IS NOT NULL
+                      AND trim(symbol) <> ''
+                )
+                SELECT a.symbol
+                FROM active_symbols AS a
+                LEFT JOIN present_symbols AS p
+                    ON a.symbol = p.symbol
+                WHERE p.symbol IS NULL
+                ORDER BY a.symbol
+                LIMIT 25
+                """,
+                [silver_path.as_posix()],
+            ).fetchall()
+        ]
 
-    missing_symbol_count = max(int(active_symbol_count) - int(present_symbol_count), 0)
+    missing_symbol_count = int(missing_symbol_count)
     status = "PASS" if missing_symbol_count == 0 else "FAIL"
 
     return [
@@ -335,6 +390,7 @@ def _check_prices_freshness(con, run_id: str, job_name: str, partition_key: Opti
                     "active_symbol_count": int(active_symbol_count),
                     "symbols_with_prices": int(present_symbol_count),
                     "missing_symbol_count": int(missing_symbol_count),
+                    "missing_symbol_samples": missing_symbol_samples,
                     "silver_partition_path": silver_path.as_posix(),
                 }
             ),
@@ -470,20 +526,48 @@ def _write_freshness_checks(context) -> None:
     if not run_id or not job_name:
         return
 
+    now = datetime.now(timezone.utc)
+
+    def _run_checks_with_isolation(connection) -> list[dict]:
+        check_rows = []
+        checks = [
+            ("prices_active_symbol_coverage", _check_prices_freshness),
+            ("wikipedia_assets_with_views_min_count", _check_wikipedia_freshness),
+            ("daily_news_partition_row_count", _check_news_freshness),
+        ]
+        for check_name, check_fn in checks:
+            try:
+                check_rows.extend(check_fn(connection, run_id, job_name, partition_key))
+            except Exception as exc:
+                check_rows.append(
+                    {
+                        "run_id": run_id,
+                        "job_name": job_name,
+                        "partition_key": partition_key,
+                        "check_name": check_name,
+                        "severity": "RED",
+                        "status": "FAIL",
+                        "measured_value": None,
+                        "threshold_value": None,
+                        "details_json": json.dumps(
+                            {
+                                "reason": "check_execution_error",
+                                "error_message": str(exc),
+                            }
+                        ),
+                        "logged_ts": now,
+                    }
+                )
+        return check_rows
+
     con, _ = _get_duckdb_connection(context)
     if con is None:
         for owned_con in _with_duckdb_connection():
-            check_rows = []
-            check_rows.extend(_check_prices_freshness(owned_con, run_id, job_name, partition_key))
-            check_rows.extend(_check_wikipedia_freshness(owned_con, run_id, job_name, partition_key))
-            check_rows.extend(_check_news_freshness(owned_con, run_id, job_name, partition_key))
+            check_rows = _run_checks_with_isolation(owned_con)
             _write_freshness_check_rows(owned_con, check_rows)
         return
 
-    check_rows = []
-    check_rows.extend(_check_prices_freshness(con, run_id, job_name, partition_key))
-    check_rows.extend(_check_wikipedia_freshness(con, run_id, job_name, partition_key))
-    check_rows.extend(_check_news_freshness(con, run_id, job_name, partition_key))
+    check_rows = _run_checks_with_isolation(con)
     _write_freshness_check_rows(con, check_rows)
     try:
         con.commit()
@@ -700,14 +784,19 @@ def _write_run_log(context, status: str, error_message: Optional[str] = None) ->
 
 @success_hook(required_resource_keys={"duckdb"})
 def dagster_run_log_success(context) -> None:
+    errors = []
     try:
         _write_run_log(context, status="SUCCESS")
     except Exception as exc:
+        errors.append(f"run_log_write_failed: {exc}")
         context.log.warning("Run log write failed: %s", exc)
     try:
         _write_freshness_checks(context)
     except Exception as exc:
+        errors.append(f"freshness_check_write_failed: {exc}")
         context.log.warning("Freshness check write failed: %s", exc)
+    if errors:
+        raise RuntimeError("Observability failure(s): " + " | ".join(errors))
 
 
 @failure_hook(required_resource_keys={"duckdb"})
@@ -719,6 +808,7 @@ def dagster_run_log_failure(context) -> None:
         _write_run_log(context, status="FAILURE", error_message=error_message)
     except Exception as exc:
         context.log.warning("Run log write failed: %s", exc)
+        raise RuntimeError(f"Observability failure: run_log_write_failed: {exc}") from exc
 
 
 @run_status_sensor(
@@ -731,6 +821,7 @@ def dagster_run_log_success_sensor(context) -> None:
         _write_run_log(context, status="SUCCESS")
     except Exception as exc:
         context.log.warning("Run log write failed: %s", exc)
+        raise RuntimeError(f"Observability failure: run_log_write_failed: {exc}") from exc
 
 
 @run_status_sensor(
@@ -746,3 +837,4 @@ def dagster_run_log_failure_sensor(context) -> None:
         _write_run_log(context, status="FAILURE", error_message=error_message)
     except Exception as exc:
         context.log.warning("Run log write failed: %s", exc)
+        raise RuntimeError(f"Observability failure: run_log_write_failed: {exc}") from exc

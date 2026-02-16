@@ -16,6 +16,7 @@ st.set_page_config(
 with st.sidebar:
     st.page_link("streamlit_app.py", label="Market Vibecheck")
     st.page_link("pages/Deep_Dive.py", label="Deep Dive")
+    st.page_link("pages/Observability.py", label="Observability")
 
 CSS = """
 <style>
