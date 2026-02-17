@@ -22,6 +22,9 @@ dependencies = [
 dev = [
     "dagster-webserver",
     "dagster-dg-cli",
+    "mypy>=1.11.0",
+    "pytest>=8.3.0",
+    "ruff>=0.6.0",
 ]
 
 [build-system]
@@ -38,6 +41,34 @@ directory_type = "project"
 root_module = "portfolio_project"
 registry_modules = [
     "portfolio_project.components.*",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+disable_error_code = ["import-untyped"]
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = false
+check_untyped_defs = false
+files = [
+    "src/portfolio_project/definitions.py",
+    "src/portfolio_project/defs/run_log.py",
+    "tests",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "smoke: pipeline smoke tests that run a tiny fixture dataset",
 ]
 
 
