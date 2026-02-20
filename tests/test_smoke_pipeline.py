@@ -13,12 +13,15 @@ from portfolio_project.defs.silver_prices import silver_alpaca_prices_parquet
 
 
 def _write_fixture_bronze_bars(data_root: Path, partition_key: str, symbols: list[str]) -> None:
-    partition_date = datetime.strptime(partition_key, "%Y-%m-%d")
-    month_key = partition_date.strftime("%Y-%m")
-    bronze_dir = data_root / "bronze" / "alpaca_bars" / f"month={month_key}"
-    bronze_dir.mkdir(parents=True, exist_ok=True)
-
     for symbol in symbols:
+        bronze_dir = (
+            data_root
+            / "bronze"
+            / "alpaca_bars"
+            / f"date={partition_key}"
+            / f"symbol={symbol}"
+        )
+        bronze_dir.mkdir(parents=True, exist_ok=True)
         df = pd.DataFrame(
             {
                 "symbol": [symbol, symbol],
@@ -36,7 +39,7 @@ def _write_fixture_bronze_bars(data_root: Path, partition_key: str, symbols: lis
                 "ingested_ts": [datetime.now(timezone.utc), datetime.now(timezone.utc)],
             }
         )
-        df.to_parquet(bronze_dir / f"symbol={symbol}.parquet", index=False)
+        df.to_parquet(bronze_dir / "bars.parquet", index=False)
 
 
 @pytest.mark.smoke
@@ -79,9 +82,17 @@ def test_daily_prices_path_materializes_with_three_tickers(tmp_path: Path) -> No
     )
 
     assert result.success
+    silver_glob = (
+        data_root
+        / "silver"
+        / "prices"
+        / f"date={partition_key}"
+        / "symbol=*"
+        / "prices.parquet"
+    ).as_posix()
     silver_row = con.execute(
         "SELECT count(*) FROM read_parquet(?)",
-        [(data_root / "silver" / "prices" / f"date={partition_key}" / "prices.parquet").as_posix()],
+        [silver_glob],
     ).fetchone()
     gold_row = con.execute(
         "SELECT count(*) FROM gold.prices WHERE trade_date = ?",

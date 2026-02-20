@@ -1,14 +1,23 @@
 import os
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from dagster import AssetExecutionContext, DailyPartitionsDefinition, asset
+from dagster import (
+    AssetExecutionContext,
+    DailyPartitionsDefinition,
+    MonthlyPartitionsDefinition,
+    asset,
+)
 
 from portfolio_project.defs.silver_assets import silver_alpaca_assets
-from portfolio_project.defs.silver_prices import silver_alpaca_prices_parquet
+from portfolio_project.defs.silver_prices import (
+    silver_alpaca_prices_monthly_backfill,
+    silver_alpaca_prices_parquet,
+)
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 GOLD_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
+GOLD_MONTHLY_BACKFILL_PARTITIONS = MonthlyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 
 
@@ -28,25 +37,38 @@ def _table_exists(con, schema: str, table: str) -> bool:
     )
 
 
-@asset(
-    name="gold_alpaca_prices",
-    deps=[silver_alpaca_assets, silver_alpaca_prices_parquet],
-    partitions_def=GOLD_PARTITIONS,
-    required_resource_keys={"duckdb"},
-)
-def gold_alpaca_prices(context: AssetExecutionContext) -> None:
-    """
-    Build daily gold-layer prices and factor features from silver parquet.
-    """
-    partition_date = datetime.strptime(context.partition_key, "%Y-%m-%d").date()
-    con = context.resources.duckdb
+def _next_month(value: date) -> date:
+    return (value.replace(day=28) + timedelta(days=4)).replace(day=1)
 
-    try:
-        con.execute("SELECT 1 FROM silver.assets LIMIT 1")
-    except Exception as exc:
-        context.log.warning("Silver assets table missing or unreadable: %s", exc)
-        return
 
+def _silver_paths_for_day(trade_date: date) -> list[str]:
+    day_dir = DATA_ROOT / "silver" / "prices" / f"date={trade_date.isoformat()}"
+    if not day_dir.exists():
+        return []
+    paths: list[str] = []
+    for symbol_dir in day_dir.glob("symbol=*"):
+        candidate = symbol_dir / "prices.parquet"
+        if candidate.exists():
+            paths.append(candidate.as_posix())
+    return sorted(paths)
+
+
+def _silver_paths_for_month(month_start: date) -> list[str]:
+    month_end = _next_month(month_start)
+    paths: list[str] = []
+    cursor = month_start
+    while cursor < month_end:
+        day_dir = DATA_ROOT / "silver" / "prices" / f"date={cursor.isoformat()}"
+        if day_dir.exists():
+            for symbol_dir in day_dir.glob("symbol=*"):
+                parquet_file = symbol_dir / "prices.parquet"
+                if parquet_file.exists():
+                    paths.append(parquet_file.as_posix())
+        cursor += timedelta(days=1)
+    return sorted(paths)
+
+
+def _ensure_gold_table(con) -> None:
     con.execute("CREATE SCHEMA IF NOT EXISTS gold")
     con.execute(
         """
@@ -76,9 +98,18 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
         )
         """
     )
-    con.execute(
-        "ALTER TABLE gold.prices ADD COLUMN IF NOT EXISTS sentiment_score DOUBLE"
-    )
+    con.execute("ALTER TABLE gold.prices ADD COLUMN IF NOT EXISTS sentiment_score DOUBLE")
+
+
+def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -> int:
+    con = context.resources.duckdb
+    try:
+        con.execute("SELECT 1 FROM silver.assets LIMIT 1")
+    except Exception as exc:
+        context.log.warning("Silver assets table missing or unreadable: %s", exc)
+        return 0
+
+    _ensure_gold_table(con)
 
     sentiment_enabled = _table_exists(con, "gold", "headlines") and _table_exists(
         con, "silver", "ref_publishers"
@@ -87,27 +118,13 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
     sentiment_window_end = partition_date + timedelta(days=1)
 
     lookback_start = partition_date - timedelta(days=400)
-    parquet_paths = []
-    cursor = lookback_start
-    while cursor <= partition_date:
-        parquet_path = (
-            DATA_ROOT
-            / "silver"
-            / "prices"
-            / f"date={cursor.strftime('%Y-%m-%d')}"
-            / "prices.parquet"
-        )
-        if parquet_path.exists():
-            parquet_paths.append(parquet_path.as_posix())
-        cursor += timedelta(days=1)
-
+    parquet_paths = _silver_paths_for_day(partition_date)
     if not parquet_paths:
         context.log.warning(
-            "No silver parquet partitions found between %s and %s.",
-            lookback_start,
+            "No silver parquet partition files found for %s.",
             partition_date,
         )
-        return
+        return 0
 
     if sentiment_enabled:
         sentiment_cte = """
@@ -298,10 +315,7 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
         WHERE final.trade_date = ?
     """
 
-    con.execute(
-        "DELETE FROM gold.prices WHERE trade_date = ?",
-        [partition_date],
-    )
+    con.execute("DELETE FROM gold.prices WHERE trade_date = ?", [partition_date])
     insert_sql = f"""
         WITH prices AS (
             SELECT *
@@ -340,23 +354,316 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
         partition_date,
     ]
     query_params = base_params + sentiment_params + [partition_date]
-    con.execute(
-        insert_sql,
-        [
-            parquet_paths,
-            *query_params,
-        ],
-    )
+    con.execute(insert_sql, [parquet_paths, *query_params])
 
     row_count = con.execute(
         "SELECT count(*) AS count FROM gold.prices WHERE trade_date = ?",
         [partition_date],
     ).fetchone()[0]
+    return int(row_count or 0)
 
+
+def _upsert_gold_for_month(context: AssetExecutionContext, month_start: date) -> int:
+    con = context.resources.duckdb
+    try:
+        con.execute("SELECT 1 FROM silver.assets LIMIT 1")
+    except Exception as exc:
+        context.log.warning("Silver assets table missing or unreadable: %s", exc)
+        return 0
+
+    _ensure_gold_table(con)
+
+    month_end = _next_month(month_start)
+    lookback_start = month_start - timedelta(days=400)
+    parquet_paths = _silver_paths_for_month(month_start)
+    if not parquet_paths:
+        context.log.warning(
+            "No silver parquet partition files found for month %s.",
+            month_start.strftime("%Y-%m"),
+        )
+        return 0
+
+    sentiment_enabled = _table_exists(con, "gold", "headlines") and _table_exists(
+        con, "silver", "ref_publishers"
+    )
+    if sentiment_enabled:
+        sentiment_cte = """
+        , sentiment_scores AS (
+            SELECT
+                d.asset_id,
+                d.trade_date,
+                sum(
+                    CASE
+                        WHEN lower(h.sentiment) = 'positive' THEN 1 * p.publisher_weight
+                        WHEN lower(h.sentiment) = 'neutral' THEN 0 * p.publisher_weight
+                        WHEN lower(h.sentiment) = 'negative' THEN -1 * p.publisher_weight
+                        ELSE NULL
+                    END
+                ) / nullif(sum(p.publisher_weight), 0) AS sentiment_score
+            FROM daily_prices AS d
+            LEFT JOIN gold.headlines AS h
+                ON h.asset_id = d.asset_id
+               AND h.provider_publish_time >= d.trade_date - INTERVAL 6 DAY
+               AND h.provider_publish_time < d.trade_date + INTERVAL 1 DAY
+            LEFT JOIN silver.ref_publishers AS p
+                ON h.publisher_id = p.publisher_id
+            GROUP BY d.asset_id, d.trade_date
+        )
+        """
+        sentiment_select = """
+        SELECT
+            final.*,
+            sentiment_scores.sentiment_score
+        FROM final
+        LEFT JOIN sentiment_scores
+            ON sentiment_scores.asset_id = final.asset_id
+           AND sentiment_scores.trade_date = final.trade_date
+        """
+    else:
+        sentiment_cte = ""
+        sentiment_select = """
+        SELECT
+            final.*,
+            CAST(NULL AS DOUBLE) AS sentiment_score
+        FROM final
+        """
+
+    month_sql = f"""
+        WITH prices AS (
+            SELECT *
+            FROM read_parquet(?)
+            WHERE CAST(timestamp AS DATE) >= ?
+              AND CAST(timestamp AS DATE) < ?
+        ),
+        active_assets AS (
+            SELECT asset_id, symbol
+            FROM silver.assets
+            WHERE is_active = TRUE
+        ),
+        target_assets AS (
+            SELECT DISTINCT prices.asset_id, prices.symbol
+            FROM prices AS prices
+            INNER JOIN active_assets AS assets
+                ON prices.asset_id = assets.asset_id
+            WHERE CAST(prices.timestamp AS DATE) >= ?
+              AND CAST(prices.timestamp AS DATE) < ?
+        ),
+        daily_prices AS (
+            SELECT
+                asset_id,
+                symbol,
+                CAST(timestamp AS DATE) AS trade_date,
+                arg_min(open, timestamp) AS open,
+                max(high) AS high,
+                min(low) AS low,
+                arg_max(close, timestamp) AS close,
+                sum(volume) AS volume,
+                sum(trade_count) AS trade_count,
+                CASE
+                    WHEN sum(CASE WHEN vwap IS NOT NULL AND volume IS NOT NULL THEN volume ELSE 0 END) > 0
+                        THEN sum(vwap * volume) / sum(volume)
+                    ELSE NULL
+                END AS vwap
+            FROM prices
+            WHERE CAST(timestamp AS DATE) >= ?
+              AND CAST(timestamp AS DATE) < ?
+              AND asset_id IN (SELECT asset_id FROM target_assets)
+            GROUP BY asset_id, symbol, CAST(timestamp AS DATE)
+        ),
+        history_prices AS (
+            SELECT asset_id, symbol, trade_date, close
+            FROM gold.prices
+            WHERE trade_date >= ?
+              AND trade_date < ?
+              AND asset_id IN (SELECT asset_id FROM target_assets)
+        ),
+        returns_base AS (
+            SELECT * FROM history_prices
+            UNION ALL
+            SELECT asset_id, symbol, trade_date, close
+            FROM daily_prices
+        ),
+        returns_features AS (
+            SELECT
+                asset_id,
+                symbol,
+                trade_date,
+                close,
+                close / lag(close, 1) OVER (PARTITION BY asset_id ORDER BY trade_date) - 1
+                    AS returns_1d,
+                close / lag(close, 5) OVER (PARTITION BY asset_id ORDER BY trade_date) - 1
+                    AS returns_5d,
+                close / lag(close, 21) OVER (PARTITION BY asset_id ORDER BY trade_date) - 1
+                    AS returns_21d,
+                (
+                    lag(close, 21) OVER (PARTITION BY asset_id ORDER BY trade_date)
+                    / lag(close, 252) OVER (PARTITION BY asset_id ORDER BY trade_date)
+                    - 1
+                ) AS momentum_12_1,
+                max(close) OVER (
+                    PARTITION BY asset_id
+                    ORDER BY trade_date
+                    ROWS BETWEEN 251 PRECEDING AND CURRENT ROW
+                ) AS high_52w,
+                avg(close) OVER (
+                    PARTITION BY asset_id
+                    ORDER BY trade_date
+                    ROWS BETWEEN 49 PRECEDING AND CURRENT ROW
+                ) AS sma_50,
+                avg(close) OVER (
+                    PARTITION BY asset_id
+                    ORDER BY trade_date
+                    ROWS BETWEEN 199 PRECEDING AND CURRENT ROW
+                ) AS sma_200
+            FROM returns_base
+        ),
+        vol_features AS (
+            SELECT
+                *,
+                stddev_samp(returns_1d) OVER (
+                    PARTITION BY asset_id
+                    ORDER BY trade_date
+                    ROWS BETWEEN 20 PRECEDING AND CURRENT ROW
+                ) * sqrt(252) AS realized_vol_21d
+            FROM returns_features
+        ),
+        final AS (
+            SELECT
+                d.asset_id,
+                d.symbol,
+                d.trade_date,
+                d.open,
+                d.high,
+                d.low,
+                d.close,
+                d.volume,
+                d.trade_count,
+                d.vwap,
+                d.close * d.volume AS dollar_volume,
+                v.returns_1d,
+                v.returns_5d,
+                v.returns_21d,
+                v.realized_vol_21d,
+                v.momentum_12_1,
+                CASE
+                    WHEN v.high_52w IS NULL OR v.high_52w = 0 THEN NULL
+                    ELSE (v.high_52w - d.close) / v.high_52w
+                END AS pct_below_52w_high,
+                v.sma_50,
+                v.sma_200,
+                CASE
+                    WHEN v.sma_50 IS NULL OR v.sma_50 = 0 THEN NULL
+                    ELSE d.close / v.sma_50 - 1
+                END AS dist_sma_50,
+                CASE
+                    WHEN v.sma_200 IS NULL OR v.sma_200 = 0 THEN NULL
+                    ELSE d.close / v.sma_200 - 1
+                END AS dist_sma_200
+            FROM daily_prices d
+            LEFT JOIN vol_features v
+                ON v.asset_id = d.asset_id
+               AND v.symbol = d.symbol
+               AND v.trade_date = d.trade_date
+            WHERE d.trade_date >= ?
+              AND d.trade_date < ?
+        )
+        {sentiment_cte}
+        INSERT INTO gold.prices (
+            asset_id,
+            symbol,
+            trade_date,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            trade_count,
+            vwap,
+            dollar_volume,
+            returns_1d,
+            returns_5d,
+            returns_21d,
+            realized_vol_21d,
+            momentum_12_1,
+            pct_below_52w_high,
+            sma_50,
+            sma_200,
+            dist_sma_50,
+            dist_sma_200,
+            sentiment_score
+        )
+        {sentiment_select}
+    """
+
+    con.execute(
+        "DELETE FROM gold.prices WHERE trade_date >= ? AND trade_date < ?",
+        [month_start, month_end],
+    )
+    con.execute(
+        month_sql,
+        [
+            parquet_paths,
+            month_start,
+            month_end,
+            month_start,
+            month_end,
+            month_start,
+            month_end,
+            lookback_start,
+            month_start,
+            month_start,
+            month_end,
+        ],
+    )
+
+    row_count = con.execute(
+        "SELECT count(*) FROM gold.prices WHERE trade_date >= ? AND trade_date < ?",
+        [month_start, month_end],
+    ).fetchone()[0]
+    return int(row_count or 0)
+
+
+@asset(
+    name="gold_alpaca_prices",
+    deps=[silver_alpaca_assets, silver_alpaca_prices_parquet],
+    partitions_def=GOLD_PARTITIONS,
+    required_resource_keys={"duckdb"},
+)
+def gold_alpaca_prices(context: AssetExecutionContext) -> None:
+    """
+    Build daily gold-layer prices and factor features from silver parquet.
+    """
+    partition_date = datetime.strptime(context.partition_key, "%Y-%m-%d").date()
+    row_count = _upsert_gold_for_day(context, partition_date)
     context.add_output_metadata(
         {
             "table": "gold.prices",
             "partition": context.partition_key,
             "row_count": row_count,
+        }
+    )
+
+
+@asset(
+    name="gold_alpaca_prices_monthly_backfill",
+    deps=[silver_alpaca_assets, silver_alpaca_prices_monthly_backfill],
+    partitions_def=GOLD_MONTHLY_BACKFILL_PARTITIONS,
+    required_resource_keys={"duckdb"},
+)
+def gold_alpaca_prices_monthly_backfill(context: AssetExecutionContext) -> None:
+    """
+    Upsert gold prices for every calendar day in a month.
+    """
+    month_start = datetime.strptime(context.partition_key, "%Y-%m-%d").date()
+    next_month = _next_month(month_start)
+    total_rows = _upsert_gold_for_month(context, month_start)
+    processed_days = (next_month - month_start).days
+
+    context.add_output_metadata(
+        {
+            "table": "gold.prices",
+            "partition_month_start": context.partition_key,
+            "calendar_days_processed": processed_days,
+            "row_count": total_rows,
         }
     )

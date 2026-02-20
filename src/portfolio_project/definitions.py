@@ -11,9 +11,11 @@ from dagster import (
 )
 
 from portfolio_project.defs.bronze_assets import (
+    BRONZE_MONTHLY_BACKFILL_PARTITIONS,
     BRONZE_PARTITIONS,
     bronze_alpaca_assets,
     bronze_alpaca_bars,
+    bronze_alpaca_bars_monthly_backfill,
 )
 from portfolio_project.defs.silver_assets import (
     silver_alpaca_active_assets_history,
@@ -21,9 +23,13 @@ from portfolio_project.defs.silver_assets import (
     silver_alpaca_assets_status_updates,
 )
 from portfolio_project.defs.silver_prices import (
+    silver_alpaca_prices_monthly_backfill,
     silver_alpaca_prices_parquet,
 )
-from portfolio_project.defs.gold_prices import gold_alpaca_prices
+from portfolio_project.defs.gold_prices import (
+    gold_alpaca_prices,
+    gold_alpaca_prices_monthly_backfill,
+)
 from portfolio_project.defs.gold_activity import gold_activity
 from portfolio_project.defs.sp500_assets import (
     bronze_sp500_companies,
@@ -64,6 +70,18 @@ daily_prices_job = define_asset_job(
     name="daily_prices_job",
     selection=prices_selection,
     partitions_def=BRONZE_PARTITIONS,
+    executor_def=in_process_executor,
+    hooks={dagster_run_log_success, dagster_run_log_failure},
+)
+
+monthly_prices_backfill_job = define_asset_job(
+    name="monthly_prices_backfill_job",
+    selection=AssetSelection.assets(
+        bronze_alpaca_bars_monthly_backfill,
+        silver_alpaca_prices_monthly_backfill,
+        gold_alpaca_prices_monthly_backfill,
+    ),
+    partitions_def=BRONZE_MONTHLY_BACKFILL_PARTITIONS,
     executor_def=in_process_executor,
     hooks={dagster_run_log_success, dagster_run_log_failure},
 )
@@ -215,6 +233,7 @@ defs = Definitions(
     assets=[
         bronze_alpaca_bars,
         bronze_alpaca_assets,
+        bronze_alpaca_bars_monthly_backfill,
         bronze_yahoo_news,
         bronze_tranco_snapshot,
         bronze_wikipedia_pageviews,
@@ -226,13 +245,16 @@ defs = Definitions(
         silver_alpaca_active_assets_history,
         silver_alpaca_assets_status_updates,
         silver_alpaca_prices_parquet,
+        silver_alpaca_prices_monthly_backfill,
         gold_alpaca_prices,
+        gold_alpaca_prices_monthly_backfill,
         gold_activity,
         bronze_sp500_companies,
         silver_sp500_companies,
     ],
     jobs=[
         daily_prices_job,
+        monthly_prices_backfill_job,
         daily_news_job,
         wikipedia_activity_job,
         asset_status_updates_job,

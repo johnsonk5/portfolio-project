@@ -94,6 +94,19 @@ def _dq_row(
     }
 
 
+def _silver_price_partition_paths(partition_key: str) -> list[str]:
+    data_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
+    day_dir = data_root / "silver" / "prices" / f"date={partition_key}"
+    if not day_dir.exists():
+        return []
+    paths: list[str] = []
+    for symbol_dir in day_dir.glob("symbol=*"):
+        candidate = symbol_dir / "prices.parquet"
+        if candidate.exists():
+            paths.append(candidate.as_posix())
+    return sorted(paths)
+
+
 def _write_data_quality_rows(con, rows: list[dict]) -> None:
     con.execute("CREATE SCHEMA IF NOT EXISTS observability")
     con.execute(
@@ -168,9 +181,8 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
         ]
 
     rows = []
-    data_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
-    silver_path = data_root / "silver" / "prices" / f"date={partition_key}" / "prices.parquet"
-    if not silver_path.exists():
+    silver_paths = _silver_price_partition_paths(partition_key)
+    if not silver_paths:
         rows.append(
             _dq_row(
                 run_id=run_id,
@@ -180,7 +192,7 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
                 status="FAIL",
                 measured_value=0.0,
                 threshold_value=1.0,
-                details={"silver_prices_partition_path": silver_path.as_posix()},
+                details={"silver_prices_partition_paths": silver_paths},
                 logged_ts=now,
             )
         )
@@ -189,7 +201,7 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
     required_cols = {"asset_id", "symbol", "timestamp", "open", "high", "low", "close", "volume", "ingested_ts"}
     present_cols = {
         d[0]
-        for d in con.execute("SELECT * FROM read_parquet(?) LIMIT 0", [silver_path.as_posix()]).description
+        for d in con.execute("SELECT * FROM read_parquet(?) LIMIT 0", [silver_paths]).description
     }
     missing_cols = sorted(required_cols - present_cols)
     rows.append(
@@ -216,7 +228,7 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
             HAVING count(*) > 1
         )
         """,
-        [silver_path.as_posix()],
+        [silver_paths],
     ).fetchone()[0]
     rows.append(
         _dq_row(
@@ -247,7 +259,7 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
             sum(CASE WHEN volume IS NULL THEN 1 ELSE 0 END) AS volume_nulls
         FROM read_parquet(?)
         """,
-        [silver_path.as_posix()],
+        [silver_paths],
     ).fetchone()
     row_count = int(nulls[0] or 0)
     null_counts = {
@@ -300,7 +312,7 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
         )
         FROM read_parquet(?)
         """,
-        [silver_path.as_posix()],
+        [silver_paths],
     ).fetchone()[0]
     rows.append(
         _dq_row(
