@@ -15,11 +15,7 @@ from portfolio_project.defs.silver_prices import silver_alpaca_prices_parquet
 def _write_fixture_bronze_bars(data_root: Path, partition_key: str, symbols: list[str]) -> None:
     for symbol in symbols:
         bronze_dir = (
-            data_root
-            / "bronze"
-            / "alpaca_bars"
-            / f"date={partition_key}"
-            / f"symbol={symbol}"
+            data_root / "bronze" / "alpaca_bars" / f"date={partition_key}" / f"symbol={symbol}"
         )
         bronze_dir.mkdir(parents=True, exist_ok=True)
         df = pd.DataFrame(
@@ -83,12 +79,7 @@ def test_daily_prices_path_materializes_with_three_tickers(tmp_path: Path) -> No
 
     assert result.success
     silver_glob = (
-        data_root
-        / "silver"
-        / "prices"
-        / f"date={partition_key}"
-        / "symbol=*"
-        / "prices.parquet"
+        data_root / "silver" / "prices" / f"date={partition_key}" / "symbol=*" / "prices.parquet"
     ).as_posix()
     silver_row = con.execute(
         "SELECT count(*) FROM read_parquet(?)",
