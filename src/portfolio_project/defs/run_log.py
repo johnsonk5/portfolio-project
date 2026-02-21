@@ -255,6 +255,19 @@ def _is_us_trading_day(partition_key: str) -> bool:
         return True
 
 
+def _silver_price_partition_paths(partition_key: str) -> list[str]:
+    data_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
+    day_dir = data_root / "silver" / "prices" / f"date={partition_key}"
+    if not day_dir.exists():
+        return []
+    paths: list[str] = []
+    for symbol_dir in day_dir.glob("symbol=*"):
+        candidate = symbol_dir / "prices.parquet"
+        if candidate.exists():
+            paths.append(candidate.as_posix())
+    return sorted(paths)
+
+
 def _check_prices_freshness(con, run_id: str, job_name: str, partition_key: Optional[str]) -> list[dict]:
     if job_name != "daily_prices_job":
         return []
@@ -310,12 +323,11 @@ def _check_prices_freshness(con, run_id: str, job_name: str, partition_key: Opti
         """
     ).fetchone()[0]
 
-    data_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
-    silver_path = data_root / "silver" / "prices" / f"date={partition_key}" / "prices.parquet"
+    silver_paths = _silver_price_partition_paths(partition_key)
     present_symbol_count = 0
     missing_symbol_count = int(active_symbol_count)
     missing_symbol_samples = []
-    if silver_path.exists():
+    if silver_paths:
         present_symbol_count, missing_symbol_count = con.execute(
             """
             WITH active_symbols AS (
@@ -342,7 +354,7 @@ def _check_prices_freshness(con, run_id: str, job_name: str, partition_key: Opti
                 (SELECT count(*) FROM present_symbols) AS present_symbol_count,
                 (SELECT count(*) FROM missing_symbols) AS missing_symbol_count
             """,
-            [silver_path.as_posix()],
+            [silver_paths],
         ).fetchone()
         missing_symbol_samples = [
             row[0]
@@ -369,7 +381,7 @@ def _check_prices_freshness(con, run_id: str, job_name: str, partition_key: Opti
                 ORDER BY a.symbol
                 LIMIT 25
                 """,
-                [silver_path.as_posix()],
+                [silver_paths],
             ).fetchall()
         ]
 
@@ -392,7 +404,7 @@ def _check_prices_freshness(con, run_id: str, job_name: str, partition_key: Opti
                     "symbols_with_prices": int(present_symbol_count),
                     "missing_symbol_count": int(missing_symbol_count),
                     "missing_symbol_samples": missing_symbol_samples,
-                    "silver_partition_path": silver_path.as_posix(),
+                    "silver_partition_paths": silver_paths,
                 }
             ),
             "logged_ts": now,

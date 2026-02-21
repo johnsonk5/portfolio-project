@@ -1,17 +1,162 @@
 import os
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
-from dagster import Array, AssetExecutionContext, DailyPartitionsDefinition, Field, String, asset
-from dagster import AssetKey
+from dagster import (
+    Array,
+    AssetExecutionContext,
+    AssetKey,
+    DailyPartitionsDefinition,
+    Field,
+    MonthlyPartitionsDefinition,
+    String,
+    asset,
+)
 
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 BRONZE_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
+BRONZE_MONTHLY_BACKFILL_PARTITIONS = MonthlyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 TICKERS_ENV = "ALPACA_TICKERS"
+ALPACA_SYMBOL_BATCH_SIZE = int(os.getenv("ALPACA_SYMBOL_BATCH_SIZE", "200"))
+ALPACA_REQUEST_SLEEP_SECONDS = float(os.getenv("ALPACA_REQUEST_SLEEP_SECONDS", "0.25"))
+ALPACA_REQUEST_MAX_RETRIES = int(os.getenv("ALPACA_REQUEST_MAX_RETRIES", "4"))
+ALPACA_REQUEST_RETRY_BASE_SECONDS = float(os.getenv("ALPACA_REQUEST_RETRY_BASE_SECONDS", "1.0"))
+
+
+def _chunked(values: list[str], size: int) -> list[list[str]]:
+    if size <= 0:
+        size = len(values) or 1
+    return [values[i : i + size] for i in range(0, len(values), size)]
+
+
+def _normalize_bars_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    normalized = df.copy()
+    if "symbol" not in normalized.columns:
+        normalized = normalized.reset_index()
+    if "timestamp" not in normalized.columns and normalized.index.name == "timestamp":
+        normalized = normalized.reset_index()
+    if "symbol" not in normalized.columns:
+        return pd.DataFrame()
+    normalized["symbol"] = normalized["symbol"].astype(str).str.upper()
+    normalized["ingested_ts"] = datetime.now(timezone.utc)
+    return normalized
+
+
+def _resolve_active_symbols(context: AssetExecutionContext) -> list[str]:
+    env_symbols = [
+        s.strip().upper() for s in os.getenv(TICKERS_ENV, "").split(",") if s.strip()
+    ]
+    config_symbols = context.op_config.get("symbols", None)
+    active_symbols: list[str] = []
+    try:
+        active_symbols = [
+            row[0]
+            for row in context.resources.duckdb.execute(
+                "SELECT symbol FROM silver.assets WHERE is_active = TRUE"
+            ).fetchall()
+            if row and row[0]
+        ]
+    except Exception as exc:
+        context.log.warning("Unable to read silver.assets for active symbols: %s", exc)
+
+    if active_symbols:
+        return sorted({str(symbol).upper() for symbol in active_symbols})
+    if env_symbols:
+        if config_symbols:
+            intersect = sorted({s.upper() for s in config_symbols} & set(env_symbols))
+            if intersect:
+                return intersect
+        return sorted(set(env_symbols))
+    if config_symbols:
+        return sorted({str(symbol).upper() for symbol in config_symbols if symbol})
+    return ["AAPL"]
+
+
+def _fetch_bars_df_with_retry(
+    context: AssetExecutionContext,
+    symbols: list[str],
+    start_date: datetime,
+    end_date: datetime,
+) -> pd.DataFrame:
+    for attempt in range(1, ALPACA_REQUEST_MAX_RETRIES + 2):
+        try:
+            return context.resources.alpaca.get_bars_df(
+                symbol_or_symbols=symbols,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        except Exception as exc:
+            if attempt > ALPACA_REQUEST_MAX_RETRIES:
+                raise
+            sleep_seconds = ALPACA_REQUEST_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+            context.log.warning(
+                "Alpaca bars request failed for %s symbols (%s). retry=%s sleep=%.2fs",
+                len(symbols),
+                exc,
+                attempt,
+                sleep_seconds,
+            )
+            time.sleep(sleep_seconds)
+    return pd.DataFrame()
+
+
+def _write_bronze_day_symbol_files(
+    context: AssetExecutionContext,
+    partition_key: str,
+    day_df: pd.DataFrame,
+) -> tuple[int, int]:
+    if day_df is None or day_df.empty:
+        return 0, 0
+
+    rows_written = 0
+    files_written = 0
+    for symbol, symbol_df in day_df.groupby("symbol", sort=True):
+        out_path = (
+            DATA_ROOT
+            / "bronze"
+            / "alpaca_bars"
+            / f"date={partition_key}"
+            / f"symbol={symbol}"
+            / "bars.parquet"
+        )
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        symbol_df.to_parquet(out_path, index=False)
+        rows_written += len(symbol_df)
+        files_written += 1
+    return rows_written, files_written
+
+
+def _ingest_bronze_day(
+    context: AssetExecutionContext,
+    partition_date: datetime.date,
+    symbols: list[str],
+) -> tuple[int, int]:
+    partition_key = partition_date.strftime("%Y-%m-%d")
+    start_date = datetime.combine(partition_date, datetime.min.time(), tzinfo=timezone.utc)
+    end_date = start_date + timedelta(days=1)
+
+    frames: list[pd.DataFrame] = []
+    for symbol_batch in _chunked(symbols, ALPACA_SYMBOL_BATCH_SIZE):
+        batch_df = _fetch_bars_df_with_retry(context, symbol_batch, start_date, end_date)
+        normalized = _normalize_bars_df(batch_df)
+        if not normalized.empty:
+            frames.append(normalized)
+        if ALPACA_REQUEST_SLEEP_SECONDS > 0:
+            time.sleep(ALPACA_REQUEST_SLEEP_SECONDS)
+
+    if not frames:
+        context.log.warning("No bar data returned for partition %s", partition_key)
+        return 0, 0
+
+    merged = pd.concat(frames, ignore_index=True)
+    return _write_bronze_day_symbol_files(context, partition_key, merged)
 
 
 @asset(
@@ -25,100 +170,57 @@ TICKERS_ENV = "ALPACA_TICKERS"
 )
 def bronze_alpaca_bars(context: AssetExecutionContext) -> None:
     """
-    Write 5-minute Alpaca bar data to daily-partitioned parquet files.
+    Write 5-minute Alpaca bar data to bronze partitioned by day and symbol.
     """
-    env_symbols = [
-        s.strip() for s in os.getenv(TICKERS_ENV, "").split(",") if s.strip()
-    ]
-    config_symbols = context.op_config.get("symbols", None)
-    active_symbols = []
-    try:
-        active_symbols = [
-            row[0]
-            for row in context.resources.duckdb.execute(
-                "SELECT symbol FROM silver.assets WHERE is_active = TRUE"
-            ).fetchall()
-            if row and row[0]
-        ]
-    except Exception as exc:
-        context.log.warning("Unable to read silver.assets for active symbols: %s", exc)
-
-    if active_symbols:
-        symbols = active_symbols
-    elif env_symbols:
-        if config_symbols:
-            symbols = sorted(set(config_symbols) & set(env_symbols))
-            if not symbols:
-                context.log.warning(
-                    "No configured symbols are active; using active symbols from %s.",
-                    TICKERS_ENV,
-                )
-                symbols = env_symbols
-        else:
-            symbols = env_symbols
-    else:
-        symbols = config_symbols or ["AAPL"]
+    symbols = _resolve_active_symbols(context)
     partition_date = datetime.strptime(context.partition_key, "%Y-%m-%d").date()
-    start_date = datetime.combine(partition_date, datetime.min.time(), tzinfo=timezone.utc)
-    end_date = start_date + timedelta(days=1)
-
-    df = context.resources.alpaca.get_bars_df(
-        symbol_or_symbols=symbols,
-        start_date=start_date,
-        end_date=end_date,
+    row_count, files_written = _ingest_bronze_day(context, partition_date, symbols)
+    context.add_output_metadata(
+        {
+            "partition": context.partition_key,
+            "symbol_count": len(symbols),
+            "files_written": files_written,
+            "row_count": row_count,
+        }
     )
-    if df is None or df.empty:
-        context.log.warning("No bar data returned for partition %s", context.partition_key)
-        return
-    if "symbol" not in df.columns:
-        df = df.reset_index()
-    if "timestamp" not in df.columns and df.index.name == "timestamp":
-        df = df.reset_index()
-    if "symbol" in df.columns:
-        df["symbol"] = df["symbol"].astype(str).str.upper()
-    else:
-        context.log.warning("No symbol column found in bar data for partition %s", context.partition_key)
-        return
-    df["ingested_ts"] = datetime.now(timezone.utc)
 
-    frames = [group.copy() for _, group in df.groupby("symbol")]
 
-    if not frames:
-        context.log.warning("No bar data returned for partition %s", context.partition_key)
-        return
+@asset(
+    name="bronze_alpaca_bars_monthly_backfill",
+    partitions_def=BRONZE_MONTHLY_BACKFILL_PARTITIONS,
+    required_resource_keys={"alpaca", "duckdb"},
+    deps=[AssetKey("silver_alpaca_assets")],
+    config_schema={
+        "symbols": Field(Array(String), is_required=False),
+    },
+)
+def bronze_alpaca_bars_monthly_backfill(context: AssetExecutionContext) -> None:
+    """
+    Backfill all days in a month into bronze day+symbol partitions.
+    """
+    month_start = datetime.strptime(context.partition_key, "%Y-%m-%d").date()
+    next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    symbols = _resolve_active_symbols(context)
 
-    month_key = partition_date.strftime("%Y-%m")
-    partition_dir = DATA_ROOT / "bronze" / "alpaca_bars" / f"month={month_key}"
-    partition_dir.mkdir(parents=True, exist_ok=True)
-
-    day_start = start_date
-    day_end = end_date
     total_rows = 0
-    written_files = []
-
-    for df in frames:
-        if df is None or df.empty:
-            continue
-        symbol = str(df["symbol"].iloc[0]).upper()
-        out_path = partition_dir / f"symbol={symbol}.parquet"
-
-        if out_path.exists():
-            existing = pd.read_parquet(out_path)
-            if "timestamp" in existing.columns:
-                existing_ts = pd.to_datetime(existing["timestamp"], utc=True, errors="coerce")
-                existing = existing[
-                    ~((existing_ts >= day_start) & (existing_ts < day_end))
-                ]
-            else:
-                existing = existing.iloc[0:0]
-            df = pd.concat([existing, df], ignore_index=True)
-
-        df.to_parquet(out_path, index=False)
-        total_rows += len(df)
-        written_files.append(str(out_path))
+    total_files = 0
+    total_days = 0
+    cursor = month_start
+    while cursor < next_month:
+        rows, files = _ingest_bronze_day(context, cursor, symbols)
+        total_rows += rows
+        total_files += files
+        total_days += 1
+        cursor += timedelta(days=1)
 
     context.add_output_metadata(
-        {"partition": context.partition_key, "files_written": len(written_files), "row_count": total_rows}
+        {
+            "partition_month_start": context.partition_key,
+            "symbol_count": len(symbols),
+            "calendar_days_processed": total_days,
+            "files_written": total_files,
+            "row_count": total_rows,
+        }
     )
 
 
