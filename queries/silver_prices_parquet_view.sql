@@ -3,6 +3,6 @@
 
 CREATE SCHEMA IF NOT EXISTS silver;
 
-CREATE OR REPLACE VIEW silver.prices_parquet AS
+CREATE OR REPLACE VIEW silver.vw_prices AS
 SELECT *
-FROM read_parquet('data/silver/prices/date=*/prices.parquet', hive_partitioning = true);
+FROM read_parquet('data/silver/prices_compact/symbol=*/year=*/month=*/prices.parquet', hive_partitioning = true);

@@ -13,12 +13,14 @@ def _acquire_duckdb_lock(
     stale_lock_seconds: int = 600,
 ) -> int:
     def _pid_is_running(pid: int) -> bool:
+        if pid <= 0:
+            return False
         try:
             # signal 0 checks for process existence without sending a signal
             os.kill(pid, 0)
         except PermissionError:
             return True
-        except OSError:
+        except (OSError, SystemError, ValueError):
             return False
         return True
 
@@ -36,7 +38,7 @@ def _acquire_duckdb_lock(
                 if lock_pid != os.getpid() and not _pid_is_running(lock_pid):
                     path.unlink()
                     continue
-            except (FileNotFoundError, ValueError, OSError):
+            except (FileNotFoundError, ValueError, OSError, SystemError):
                 # If we cannot read the PID, fall back to age-based staleness.
                 pass
             try:
