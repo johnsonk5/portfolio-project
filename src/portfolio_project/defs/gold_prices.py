@@ -101,13 +101,13 @@ def _ensure_gold_table(con) -> None:
     con.execute("ALTER TABLE gold.prices ADD COLUMN IF NOT EXISTS sentiment_score DOUBLE")
 
 
-def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -> int:
+def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -> tuple[int, int]:
     con = context.resources.duckdb
     try:
         con.execute("SELECT 1 FROM silver.assets LIMIT 1")
     except Exception as exc:
         context.log.warning("Silver assets table missing or unreadable: %s", exc)
-        return 0
+        return 0, 0
 
     _ensure_gold_table(con)
 
@@ -124,7 +124,7 @@ def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -
             "No silver parquet partition files found for %s.",
             partition_date,
         )
-        return 0
+        return 0, 0
 
     if sentiment_enabled:
         sentiment_cte = """
@@ -315,6 +315,10 @@ def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -
         WHERE final.trade_date = ?
     """
 
+    deleted_count = con.execute(
+        "SELECT count(*) FROM gold.prices WHERE trade_date = ?",
+        [partition_date],
+    ).fetchone()[0]
     con.execute("DELETE FROM gold.prices WHERE trade_date = ?", [partition_date])
     insert_sql = f"""
         WITH prices AS (
@@ -360,7 +364,7 @@ def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -
         "SELECT count(*) AS count FROM gold.prices WHERE trade_date = ?",
         [partition_date],
     ).fetchone()[0]
-    return int(row_count or 0)
+    return int(row_count or 0), int(deleted_count or 0)
 
 
 def _upsert_gold_for_month(context: AssetExecutionContext, month_start: date) -> int:
@@ -634,12 +638,15 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
     Build daily gold-layer prices and factor features from silver parquet.
     """
     partition_date = datetime.strptime(context.partition_key, "%Y-%m-%d").date()
-    row_count = _upsert_gold_for_day(context, partition_date)
+    row_count, rows_deleted = _upsert_gold_for_day(context, partition_date)
     context.add_output_metadata(
         {
             "table": "gold.prices",
             "partition": context.partition_key,
             "row_count": row_count,
+            "rows_inserted": row_count,
+            "rows_updated": 0,
+            "rows_deleted": rows_deleted,
         }
     )
 

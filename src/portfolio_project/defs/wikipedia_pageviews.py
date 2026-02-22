@@ -194,8 +194,10 @@ def bronze_wikipedia_pageviews(context: AssetExecutionContext) -> None:
     partition_dir.mkdir(parents=True, exist_ok=True)
     out_path = partition_dir / "pageviews.parquet"
 
+    existing_count = 0
     if out_path.exists():
         existing = pd.read_parquet(out_path)
+        existing_count = len(existing)
         df = pd.concat([existing, df], ignore_index=True)
         subset_cols = [c for c in ["article", "view_date", "symbol"] if c in df.columns]
         if subset_cols:
@@ -204,7 +206,14 @@ def bronze_wikipedia_pageviews(context: AssetExecutionContext) -> None:
     df.to_parquet(out_path, index=False)
 
     context.add_output_metadata(
-        {"path": str(out_path), "row_count": len(df), "articles": len(set(df["article"]))}
+        {
+            "path": str(out_path),
+            "row_count": len(df),
+            "articles": len(set(df["article"])),
+            "rows_inserted": len(df),
+            "rows_updated": 0,
+            "rows_deleted": existing_count,
+        }
     )
 
 
@@ -266,8 +275,10 @@ def silver_wikipedia_pageviews(context: AssetExecutionContext) -> None:
     out_path = out_dir / "data_0.parquet"
 
     df = bronze_df[["asset_id", "granularity", "view_date", "views", "ingested_ts"]].copy()
+    existing_count = 0
     if out_path.exists():
         existing = pd.read_parquet(out_path)
+        existing_count = len(existing)
         df = pd.concat([existing, df], ignore_index=True)
         subset_cols = [c for c in ["asset_id", "view_date", "granularity"] if c in df.columns]
         if subset_cols:
@@ -276,5 +287,11 @@ def silver_wikipedia_pageviews(context: AssetExecutionContext) -> None:
     df.to_parquet(out_path, index=False)
 
     context.add_output_metadata(
-        {"path": str(out_path), "row_count": len(df)}
+        {
+            "path": str(out_path),
+            "row_count": len(df),
+            "rows_inserted": len(df),
+            "rows_updated": 0,
+            "rows_deleted": existing_count,
+        }
     )

@@ -103,6 +103,7 @@ def _load_observability_data() -> dict:
         return {
             "error": f"DuckDB not found at {db_path}",
             "recent_runs": pd.DataFrame(),
+            "recent_run_assets": pd.DataFrame(),
             "run_failures": pd.DataFrame(),
             "freshness_issues": pd.DataFrame(),
             "data_quality_issues": pd.DataFrame(),
@@ -114,12 +115,14 @@ def _load_observability_data() -> dict:
     con = duckdb.connect(str(db_path), read_only=True)
     try:
         has_run_log = _table_exists(con, "observability", "run_log")
+        has_run_asset_log = _table_exists(con, "observability", "run_asset_log")
         has_freshness = _table_exists(con, "observability", "data_freshness_checks")
         has_data_quality = _table_exists(con, "observability", "data_quality_checks")
         if not has_run_log:
             return {
                 "error": "Table observability.run_log does not exist yet.",
                 "recent_runs": pd.DataFrame(),
+                "recent_run_assets": pd.DataFrame(),
                 "run_failures": pd.DataFrame(),
                 "freshness_issues": pd.DataFrame(),
                 "data_quality_issues": pd.DataFrame(),
@@ -138,6 +141,9 @@ def _load_observability_data() -> dict:
                 start_time,
                 end_time,
                 duration_seconds,
+                rows_inserted,
+                rows_updated,
+                rows_deleted,
                 error_message,
                 logged_ts
             FROM observability.run_log
@@ -179,6 +185,29 @@ def _load_observability_data() -> dict:
             ORDER BY COALESCE(end_time, logged_ts) DESC
             """
         ).fetch_df()
+
+        if has_run_asset_log:
+            recent_run_assets = con.execute(
+                """
+                SELECT
+                    run_id,
+                    job_name,
+                    status,
+                    partition_key,
+                    asset_key,
+                    assets_materialized_count,
+                    row_count,
+                    rows_inserted,
+                    rows_updated,
+                    rows_deleted,
+                    logged_ts
+                FROM observability.run_asset_log
+                ORDER BY logged_ts DESC, run_id DESC, asset_key ASC
+                LIMIT 250
+                """
+            ).fetch_df()
+        else:
+            recent_run_assets = pd.DataFrame()
 
         if has_freshness:
             freshness_issues = con.execute(
@@ -252,6 +281,7 @@ def _load_observability_data() -> dict:
         return {
             "error": None,
             "recent_runs": recent_runs,
+            "recent_run_assets": recent_run_assets,
             "run_failures": run_failures,
             "freshness_issues": freshness_issues,
             "data_quality_issues": data_quality_issues,
@@ -263,6 +293,7 @@ def _load_observability_data() -> dict:
         return {
             "error": f"Failed to load observability data: {exc}",
             "recent_runs": pd.DataFrame(),
+            "recent_run_assets": pd.DataFrame(),
             "run_failures": pd.DataFrame(),
             "freshness_issues": pd.DataFrame(),
             "data_quality_issues": pd.DataFrame(),
@@ -333,6 +364,14 @@ st.markdown('<div class="section-title">Recent Runs</div>', unsafe_allow_html=Tr
 _display_df(
     data["recent_runs"],
     "No recent run data found in observability.run_log.",
+)
+st.markdown("</div>", unsafe_allow_html=True)
+
+st.markdown('<div class="section-card">', unsafe_allow_html=True)
+st.markdown('<div class="section-title">Run Asset Metrics</div>', unsafe_allow_html=True)
+_display_df(
+    data["recent_run_assets"],
+    "No run asset metrics found in observability.run_asset_log.",
 )
 st.markdown("</div>", unsafe_allow_html=True)
 
