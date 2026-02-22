@@ -9,7 +9,10 @@ from portfolio_project.defs.silver_prices import PARTITIONS_START_DATE, silver_a
 
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
-SILVER_COMPACT_PARTITIONS = MonthlyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
+SILVER_COMPACT_PARTITIONS = MonthlyPartitionsDefinition(
+    start_date=PARTITIONS_START_DATE,
+    end_offset=1,
+)
 
 
 @asset(

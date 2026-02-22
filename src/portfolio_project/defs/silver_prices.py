@@ -20,7 +20,10 @@ from portfolio_project.defs.silver_assets import silver_alpaca_assets
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 SILVER_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
-SILVER_MONTHLY_BACKFILL_PARTITIONS = MonthlyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
+SILVER_MONTHLY_BACKFILL_PARTITIONS = MonthlyPartitionsDefinition(
+    start_date=PARTITIONS_START_DATE,
+    end_offset=1,
+)
 
 
 def _silver_day_file_path(trade_date: date, symbol: str) -> Path:

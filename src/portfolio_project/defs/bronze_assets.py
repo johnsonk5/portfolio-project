@@ -19,7 +19,10 @@ from dagster import (
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 BRONZE_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
-BRONZE_MONTHLY_BACKFILL_PARTITIONS = MonthlyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
+BRONZE_MONTHLY_BACKFILL_PARTITIONS = MonthlyPartitionsDefinition(
+    start_date=PARTITIONS_START_DATE,
+    end_offset=1,
+)
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 TICKERS_ENV = "ALPACA_TICKERS"
 ALPACA_SYMBOL_BATCH_SIZE = int(os.getenv("ALPACA_SYMBOL_BATCH_SIZE", "200"))
@@ -38,10 +41,7 @@ def _normalize_bars_df(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
     normalized = df.copy()
-    if "symbol" not in normalized.columns:
-        normalized = normalized.reset_index()
-    if "timestamp" not in normalized.columns and normalized.index.name == "timestamp":
-        normalized = normalized.reset_index()
+    normalized = normalized.reset_index()
     if "symbol" not in normalized.columns:
         return pd.DataFrame()
     normalized["symbol"] = normalized["symbol"].astype(str).str.upper()

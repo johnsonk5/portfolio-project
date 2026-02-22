@@ -17,7 +17,10 @@ from portfolio_project.defs.silver_prices import (
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 GOLD_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
-GOLD_MONTHLY_BACKFILL_PARTITIONS = MonthlyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
+GOLD_MONTHLY_BACKFILL_PARTITIONS = MonthlyPartitionsDefinition(
+    start_date=PARTITIONS_START_DATE,
+    end_offset=1,
+)
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 
 
