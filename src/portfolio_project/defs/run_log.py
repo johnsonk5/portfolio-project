@@ -768,10 +768,11 @@ def _write_run_log(context, status: str, error_message: Optional[str] = None) ->
     run = _get_run_from_context(context)
     run_id = getattr(run, "run_id", None) or getattr(context, "run_id", None)
     job_name = getattr(run, "job_name", None) or getattr(context, "job_name", None)
-    if run_id:
-        start_dt, end_dt = _get_run_times_from_instance(context, run_id)
-    else:
-        start_dt, end_dt = None, None
+    if not run_id:
+        context.log.warning("Run log skipped because run_id is missing (status=%s, job=%s)", status, job_name)
+        return
+    run_id = str(run_id)
+    start_dt, end_dt = _get_run_times_from_instance(context, run_id)
     if start_dt is None or end_dt is None:
         start_dt = start_dt or _run_timestamp(run, "start_time", "create_timestamp")
         end_dt = end_dt or _run_timestamp(run, "end_time", "update_timestamp")
