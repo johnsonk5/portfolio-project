@@ -80,6 +80,14 @@ def gold_headlines(context: AssetExecutionContext) -> None:
         """
     )
 
+    deleted_out_of_window_count = con.execute(
+        """
+        SELECT count(*)
+        FROM gold.headlines
+        WHERE provider_publish_time < ?
+        """,
+        [window_start],
+    ).fetchone()[0]
     con.execute(
         "DELETE FROM gold.headlines WHERE provider_publish_time < ?",
         [window_start],
@@ -104,6 +112,14 @@ def gold_headlines(context: AssetExecutionContext) -> None:
         [parquet_paths, cutoff_date],
     ).fetchone()[0]
 
+    deleted_window_refresh_count = con.execute(
+        """
+        SELECT count(*)
+        FROM gold.headlines
+        WHERE provider_publish_time >= ? AND provider_publish_time < ?
+        """,
+        [window_start, window_end],
+    ).fetchone()[0]
     con.execute(
         """
         DELETE FROM gold.headlines
@@ -251,6 +267,12 @@ def gold_headlines(context: AssetExecutionContext) -> None:
             "window_start": str(window_start),
             "window_end": str(window_end),
             "row_count": row_count,
+            "rows_inserted": int(row_count or 0),
+            "rows_updated": 0,
+            "rows_deleted": int(deleted_out_of_window_count or 0)
+            + int(deleted_window_refresh_count or 0),
+            "deleted_out_of_window_count": int(deleted_out_of_window_count or 0),
+            "deleted_window_refresh_count": int(deleted_window_refresh_count or 0),
             "sentiment_updated": sentiment_updated,
         }
     )

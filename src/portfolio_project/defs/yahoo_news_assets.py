@@ -159,15 +159,27 @@ def bronze_yahoo_news(context: AssetExecutionContext) -> None:
     partition_dir.mkdir(parents=True, exist_ok=True)
     out_path = partition_dir / "news.parquet"
 
+    existing_count = 0
     if out_path.exists():
         existing = pd.read_parquet(out_path)
+        existing_count = len(existing)
         df = pd.concat([existing, df], ignore_index=True)
         subset_cols = [c for c in ["symbol", "uuid", "link", "title", "provider_publish_time"] if c in df.columns]
         if subset_cols:
             df = df.drop_duplicates(subset=subset_cols, keep="last")
 
     df.to_parquet(out_path, index=False)
+    final_count = len(df)
+    rows_inserted = max(final_count - existing_count, 0)
+    rows_deleted = max(existing_count - final_count, 0)
 
     context.add_output_metadata(
-        {"path": str(out_path), "row_count": len(df), "symbols": len(set(df["symbol"]))}
+        {
+            "path": str(out_path),
+            "row_count": final_count,
+            "symbols": len(set(df["symbol"])),
+            "rows_inserted": rows_inserted,
+            "rows_updated": 0,
+            "rows_deleted": rows_deleted,
+        }
     )

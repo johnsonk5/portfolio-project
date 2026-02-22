@@ -51,49 +51,225 @@ def _get_run_records(context, run_id: str):
 
 
 def _collect_materialization_metrics(records) -> dict:
-    assets_materialized_count = 0
+    asset_metrics = _collect_materialization_asset_metrics(records)
+    assets_materialized_count = sum(int(row["assets_materialized_count"]) for row in asset_metrics)
     row_count_total = 0
-    rows_inserted_total = 0
-    rows_updated_total = 0
-    rows_deleted_total = 0
     found_row_count = False
-    found_mutations = False
+    for row in asset_metrics:
+        if row["row_count"] is None:
+            continue
+        row_count_total += int(row["row_count"])
+        found_row_count = True
+    rows_inserted_total = sum(int(row["rows_inserted"]) for row in asset_metrics)
+    rows_updated_total = sum(int(row["rows_updated"]) for row in asset_metrics)
+    rows_deleted_total = sum(int(row["rows_deleted"]) for row in asset_metrics)
+    found_mutations = any(
+        int(row["rows_inserted"]) != 0
+        or int(row["rows_updated"]) != 0
+        or int(row["rows_deleted"]) != 0
+        for row in asset_metrics
+    )
+
+    return {
+        "assets_materialized_count": assets_materialized_count,
+        "row_count": row_count_total if found_row_count else None,
+        "rows_inserted": (
+            rows_inserted_total if (found_mutations or assets_materialized_count > 0) else None
+        ),
+        "rows_updated": (
+            rows_updated_total if (found_mutations or assets_materialized_count > 0) else None
+        ),
+        "rows_deleted": (
+            rows_deleted_total if (found_mutations or assets_materialized_count > 0) else None
+        ),
+    }
+
+
+def _materialization_metric_values(metadata: dict) -> dict:
+    row_count_metric = _metadata_int(metadata.get("row_count")) if "row_count" in metadata else None
+
+    inserted_metric = None
+    for key in ("rows_inserted", "inserted_count"):
+        if key in metadata:
+            inserted_metric = _metadata_int(metadata[key])
+            if inserted_metric is not None:
+                break
+
+    updated_metric = None
+    for key in ("rows_updated", "updated_count"):
+        if key in metadata:
+            updated_metric = _metadata_int(metadata[key])
+            if updated_metric is not None:
+                break
+
+    deleted_metric = None
+    for key in ("rows_deleted", "deleted_count"):
+        if key in metadata:
+            deleted_metric = _metadata_int(metadata[key])
+            if deleted_metric is not None:
+                break
+
+    return {
+        "row_count": row_count_metric,
+        "rows_inserted": int(inserted_metric or 0),
+        "rows_updated": int(updated_metric or 0),
+        "rows_deleted": int(deleted_metric or 0),
+    }
+
+
+def _asset_key_from_materialization(event, materialization) -> str:
+    for candidate in (
+        getattr(materialization, "asset_key", None),
+        getattr(event, "asset_key", None),
+    ):
+        if candidate is None:
+            continue
+        path = getattr(candidate, "path", None)
+        if path:
+            return "/".join(str(part) for part in path)
+        if isinstance(candidate, (list, tuple)):
+            return "/".join(str(part) for part in candidate)
+        return str(candidate)
+    return "__unknown_asset__"
+
+
+def _collect_materialization_asset_metrics(records) -> list[dict]:
+    by_asset: dict[str, dict] = {}
 
     for record in records:
         entry = getattr(record, "event_log_entry", None) or record
         event = getattr(entry, "dagster_event", None)
         if event is None or event.event_type != DagsterEventType.ASSET_MATERIALIZATION:
             continue
-        assets_materialized_count += 1
         if event.event_specific_data is None:
             continue
         materialization = event.event_specific_data.materialization
-        if materialization is None or materialization.metadata is None:
+        if materialization is None:
             continue
-        for key, value in materialization.metadata.items():
-            metric = _metadata_int(value)
-            if metric is None:
-                continue
-            if key == "row_count":
-                row_count_total += metric
-                found_row_count = True
-            elif key == "rows_inserted":
-                rows_inserted_total += metric
-                found_mutations = True
-            elif key == "rows_updated":
-                rows_updated_total += metric
-                found_mutations = True
-            elif key == "rows_deleted":
-                rows_deleted_total += metric
-                found_mutations = True
+        asset_key = _asset_key_from_materialization(event, materialization)
+        bucket = by_asset.setdefault(
+            asset_key,
+            {
+                "asset_key": asset_key,
+                "assets_materialized_count": 0,
+                "row_count": 0,
+                "has_row_count": False,
+                "rows_inserted": 0,
+                "rows_updated": 0,
+                "rows_deleted": 0,
+            },
+        )
+        bucket["assets_materialized_count"] += 1
 
-    return {
-        "assets_materialized_count": assets_materialized_count,
-        "row_count": row_count_total if found_row_count else None,
-        "rows_inserted": rows_inserted_total if found_mutations else None,
-        "rows_updated": rows_updated_total if found_mutations else None,
-        "rows_deleted": rows_deleted_total if found_mutations else None,
-    }
+        metadata = materialization.metadata or {}
+        values = _materialization_metric_values(metadata)
+        if values["row_count"] is not None:
+            bucket["row_count"] += int(values["row_count"])
+            bucket["has_row_count"] = True
+        bucket["rows_inserted"] += int(values["rows_inserted"])
+        bucket["rows_updated"] += int(values["rows_updated"])
+        bucket["rows_deleted"] += int(values["rows_deleted"])
+
+    rows = []
+    for asset_key in sorted(by_asset):
+        bucket = by_asset[asset_key]
+        rows.append(
+            {
+                "asset_key": asset_key,
+                "assets_materialized_count": int(bucket["assets_materialized_count"]),
+                "row_count": int(bucket["row_count"]) if bucket["has_row_count"] else None,
+                "rows_inserted": int(bucket["rows_inserted"]),
+                "rows_updated": int(bucket["rows_updated"]),
+                "rows_deleted": int(bucket["rows_deleted"]),
+            }
+        )
+    return rows
+
+
+def _ensure_observability_run_tables(con) -> None:
+    con.execute("CREATE SCHEMA IF NOT EXISTS observability")
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS observability.run_log (
+            run_id VARCHAR,
+            job_name VARCHAR,
+            status VARCHAR,
+            start_time TIMESTAMP,
+            end_time TIMESTAMP,
+            duration_seconds DOUBLE,
+            partition_key VARCHAR,
+            tags_json VARCHAR,
+            assets_materialized_count BIGINT,
+            row_count BIGINT,
+            rows_inserted BIGINT,
+            rows_updated BIGINT,
+            rows_deleted BIGINT,
+            error_message VARCHAR,
+            logged_ts TIMESTAMP
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS observability.run_asset_log (
+            run_id VARCHAR,
+            job_name VARCHAR,
+            status VARCHAR,
+            partition_key VARCHAR,
+            asset_key VARCHAR,
+            assets_materialized_count BIGINT,
+            row_count BIGINT,
+            rows_inserted BIGINT,
+            rows_updated BIGINT,
+            rows_deleted BIGINT,
+            logged_ts TIMESTAMP
+        )
+        """
+    )
+
+
+def _write_run_asset_rows(
+    con,
+    run_id: str,
+    job_name: Optional[str],
+    status: str,
+    partition_key: Optional[str],
+    logged_ts: datetime,
+    asset_metrics: list[dict],
+) -> None:
+    con.execute("DELETE FROM observability.run_asset_log WHERE run_id = ?", [run_id])
+    for row in asset_metrics:
+        con.execute(
+            """
+            INSERT INTO observability.run_asset_log (
+                run_id,
+                job_name,
+                status,
+                partition_key,
+                asset_key,
+                assets_materialized_count,
+                row_count,
+                rows_inserted,
+                rows_updated,
+                rows_deleted,
+                logged_ts
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                run_id,
+                job_name,
+                status,
+                partition_key,
+                row["asset_key"],
+                row["assets_materialized_count"],
+                row["row_count"],
+                row["rows_inserted"],
+                row["rows_updated"],
+                row["rows_deleted"],
+                logged_ts,
+            ],
+        )
 
 
 def _resolve_duckdb_path() -> Path:
@@ -592,10 +768,11 @@ def _write_run_log(context, status: str, error_message: Optional[str] = None) ->
     run = _get_run_from_context(context)
     run_id = getattr(run, "run_id", None) or getattr(context, "run_id", None)
     job_name = getattr(run, "job_name", None) or getattr(context, "job_name", None)
-    if run_id:
-        start_dt, end_dt = _get_run_times_from_instance(context, run_id)
-    else:
-        start_dt, end_dt = None, None
+    if not run_id:
+        context.log.warning("Run log skipped because run_id is missing (status=%s, job=%s)", status, job_name)
+        return
+    run_id = str(run_id)
+    start_dt, end_dt = _get_run_times_from_instance(context, run_id)
     if start_dt is None or end_dt is None:
         start_dt = start_dt or _run_timestamp(run, "start_time", "create_timestamp")
         end_dt = end_dt or _run_timestamp(run, "end_time", "update_timestamp")
@@ -635,6 +812,8 @@ def _write_run_log(context, status: str, error_message: Optional[str] = None) ->
     tags_json = json.dumps(tags) if tags else None
 
     metrics = _collect_materialization_metrics(records)
+    asset_metrics = _collect_materialization_asset_metrics(records)
+    logged_ts = datetime.now(timezone.utc)
 
     db_path = _resolve_duckdb_path()
     context.log.info(
@@ -646,28 +825,7 @@ def _write_run_log(context, status: str, error_message: Optional[str] = None) ->
     )
     con, needs_owned = _get_duckdb_connection(context)
     if con is not None:
-        con.execute("CREATE SCHEMA IF NOT EXISTS observability")
-        con.execute(
-            """
-            CREATE TABLE IF NOT EXISTS observability.run_log (
-                run_id VARCHAR,
-                job_name VARCHAR,
-                status VARCHAR,
-                start_time TIMESTAMP,
-                end_time TIMESTAMP,
-                duration_seconds DOUBLE,
-                partition_key VARCHAR,
-                tags_json VARCHAR,
-                assets_materialized_count BIGINT,
-                row_count BIGINT,
-                rows_inserted BIGINT,
-                rows_updated BIGINT,
-                rows_deleted BIGINT,
-                error_message VARCHAR,
-                logged_ts TIMESTAMP
-            )
-            """
-        )
+        _ensure_observability_run_tables(con)
         con.execute("DELETE FROM observability.run_log WHERE run_id = ?", [run_id])
         con.execute(
             """
@@ -705,8 +863,17 @@ def _write_run_log(context, status: str, error_message: Optional[str] = None) ->
                 metrics["rows_updated"],
                 metrics["rows_deleted"],
                 error_message,
-                datetime.now(timezone.utc),
+                logged_ts,
             ],
+        )
+        _write_run_asset_rows(
+            con=con,
+            run_id=run_id,
+            job_name=job_name,
+            status=status,
+            partition_key=partition_key,
+            logged_ts=logged_ts,
+            asset_metrics=asset_metrics,
         )
         try:
             con.commit()
@@ -723,28 +890,7 @@ def _write_run_log(context, status: str, error_message: Optional[str] = None) ->
         return
 
     for con in _with_duckdb_connection():
-        con.execute("CREATE SCHEMA IF NOT EXISTS observability")
-        con.execute(
-            """
-            CREATE TABLE IF NOT EXISTS observability.run_log (
-                run_id VARCHAR,
-                job_name VARCHAR,
-                status VARCHAR,
-                start_time TIMESTAMP,
-                end_time TIMESTAMP,
-                duration_seconds DOUBLE,
-                partition_key VARCHAR,
-                tags_json VARCHAR,
-                assets_materialized_count BIGINT,
-                row_count BIGINT,
-                rows_inserted BIGINT,
-                rows_updated BIGINT,
-                rows_deleted BIGINT,
-                error_message VARCHAR,
-                logged_ts TIMESTAMP
-            )
-            """
-        )
+        _ensure_observability_run_tables(con)
         con.execute("DELETE FROM observability.run_log WHERE run_id = ?", [run_id])
         con.execute(
             """
@@ -782,8 +928,17 @@ def _write_run_log(context, status: str, error_message: Optional[str] = None) ->
                 metrics["rows_updated"],
                 metrics["rows_deleted"],
                 error_message,
-                datetime.now(timezone.utc),
+                logged_ts,
             ],
+        )
+        _write_run_asset_rows(
+            con=con,
+            run_id=run_id,
+            job_name=job_name,
+            status=status,
+            partition_key=partition_key,
+            logged_ts=logged_ts,
+            asset_metrics=asset_metrics,
         )
         try:
             row_count = con.execute(

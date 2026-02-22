@@ -372,6 +372,7 @@ def silver_ref_publishers(context: AssetExecutionContext) -> None:
     ).fetchone()[0]
     context.add_output_metadata(
         {
+            "rows_inserted": inserted_count,
             "inserted_count": inserted_count,
             "total_count": total_count,
             "tranco_matches_new": matched_count,
@@ -407,6 +408,12 @@ def silver_news(context: AssetExecutionContext) -> None:
     silver_root = DATA_ROOT / "silver" / "news" / f"date={context.partition_key}"
     silver_root.mkdir(parents=True, exist_ok=True)
     out_path = silver_root / "news.parquet"
+    existing_count = 0
+    if out_path.exists():
+        try:
+            existing_count = len(pd.read_parquet(out_path))
+        except Exception:
+            existing_count = 0
 
     bronze_path_sql = bronze_path.as_posix().replace("'", "''")
     base_select = f"""
@@ -451,11 +458,17 @@ def silver_news(context: AssetExecutionContext) -> None:
         TO '{out_path_sql}' (FORMAT PARQUET)
         """
     )
+    final_count = int(counts[0])
+    rows_inserted = max(final_count - existing_count, 0)
+    rows_deleted = max(existing_count - final_count, 0)
 
     context.add_output_metadata(
         {
             "parquet_path": str(out_path),
-            "row_count": int(counts[0]),
+            "row_count": final_count,
+            "rows_inserted": rows_inserted,
+            "rows_updated": 0,
+            "rows_deleted": rows_deleted,
             "missing_asset_id_count": int(counts[1]) if counts[1] is not None else 0,
             "missing_publisher_id_count": int(counts[2]) if counts[2] is not None else 0,
         }

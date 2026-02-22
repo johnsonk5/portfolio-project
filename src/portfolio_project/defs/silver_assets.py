@@ -277,7 +277,7 @@ def silver_alpaca_assets_status_updates(context: AssetExecutionContext) -> None:
     if not desired_updates:
         context.log.info("No status updates requested.")
         context.add_output_metadata(
-            {"updated_count": 0, "history_appended_count": 0}
+            {"rows_updated": 0, "updated_count": 0, "history_appended_count": 0}
         )
         return
 
@@ -306,7 +306,12 @@ def silver_alpaca_assets_status_updates(context: AssetExecutionContext) -> None:
     if updates_df.empty:
         context.log.info("No matching symbols found in silver.assets.")
         context.add_output_metadata(
-            {"updated_count": 0, "history_appended_count": 0, "missing_symbols": missing_symbols}
+            {
+                "rows_updated": 0,
+                "updated_count": 0,
+                "history_appended_count": 0,
+                "missing_symbols": missing_symbols,
+            }
         )
         return
 
@@ -316,7 +321,12 @@ def silver_alpaca_assets_status_updates(context: AssetExecutionContext) -> None:
     if updates_df.empty:
         context.log.info("All requested symbols already have the desired status.")
         context.add_output_metadata(
-            {"updated_count": 0, "history_appended_count": 0, "missing_symbols": missing_symbols}
+            {
+                "rows_updated": 0,
+                "updated_count": 0,
+                "history_appended_count": 0,
+                "missing_symbols": missing_symbols,
+            }
         )
         return
 
@@ -404,6 +414,7 @@ def silver_alpaca_assets_status_updates(context: AssetExecutionContext) -> None:
     ).fetchone()[0]
     context.add_output_metadata(
         {
+            "rows_updated": len(history_updates_df),
             "updated_count": len(history_updates_df),
             "history_appended_count": len(history_updates_df) + active_snapshot_count,
             "missing_symbols": missing_symbols,
