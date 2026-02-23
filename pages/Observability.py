@@ -222,7 +222,7 @@ def _load_observability_data() -> dict:
                     details_json,
                     logged_ts
                 FROM observability.data_freshness_checks
-                WHERE status IN ('FAIL', 'SKIPPED')
+                WHERE status IN ('FAIL', 'SKIPPED', 'WARN')
                 ORDER BY logged_ts DESC
                 LIMIT 75
                 """
@@ -245,7 +245,7 @@ def _load_observability_data() -> dict:
                     details_json,
                     logged_ts
                 FROM observability.data_quality_checks
-                WHERE status IN ('FAIL', 'SKIPPED')
+                WHERE status IN ('FAIL', 'SKIPPED', 'WARN')
                 ORDER BY logged_ts DESC
                 LIMIT 100
                 """

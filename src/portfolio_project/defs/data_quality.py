@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -7,6 +8,7 @@ from typing import Optional
 import duckdb
 
 from portfolio_project.defs.duckdb_resource import _acquire_duckdb_lock, _release_duckdb_lock
+from portfolio_project.defs.observability_modules import ensure_data_quality_table
 
 
 def _resolve_duckdb_path() -> Path:
@@ -81,6 +83,7 @@ def _dq_row(
     logged_ts: datetime,
 ) -> dict:
     return {
+        "check_id": str(uuid.uuid4()),
         "run_id": run_id,
         "job_name": job_name,
         "partition_key": partition_key,
@@ -108,30 +111,14 @@ def _silver_price_partition_paths(partition_key: str) -> list[str]:
 
 
 def _write_data_quality_rows(con, rows: list[dict]) -> None:
-    con.execute("CREATE SCHEMA IF NOT EXISTS observability")
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS observability.data_quality_checks (
-            run_id VARCHAR,
-            job_name VARCHAR,
-            partition_key VARCHAR,
-            check_name VARCHAR,
-            severity VARCHAR,
-            status VARCHAR,
-            measured_value DOUBLE,
-            threshold_value DOUBLE,
-            details_json VARCHAR,
-            logged_ts TIMESTAMP
-        )
-        """
-    )
+    ensure_data_quality_table(con)
     if not rows:
         return
-    con.execute("DELETE FROM observability.data_quality_checks WHERE run_id = ?", [rows[0]["run_id"]])
     for row in rows:
         con.execute(
             """
             INSERT INTO observability.data_quality_checks (
+                check_id,
                 run_id,
                 job_name,
                 partition_key,
@@ -143,9 +130,10 @@ def _write_data_quality_rows(con, rows: list[dict]) -> None:
                 details_json,
                 logged_ts
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
+                row["check_id"],
                 row["run_id"],
                 row["job_name"],
                 row["partition_key"],

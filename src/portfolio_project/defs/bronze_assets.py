@@ -16,6 +16,7 @@ from dagster import (
     asset,
 )
 
+from portfolio_project.defs.observability_modules import write_dq_log
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 BRONZE_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
@@ -53,8 +54,18 @@ def _resolve_active_symbols(context: AssetExecutionContext) -> list[str]:
     env_symbols = [
         s.strip().upper() for s in os.getenv(TICKERS_ENV, "").split(",") if s.strip()
     ]
-    config_symbols = context.op_config.get("symbols", None)
+    config_symbols_raw = (getattr(context, "op_config", None) or {}).get("symbols")
+    config_symbols_set: set[str] = set()
+    for symbol in config_symbols_raw or []:
+        if symbol is None:
+            continue
+        symbol_value = str(symbol).strip().upper()
+        if symbol_value:
+            config_symbols_set.add(symbol_value)
+    config_symbols = sorted(config_symbols_set)
     active_symbols: list[str] = []
+    silver_assets_issue_reason: str | None = None
+    silver_assets_error: str | None = None
     try:
         active_symbols = [
             row[0]
@@ -63,20 +74,42 @@ def _resolve_active_symbols(context: AssetExecutionContext) -> list[str]:
             ).fetchall()
             if row and row[0]
         ]
+        if not active_symbols:
+            silver_assets_issue_reason = "silver_assets_empty"
+            context.log.warning("silver.assets returned no active symbols; using fallback resolution.")
     except Exception as exc:
+        silver_assets_issue_reason = "silver_assets_read_failed"
+        silver_assets_error = str(exc)
         context.log.warning("Unable to read silver.assets for active symbols: %s", exc)
 
     if active_symbols:
         return sorted({str(symbol).upper() for symbol in active_symbols})
-    if env_symbols:
-        if config_symbols:
-            intersect = sorted({s.upper() for s in config_symbols} & set(env_symbols))
-            if intersect:
-                return intersect
-        return sorted(set(env_symbols))
+
+    fallback_source = "default"
+    resolved_symbols = ["AAPL"]
     if config_symbols:
-        return sorted({str(symbol).upper() for symbol in config_symbols if symbol})
-    return ["AAPL"]
+        resolved_symbols = config_symbols
+        fallback_source = "config"
+    elif env_symbols:
+        resolved_symbols = sorted(set(env_symbols))
+        fallback_source = "env"
+
+    if silver_assets_issue_reason is not None:
+        write_dq_log(
+            context=context,
+            check_name="dq_active_symbols_source_silver_assets_readable",
+            severity="YELLOW",
+            status="WARN",
+            measured_value=1.0,
+            threshold_value=0.0,
+            details={
+                "reason": silver_assets_issue_reason,
+                "fallback_source": fallback_source,
+            },
+            error_name=silver_assets_issue_reason,
+            error_message=silver_assets_error,
+        )
+    return resolved_symbols
 
 
 def _fetch_bars_df_with_retry(
