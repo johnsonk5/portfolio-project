@@ -1,5 +1,6 @@
 import os
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import duckdb
@@ -68,6 +69,65 @@ def _release_duckdb_lock(path: Path, fd: int) -> None:
                 pass
 
 
+class LockedDuckDBConnection:
+    """
+    Thin DuckDB proxy that acquires the file lock for each DB operation.
+
+    This prevents holding the lock during non-DB work (for example API calls),
+    while still serializing write/read statements across processes.
+    """
+
+    def __init__(
+        self,
+        connection,
+        lock_path: Path,
+        lock_timeout_seconds: int,
+        stale_lock_seconds: int,
+    ) -> None:
+        self._connection = connection
+        self._lock_path = lock_path
+        self._lock_timeout_seconds = lock_timeout_seconds
+        self._stale_lock_seconds = stale_lock_seconds
+
+    @contextmanager
+    def _operation_lock(self):
+        lock_fd = _acquire_duckdb_lock(
+            self._lock_path,
+            timeout_seconds=self._lock_timeout_seconds,
+            stale_lock_seconds=self._stale_lock_seconds,
+        )
+        try:
+            yield
+        finally:
+            _release_duckdb_lock(self._lock_path, lock_fd)
+
+    def execute(self, query, parameters=None):
+        with self._operation_lock():
+            if parameters is None:
+                return self._connection.execute(query)
+            return self._connection.execute(query, parameters)
+
+    def executemany(self, query, parameters=None):
+        with self._operation_lock():
+            if parameters is None:
+                return self._connection.executemany(query)
+            return self._connection.executemany(query, parameters)
+
+    def register(self, view_name, python_object):
+        with self._operation_lock():
+            return self._connection.register(view_name, python_object)
+
+    def commit(self):
+        with self._operation_lock():
+            return self._connection.commit()
+
+    def close(self):
+        return self._connection.close()
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+
 @resource(
     config_schema={
         "db_path": Field(String, is_required=False),
@@ -97,14 +157,28 @@ def duckdb_resource(context):
     db_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = db_path.parent / ".duckdb_write.lock"
 
+    lock_timeout_seconds = context.resource_config.get("lock_timeout_seconds", 120)
+    stale_lock_seconds = context.resource_config.get("stale_lock_seconds", 600)
+
+    # Serialize connection creation and guarantee lock release if connect fails.
     lock_fd = _acquire_duckdb_lock(
         lock_path,
-        timeout_seconds=context.resource_config.get("lock_timeout_seconds", 120),
-        stale_lock_seconds=context.resource_config.get("stale_lock_seconds", 600),
+        timeout_seconds=lock_timeout_seconds,
+        stale_lock_seconds=stale_lock_seconds,
     )
-    connection = duckdb.connect(str(db_path))
+    connection = None
     try:
-        yield connection
+        connection = duckdb.connect(str(db_path))
     finally:
-        connection.close()
         _release_duckdb_lock(lock_path, lock_fd)
+
+    wrapped_connection = LockedDuckDBConnection(
+        connection=connection,
+        lock_path=lock_path,
+        lock_timeout_seconds=lock_timeout_seconds,
+        stale_lock_seconds=stale_lock_seconds,
+    )
+    try:
+        yield wrapped_connection
+    finally:
+        wrapped_connection.close()

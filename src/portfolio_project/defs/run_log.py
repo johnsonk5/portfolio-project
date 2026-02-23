@@ -291,11 +291,13 @@ def _with_duckdb_connection():
     db_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = db_path.parent / ".duckdb_write.lock"
     lock_fd = _acquire_duckdb_lock(lock_path)
-    con = duckdb.connect(str(db_path))
+    con = None
     try:
+        con = duckdb.connect(str(db_path))
         yield con
     finally:
-        con.close()
+        if con is not None:
+            con.close()
         _release_duckdb_lock(lock_path, lock_fd)
 
 
