@@ -54,6 +54,7 @@ from portfolio_project.defs.wikipedia_pageviews import (
 from portfolio_project.defs.run_log import (
     dagster_run_log_failure,
     dagster_run_log_success,
+    _is_us_trading_day,
 )
 
 from portfolio_project.defs.alpaca_resource import alpaca_resource
@@ -148,14 +149,10 @@ sp500_weekly_schedule = ScheduleDefinition(
 )
 
 def _previous_trading_day(local_date):
-    weekday = local_date.weekday()
-    if weekday == 0:
-        return local_date - timedelta(days=3)
-    if weekday == 6:
-        return local_date - timedelta(days=2)
-    if weekday == 5:
-        return local_date - timedelta(days=1)
-    return local_date - timedelta(days=1)
+    candidate = local_date - timedelta(days=1)
+    while not _is_us_trading_day(candidate.isoformat()):
+        candidate -= timedelta(days=1)
+    return candidate
 
 
 def _daily_prices_schedule_fn(context):

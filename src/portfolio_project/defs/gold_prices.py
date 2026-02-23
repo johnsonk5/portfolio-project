@@ -185,7 +185,8 @@ def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -
                 sum(trade_count) AS trade_count,
                 CASE
                     WHEN sum(CASE WHEN vwap IS NOT NULL AND volume IS NOT NULL THEN volume ELSE 0 END) > 0
-                        THEN sum(vwap * volume) / sum(volume)
+                        THEN sum(CASE WHEN vwap IS NOT NULL AND volume IS NOT NULL THEN vwap * volume ELSE 0 END)
+                            / sum(CASE WHEN vwap IS NOT NULL AND volume IS NOT NULL THEN volume ELSE 0 END)
                     ELSE NULL
                 END AS vwap
             FROM prices
@@ -297,7 +298,6 @@ def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -
         "SELECT count(*) FROM gold.prices WHERE trade_date = ?",
         [partition_date],
     ).fetchone()[0]
-    con.execute("DELETE FROM gold.prices WHERE trade_date = ?", [partition_date])
     insert_sql = f"""
         WITH prices AS (
             SELECT *
@@ -336,7 +336,15 @@ def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -
         partition_date,
     ]
     query_params = base_params + sentiment_params + [partition_date]
-    con.execute(insert_sql, [parquet_paths, *query_params])
+
+    con.execute("BEGIN TRANSACTION")
+    try:
+        con.execute("DELETE FROM gold.prices WHERE trade_date = ?", [partition_date])
+        con.execute(insert_sql, [parquet_paths, *query_params])
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
 
     row_count = con.execute(
         "SELECT count(*) AS count FROM gold.prices WHERE trade_date = ?",
