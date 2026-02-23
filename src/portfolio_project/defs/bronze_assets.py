@@ -46,6 +46,7 @@ def _normalize_bars_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _resolve_active_symbols(context: AssetExecutionContext) -> list[str]:
+    # Pull fallback symbols
     env_symbols = [
         s.strip().upper() for s in os.getenv(TICKERS_ENV, "").split(",") if s.strip()
     ]
@@ -58,6 +59,8 @@ def _resolve_active_symbols(context: AssetExecutionContext) -> list[str]:
         if symbol_value:
             config_symbols_set.add(symbol_value)
     config_symbols = sorted(config_symbols_set)
+
+    # Pull active symbols from db
     active_symbols: list[str] = []
     silver_assets_issue_reason: str | None = None
     silver_assets_error: str | None = None
@@ -77,11 +80,15 @@ def _resolve_active_symbols(context: AssetExecutionContext) -> list[str]:
         silver_assets_error = str(exc)
         context.log.warning("Unable to read silver.assets for active symbols: %s", exc)
 
+    # If there is one active symbol, return that
     if active_symbols:
         return sorted({str(symbol).upper() for symbol in active_symbols})
 
+    # Set default symbols
     fallback_source = "default"
     resolved_symbols = ["AAPL"]
+
+    # If there are either config or env symbols use those (config first)
     if config_symbols:
         resolved_symbols = config_symbols
         fallback_source = "config"
@@ -89,6 +96,7 @@ def _resolve_active_symbols(context: AssetExecutionContext) -> list[str]:
         resolved_symbols = sorted(set(env_symbols))
         fallback_source = "env"
 
+    # Log warning if active symbols wasn't used
     if silver_assets_issue_reason is not None:
         write_dq_log(
             context=context,
