@@ -1,4 +1,5 @@
 import os
+import shutil
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -34,11 +35,12 @@ def _silver_day_file_path(trade_date: date, symbol: str) -> Path:
 def _active_symbol_rows(con) -> list[tuple[int, str]]:
     rows = con.execute(
         """
-        SELECT asset_id, upper(trim(symbol)) AS symbol
+        SELECT min(asset_id) AS asset_id, upper(trim(symbol)) AS symbol
         FROM silver.assets
         WHERE is_active = TRUE
           AND symbol IS NOT NULL
           AND trim(symbol) <> ''
+        GROUP BY upper(trim(symbol))
         """
     ).fetchall()
     return [(int(row[0]), str(row[1])) for row in rows if row and row[0] is not None and row[1]]
@@ -80,11 +82,12 @@ def _query_silver_prices_for_day(
             WHERE timestamp >= ? AND timestamp < ?
         ),
         active_assets AS (
-            SELECT asset_id, upper(trim(symbol)) AS symbol
+            SELECT min(asset_id) AS asset_id, upper(trim(symbol)) AS symbol
             FROM silver.assets
             WHERE is_active = TRUE
               AND symbol IS NOT NULL
               AND trim(symbol) <> ''
+            GROUP BY upper(trim(symbol))
         )
         SELECT
             assets.asset_id,
@@ -104,6 +107,12 @@ def _query_silver_prices_for_day(
         """,
         [parquet_paths, start_dt, end_dt],
     ).fetch_df()
+
+
+def _clear_silver_day_partition(trade_date: date) -> None:
+    day_dir = DATA_ROOT / "silver" / "prices" / f"date={trade_date.isoformat()}"
+    if day_dir.exists():
+        shutil.rmtree(day_dir)
 
 
 def _write_silver_day_symbol_files(prices_df: pd.DataFrame) -> tuple[int, int]:
@@ -169,6 +178,7 @@ def silver_alpaca_prices_parquet(context: AssetExecutionContext) -> None:
         context.log.warning("No active bar data for partition %s.", context.partition_key)
         return
 
+    _clear_silver_day_partition(trade_date)
     row_count, files_written = _write_silver_day_symbol_files(prices_df)
     context.add_output_metadata(
         {

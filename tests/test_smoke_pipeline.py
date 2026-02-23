@@ -95,3 +95,107 @@ def test_daily_prices_path_materializes_with_three_tickers(tmp_path: Path) -> No
     gold_rows = gold_row[0]
     assert silver_rows == len(symbols) * 2
     assert gold_rows == len(symbols)
+
+
+@pytest.mark.smoke
+def test_silver_prices_rerun_replaces_partition_and_removes_stale_symbol_files(tmp_path: Path) -> None:
+    partition_key = "2026-02-13"
+    first_symbols = ["AAPL", "MSFT", "NVDA"]
+    second_symbols = ["AAPL", "MSFT"]
+
+    data_root = tmp_path / "data"
+    _write_fixture_bronze_bars(data_root, partition_key, first_symbols)
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA silver")
+    con.execute(
+        """
+        CREATE TABLE silver.assets (
+            asset_id BIGINT,
+            symbol VARCHAR,
+            is_active BOOLEAN
+        )
+        """
+    )
+    for idx, symbol in enumerate(first_symbols, start=1):
+        con.execute(
+            "INSERT INTO silver.assets (asset_id, symbol, is_active) VALUES (?, ?, TRUE)",
+            [idx, symbol],
+        )
+
+    silver_prices_module.DATA_ROOT = data_root
+
+    result_first = materialize(
+        assets=[
+            silver_alpaca_prices_parquet,
+            SourceAsset(AssetKey("bronze_alpaca_bars")),
+            SourceAsset(AssetKey("silver_alpaca_assets")),
+        ],
+        resources={"duckdb": con},
+        partition_key=partition_key,
+    )
+    assert result_first.success
+
+    con.execute("UPDATE silver.assets SET is_active = FALSE WHERE symbol = 'NVDA'")
+    _write_fixture_bronze_bars(data_root, partition_key, second_symbols)
+
+    result_second = materialize(
+        assets=[
+            silver_alpaca_prices_parquet,
+            SourceAsset(AssetKey("bronze_alpaca_bars")),
+            SourceAsset(AssetKey("silver_alpaca_assets")),
+        ],
+        resources={"duckdb": con},
+        partition_key=partition_key,
+    )
+    assert result_second.success
+
+    day_dir = data_root / "silver" / "prices" / f"date={partition_key}"
+    written_symbols = sorted(path.name.split("=", 1)[1] for path in day_dir.glob("symbol=*"))
+    assert written_symbols == sorted(second_symbols)
+    assert not (day_dir / "symbol=NVDA" / "prices.parquet").exists()
+
+
+@pytest.mark.smoke
+def test_silver_prices_dedupes_duplicate_active_symbols_in_assets(tmp_path: Path) -> None:
+    partition_key = "2026-02-13"
+    symbol = "AAPL"
+
+    data_root = tmp_path / "data"
+    _write_fixture_bronze_bars(data_root, partition_key, [symbol])
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA silver")
+    con.execute(
+        """
+        CREATE TABLE silver.assets (
+            asset_id BIGINT,
+            symbol VARCHAR,
+            is_active BOOLEAN
+        )
+        """
+    )
+    con.execute(
+        "INSERT INTO silver.assets (asset_id, symbol, is_active) VALUES (1, 'AAPL', TRUE)"
+    )
+    con.execute(
+        "INSERT INTO silver.assets (asset_id, symbol, is_active) VALUES (99, 'AAPL', TRUE)"
+    )
+
+    silver_prices_module.DATA_ROOT = data_root
+
+    result = materialize(
+        assets=[
+            silver_alpaca_prices_parquet,
+            SourceAsset(AssetKey("bronze_alpaca_bars")),
+            SourceAsset(AssetKey("silver_alpaca_assets")),
+        ],
+        resources={"duckdb": con},
+        partition_key=partition_key,
+    )
+
+    assert result.success
+    out_path = data_root / "silver" / "prices" / f"date={partition_key}" / "symbol=AAPL" / "prices.parquet"
+    df = pd.read_parquet(out_path)
+    assert len(df) == 2
+    assert set(df["asset_id"].tolist()) == {1}

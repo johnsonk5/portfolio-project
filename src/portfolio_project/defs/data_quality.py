@@ -205,6 +205,49 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
         ]
 
     rows = []
+    try:
+        duplicate_active_symbol_count = con.execute(
+            """
+            SELECT coalesce(sum(cnt - 1), 0)
+            FROM (
+                SELECT upper(trim(symbol)) AS symbol_key, count(*) AS cnt
+                FROM silver.assets
+                WHERE is_active = TRUE
+                  AND symbol IS NOT NULL
+                  AND trim(symbol) <> ''
+                GROUP BY symbol_key
+                HAVING count(*) > 1
+            )
+            """
+        ).fetchone()[0]
+        rows.append(
+            _dq_row(
+                run_id=run_id,
+                job_name=job_name,
+                partition_key=partition_key,
+                check_name="dq_silver_assets_active_symbol_uniqueness",
+                status="PASS" if int(duplicate_active_symbol_count or 0) == 0 else "FAIL",
+                measured_value=float(duplicate_active_symbol_count or 0),
+                threshold_value=0.0,
+                details={},
+                logged_ts=now,
+            )
+        )
+    except Exception as exc:
+        rows.append(
+            _dq_row(
+                run_id=run_id,
+                job_name=job_name,
+                partition_key=partition_key,
+                check_name="dq_silver_assets_active_symbol_uniqueness",
+                status="FAIL",
+                measured_value=None,
+                threshold_value=0.0,
+                details={"reason": "silver_assets_unreadable", "error_message": str(exc)},
+                logged_ts=now,
+            )
+        )
+
     silver_paths = _silver_price_partition_paths(partition_key)
     if not silver_paths:
         rows.append(

@@ -187,8 +187,9 @@ def _prices_compaction_schedule_fn(context):
     scheduled_local = scheduled_time.astimezone(ZoneInfo("America/New_York"))
     partition_date = _previous_trading_day(scheduled_local.date())
     partition_key = partition_date.replace(day=1).strftime("%Y-%m-%d")
+    run_key = f"{partition_key}|{scheduled_local.date().isoformat()}"
     return RunRequest(
-        run_key=partition_key,
+        run_key=run_key,
         partition_key=partition_key,
     )
 
