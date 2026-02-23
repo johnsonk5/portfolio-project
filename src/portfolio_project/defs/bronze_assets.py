@@ -11,7 +11,6 @@ from dagster import (
     AssetKey,
     DailyPartitionsDefinition,
     Field,
-    MonthlyPartitionsDefinition,
     String,
     asset,
 )
@@ -20,10 +19,6 @@ from portfolio_project.defs.observability_modules import write_dq_log
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 BRONZE_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
-BRONZE_MONTHLY_BACKFILL_PARTITIONS = MonthlyPartitionsDefinition(
-    start_date=PARTITIONS_START_DATE,
-    end_offset=1,
-)
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 TICKERS_ENV = "ALPACA_TICKERS"
 ALPACA_SYMBOL_BATCH_SIZE = int(os.getenv("ALPACA_SYMBOL_BATCH_SIZE", "200"))
@@ -118,7 +113,8 @@ def _fetch_bars_df_with_retry(
     start_date: datetime,
     end_date: datetime,
 ) -> pd.DataFrame:
-    for attempt in range(1, ALPACA_REQUEST_MAX_RETRIES + 2):
+    max_attempts = ALPACA_REQUEST_MAX_RETRIES + 1
+    for attempt in range(1, max_attempts + 1):
         try:
             return context.resources.alpaca.get_bars_df(
                 symbol_or_symbols=symbols,
@@ -126,7 +122,7 @@ def _fetch_bars_df_with_retry(
                 end_date=end_date,
             )
         except Exception as exc:
-            if attempt > ALPACA_REQUEST_MAX_RETRIES:
+            if attempt == max_attempts:
                 raise
             sleep_seconds = ALPACA_REQUEST_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
             context.log.warning(
@@ -214,45 +210,6 @@ def bronze_alpaca_bars(context: AssetExecutionContext) -> None:
             "symbol_count": len(symbols),
             "files_written": files_written,
             "row_count": row_count,
-        }
-    )
-
-
-@asset(
-    name="bronze_alpaca_bars_monthly_backfill",
-    partitions_def=BRONZE_MONTHLY_BACKFILL_PARTITIONS,
-    required_resource_keys={"alpaca", "duckdb"},
-    deps=[AssetKey("silver_alpaca_assets")],
-    config_schema={
-        "symbols": Field(Array(String), is_required=False),
-    },
-)
-def bronze_alpaca_bars_monthly_backfill(context: AssetExecutionContext) -> None:
-    """
-    Backfill all days in a month into bronze day+symbol partitions.
-    """
-    month_start = datetime.strptime(context.partition_key, "%Y-%m-%d").date()
-    next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
-    symbols = _resolve_active_symbols(context)
-
-    total_rows = 0
-    total_files = 0
-    total_days = 0
-    cursor = month_start
-    while cursor < next_month:
-        rows, files = _ingest_bronze_day(context, cursor, symbols)
-        total_rows += rows
-        total_files += files
-        total_days += 1
-        cursor += timedelta(days=1)
-
-    context.add_output_metadata(
-        {
-            "partition_month_start": context.partition_key,
-            "symbol_count": len(symbols),
-            "calendar_days_processed": total_days,
-            "files_written": total_files,
-            "row_count": total_rows,
         }
     )
 

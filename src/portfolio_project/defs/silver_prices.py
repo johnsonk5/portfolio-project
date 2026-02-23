@@ -6,13 +6,11 @@ import pandas as pd
 from dagster import (
     AssetExecutionContext,
     DailyPartitionsDefinition,
-    MonthlyPartitionsDefinition,
     asset,
 )
 
 from portfolio_project.defs.bronze_assets import (
     bronze_alpaca_bars,
-    bronze_alpaca_bars_monthly_backfill,
 )
 from portfolio_project.defs.silver_assets import silver_alpaca_assets
 
@@ -20,10 +18,6 @@ from portfolio_project.defs.silver_assets import silver_alpaca_assets
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 SILVER_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
-SILVER_MONTHLY_BACKFILL_PARTITIONS = MonthlyPartitionsDefinition(
-    start_date=PARTITIONS_START_DATE,
-    end_offset=1,
-)
 
 
 def _silver_day_file_path(trade_date: date, symbol: str) -> Path:
@@ -35,12 +29,6 @@ def _silver_day_file_path(trade_date: date, symbol: str) -> Path:
         / f"symbol={symbol.upper()}"
         / "prices.parquet"
     )
-
-
-def _month_start_and_end(month_partition_key: str) -> tuple[date, date]:
-    month_start = datetime.strptime(month_partition_key, "%Y-%m-%d").date()
-    next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
-    return month_start, next_month
 
 
 def _active_symbol_rows(con) -> list[tuple[int, str]]:
@@ -147,17 +135,6 @@ def _bronze_day_symbol_paths(trade_date: date, symbols: list[str]) -> list[str]:
     return [path for path in paths if Path(path).exists()]
 
 
-def _bronze_month_glob_paths() -> str:
-    return (
-        DATA_ROOT
-        / "bronze"
-        / "alpaca_bars"
-        / "date=*"
-        / "symbol=*"
-        / "bars.parquet"
-    ).as_posix()
-
-
 @asset(
     name="silver_alpaca_prices_parquet",
     deps=[bronze_alpaca_bars, silver_alpaca_assets],
@@ -203,72 +180,3 @@ def silver_alpaca_prices_parquet(context: AssetExecutionContext) -> None:
     )
 
 
-@asset(
-    name="silver_alpaca_prices_monthly_backfill",
-    deps=[bronze_alpaca_bars_monthly_backfill, silver_alpaca_assets],
-    partitions_def=SILVER_MONTHLY_BACKFILL_PARTITIONS,
-    required_resource_keys={"duckdb"},
-)
-def silver_alpaca_prices_monthly_backfill(context: AssetExecutionContext) -> None:
-    """
-    Backfill all daily silver files for a month from bronze day+symbol partitions.
-    """
-    con = context.resources.duckdb
-    try:
-        con.execute("SELECT 1 FROM silver.assets LIMIT 1")
-    except Exception as exc:
-        context.log.warning("Silver assets table missing or unreadable: %s", exc)
-        return
-
-    month_start, next_month = _month_start_and_end(context.partition_key)
-    bronze_glob = _bronze_month_glob_paths()
-    bronze_root = DATA_ROOT / "bronze" / "alpaca_bars"
-    if not bronze_root.exists():
-        context.log.warning("Bronze bars root not found at %s", bronze_root)
-        return
-
-    prices_df = con.execute(
-        """
-        WITH bars AS (
-            SELECT *
-            FROM read_parquet(?, hive_partitioning = true)
-            WHERE CAST(date AS DATE) >= ?
-              AND CAST(date AS DATE) < ?
-        ),
-        active_assets AS (
-            SELECT asset_id, upper(trim(symbol)) AS symbol
-            FROM silver.assets
-            WHERE is_active = TRUE
-              AND symbol IS NOT NULL
-              AND trim(symbol) <> ''
-        )
-        SELECT
-            assets.asset_id,
-            upper(trim(bars.symbol)) AS symbol,
-            bars.timestamp,
-            bars.open,
-            bars.high,
-            bars.low,
-            bars.close,
-            bars.volume,
-            bars.trade_count,
-            bars.vwap,
-            bars.ingested_ts
-        FROM bars
-        INNER JOIN active_assets AS assets
-            ON upper(trim(bars.symbol)) = assets.symbol
-        """,
-        [bronze_glob, month_start, next_month],
-    ).fetch_df()
-    if prices_df is None or prices_df.empty:
-        context.log.warning("No monthly bronze prices found for month starting %s", context.partition_key)
-        return
-
-    row_count, files_written = _write_silver_day_symbol_files(prices_df)
-    context.add_output_metadata(
-        {
-            "partition_month_start": context.partition_key,
-            "row_count": row_count,
-            "files_written": files_written,
-        }
-    )
