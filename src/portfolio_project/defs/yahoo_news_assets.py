@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 import requests
-from dagster import Array, AssetExecutionContext, DailyPartitionsDefinition, Field, Int, String, asset
+from dagster import Array, AssetExecutionContext, DailyPartitionsDefinition, Field, Float, Int, String, asset
 from dagster import AssetKey
 
 
@@ -40,7 +40,8 @@ def _resolve_symbols(context: AssetExecutionContext) -> list[str]:
             symbols = sorted(set(config_symbols) & set(env_symbols))
             if not symbols:
                 context.log.warning(
-                    "No configured symbols are active; using symbols from %s.",
+                    "No overlap between configured symbols and symbols from %s; using symbols from %s.",
+                    TICKERS_ENV,
                     TICKERS_ENV,
                 )
                 return env_symbols
@@ -82,9 +83,9 @@ def _fetch_news(
     config_schema={
         "symbols": Field(Array(String), is_required=False),
         "news_count": Field(Int, is_required=False, default_value=10),
-        "request_delay_seconds": Field(Int, is_required=False, default_value=1),
+        "request_delay_seconds": Field(Float, is_required=False, default_value=1.0),
         "max_retries": Field(Int, is_required=False, default_value=3),
-        "retry_backoff_seconds": Field(Int, is_required=False, default_value=2),
+        "retry_backoff_seconds": Field(Float, is_required=False, default_value=2.0),
     },
 )
 def bronze_yahoo_news(context: AssetExecutionContext) -> None:
@@ -159,8 +160,10 @@ def bronze_yahoo_news(context: AssetExecutionContext) -> None:
     partition_dir.mkdir(parents=True, exist_ok=True)
     out_path = partition_dir / "news.parquet"
 
+    had_existing_partition = out_path.exists()
     existing_count = 0
-    if out_path.exists():
+    existing = pd.DataFrame()
+    if had_existing_partition:
         existing = pd.read_parquet(out_path)
         existing_count = len(existing)
         df = pd.concat([existing, df], ignore_index=True)
@@ -171,7 +174,46 @@ def bronze_yahoo_news(context: AssetExecutionContext) -> None:
     df.to_parquet(out_path, index=False)
     final_count = len(df)
     rows_inserted = max(final_count - existing_count, 0)
+    rows_updated = 0
     rows_deleted = max(existing_count - final_count, 0)
+
+    subset_cols = [c for c in ["symbol", "uuid", "link", "title", "provider_publish_time"] if c in df.columns]
+    if had_existing_partition and subset_cols:
+        previous_state = existing.drop_duplicates(subset=subset_cols, keep="last")
+        current_state = df.drop_duplicates(subset=subset_cols, keep="last")
+
+        inserted_keys = current_state.merge(
+            previous_state[subset_cols],
+            on=subset_cols,
+            how="left",
+            indicator=True,
+        )
+        rows_inserted = int((inserted_keys["_merge"] == "left_only").sum())
+
+        deleted_keys = previous_state.merge(
+            current_state[subset_cols],
+            on=subset_cols,
+            how="left",
+            indicator=True,
+        )
+        rows_deleted = int((deleted_keys["_merge"] == "left_only").sum())
+
+        value_cols = [c for c in current_state.columns if c not in subset_cols and c in previous_state.columns]
+        if value_cols:
+            joined = current_state.merge(
+                previous_state,
+                on=subset_cols,
+                how="inner",
+                suffixes=("_new", "_old"),
+            )
+            changed_mask = pd.Series(False, index=joined.index)
+            for col in value_cols:
+                new_col = f"{col}_new"
+                old_col = f"{col}_old"
+                new_vals = joined[new_col]
+                old_vals = joined[old_col]
+                changed_mask |= ~((new_vals == old_vals) | (new_vals.isna() & old_vals.isna()))
+            rows_updated = int(changed_mask.sum())
 
     context.add_output_metadata(
         {
@@ -179,7 +221,7 @@ def bronze_yahoo_news(context: AssetExecutionContext) -> None:
             "row_count": final_count,
             "symbols": len(set(df["symbol"])),
             "rows_inserted": rows_inserted,
-            "rows_updated": 0,
+            "rows_updated": rows_updated,
             "rows_deleted": rows_deleted,
         }
     )
