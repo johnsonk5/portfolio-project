@@ -51,6 +51,9 @@ from portfolio_project.defs.wikipedia_pageviews import (
     bronze_wikipedia_pageviews,
     silver_wikipedia_pageviews,
 )
+from portfolio_project.defs.demo_seed_assets import (
+    seed_demo_data,
+)
 from portfolio_project.defs.run_log import (
     dagster_run_log_failure,
     dagster_run_log_success,
@@ -138,6 +141,14 @@ wikipedia_activity_job = define_asset_job(
 tranco_update_job = define_asset_job(
     name="tranco_update_job",
     selection=AssetSelection.assets(bronze_tranco_snapshot),
+    hooks={dagster_run_log_success, dagster_run_log_failure},
+)
+
+sample_demo_seed_job = define_asset_job(
+    name="sample_demo_seed_job",
+    selection=AssetSelection.assets(
+        seed_demo_data,
+    ),
     hooks={dagster_run_log_success, dagster_run_log_failure},
 )
 
@@ -256,6 +267,7 @@ defs = Definitions(
         bronze_tranco_snapshot,
         bronze_wikipedia_pageviews,
         silver_wikipedia_pageviews,
+        seed_demo_data,
         silver_ref_publishers,
         silver_news,
         gold_headlines,
@@ -277,6 +289,7 @@ defs = Definitions(
         asset_status_updates_job,
         sp500_update_job,
         tranco_update_job,
+        sample_demo_seed_job,
     ],
     schedules=[
         daily_prices_schedule,
