@@ -191,6 +191,8 @@ QUOTES = [
     '"What\'s the most you ever lost on a coin toss?" - Anton Chigurh',
 ]
 
+MAG7_SYMBOLS = {"AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "GOOG", "META", "TSLA"}
+
 def _navigate_to_symbol(symbol: str) -> None:
     if not symbol:
         return
@@ -603,25 +605,25 @@ def _load_big_picture(top_n: int = 7) -> tuple[dict, str | None, str | None]:
     )
 
     dv_mask = valid_returns["dollar_volume"].notna()
-    contrib_pct = None
+    mag7_contrib_pct = None
     if dv_mask.any():
-        dv = valid_returns.loc[dv_mask, ["returns_1d", "dollar_volume"]].copy()
+        dv = valid_returns.loc[dv_mask, ["symbol", "returns_1d", "dollar_volume"]].copy()
         dv = dv[dv["dollar_volume"] > 0]
         if not dv.empty:
             dv["weighted_return"] = dv["returns_1d"] * dv["dollar_volume"]
-            total_weighted = dv["weighted_return"].sum()
-            top = dv.sort_values("dollar_volume", ascending=False).head(top_n)
-            top_weighted = top["weighted_return"].sum()
-            if total_weighted != 0:
-                contrib_pct = (top_weighted / total_weighted) * 100.0
+            dv["weighted_return_abs"] = dv["weighted_return"].abs()
+            total_abs_weighted = dv["weighted_return_abs"].sum()
+            mag7 = dv[dv["symbol"].astype(str).str.upper().isin(MAG7_SYMBOLS)]
+            mag7_abs_weighted = mag7["weighted_return_abs"].sum()
+            if total_abs_weighted > 0:
+                mag7_contrib_pct = (mag7_abs_weighted / total_abs_weighted) * 100.0
 
     label = pd.to_datetime(trade_date).strftime("%B %d, %Y")
     metrics = {
         "pct_up": pct_up,
         "pct_above_50": pct_above_50,
         "pct_above_200": pct_above_200,
-        "top_contrib": contrib_pct,
-        "top_n": top_n,
+        "mag7_contrib": mag7_contrib_pct,
         "universe": total_count,
     }
     return metrics, label, None
@@ -676,14 +678,14 @@ else:
         else:
             st.metric("% above 200D SMA", f"{big_picture['pct_above_200']:.1f}%")
     with bp_cols[3]:
-        if big_picture["top_contrib"] is None:
+        if big_picture["mag7_contrib"] is None:
             st.metric(
-                f"Top {big_picture['top_n']} Contribution", "n/a"
+                "Mag 7 Return Impact", "n/a"
             )
         else:
             st.metric(
-                f"Top {big_picture['top_n']} Contribution",
-                f"{big_picture['top_contrib']:.1f}%",
+                "Mag 7 Return Impact",
+                f"{big_picture['mag7_contrib']:.1f}%",
             )
 
 st.markdown("</div>", unsafe_allow_html=True)
@@ -739,10 +741,14 @@ with left:
     st.markdown("</div>", unsafe_allow_html=True)
 
 with right:
-    st.markdown('<div class="section-card" style="margin-top: 16px;">', unsafe_allow_html=True)
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Risky Bets</div>', unsafe_allow_html=True)
 
-    hot, crash, sleepy, label, error = _load_risky_bets()
+    hot, crash, sleepy, label, error = _load_risky_bets(
+        hot_limit=6,
+        crash_limit=6,
+        sleepy_limit=6,
+    )
     if error:
         st.info(error)
     else:
@@ -765,7 +771,7 @@ with right:
                     columns=["symbol", "vol_pct", "mom_pct"],
                     labels=["Symbol", "Vol", "21D Ret (%)"],
                     formats=["{}", "{:.2f}", "{:.2f}"],
-                    min_rows=5,
+                    min_rows=6,
                 )
 
         with crash_col:
@@ -781,7 +787,7 @@ with right:
                     columns=["symbol", "vol_pct", "mom_pct"],
                     labels=["Symbol", "Vol", "21D Ret (%)"],
                     formats=["{}", "{:.2f}", "{:.2f}"],
-                    min_rows=5,
+                    min_rows=6,
                 )
 
         with sleepy_col:
@@ -797,7 +803,7 @@ with right:
                     columns=["symbol", "vol_pct"],
                     labels=["Symbol", "Vol"],
                     formats=["{}", "{:.2f}"],
-                    min_rows=5,
+                    min_rows=6,
                 )
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -815,7 +821,7 @@ with underrated_col:
         unsafe_allow_html=True,
     )
 
-    underrated_df, label, error = _load_underrated_investments(limit=5)
+    underrated_df, label, error = _load_underrated_investments(limit=6)
     if error:
         st.info(error)
     else:
@@ -828,6 +834,7 @@ with underrated_col:
             columns=["symbol", "momentum_12_1_pct", "pct_below_52w_high_pct", "score"],
             labels=["Symbol", "12-1 Mom (%)", "Below 52W High (%)", "Score"],
             formats=["{}", "{:.2f}", "{:.2f}", "{:.2f}"],
+            min_rows=6,
         )
 
     st.markdown("</div>", unsafe_allow_html=True)
