@@ -3,7 +3,7 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import pandas as pd
 import requests
@@ -38,6 +38,19 @@ def _article_from_name(name: str) -> str:
     return cleaned.replace(" ", "_")
 
 
+def _normalize_article_title(raw_title: str) -> str:
+    """
+    Normalize article titles from source tables so API path encoding happens once.
+    """
+    title = str(raw_title or "").strip()
+    if not title:
+        return ""
+    # Some upstream sources already store URL-encoded values (e.g. Lowe%27s).
+    # Decode first so quote(...) below does not produce double encoding (%2527).
+    title = unquote(title)
+    return title.replace(" ", "_")
+
+
 def _fetch_pageviews(
     session: requests.Session,
     project: str,
@@ -46,11 +59,15 @@ def _fetch_pageviews(
     max_retries: int,
     backoff_seconds: float,
 ) -> list[dict]:
+    article_title = _normalize_article_title(article)
+    if not article_title:
+        return []
+
     url = (
         f"{WIKIMEDIA_PAGEVIEWS_API}/"
         f"{quote(project, safe='')}/"
         "all-access/user/"
-        f"{quote(article, safe='')}/"
+        f"{quote(article_title, safe='')}/"
         "daily/"
         f"{date_key}/{date_key}"
     )
@@ -172,7 +189,7 @@ def bronze_wikipedia_pageviews(context: AssetExecutionContext) -> None:
                 {
                     "symbol": row.get("symbol"),
                     "company_name": name,
-                    "article": item.get("article") or article,
+                    "article": item.get("article") or _normalize_article_title(article),
                     "project": item.get("project") or WIKIPEDIA_PROJECT,
                     "access": item.get("access"),
                     "agent": item.get("agent"),
