@@ -6,10 +6,27 @@ This document describes the current Streamlit pages and their behavior.
 
 A daily overview page built off `gold.prices` and `gold.headlines`. Clicking on any symbol on this page will take you to the `Deep Dive` page or that symbol.
 
+### Data Anchor
+- All Market Vibecheck KPIs are calculated on `latest_trade_date = MAX(gold.prices.trade_date)`.
+
 ### Big Picture
-- `% of stocks up` from latest `returns_1d` coverage.
-- `% above 50D SMA` and `% above 200D SMA` from latest `close` vs `sma_50` and `sma_200`.
-- `Top N Contribution` based on dollar-volume-weighted return contribution.
+- `% of stocks up`:
+  - Universe: rows where `returns_1d IS NOT NULL`.
+  - Formula: `100 * mean(returns_1d > 0)`.
+- `% above 50D SMA`:
+  - Universe: rows with `close` and `sma_50` both non-null.
+  - Formula: `100 * mean(close > sma_50)`.
+- `% above 200D SMA`:
+  - Universe: rows with `close` and `sma_200` both non-null.
+  - Formula: `100 * mean(close > sma_200)`.
+- `Mag 7 Return Impact`:
+  - Mag 7 set: `AAPL, MSFT, NVDA, AMZN, GOOGL, GOOG, META, TSLA`.
+  - Per-symbol impact: `weighted_return = returns_1d * dollar_volume`.
+  - Formula:
+    - numerator: `sum(abs(weighted_return))` over Mag 7.
+    - denominator: `sum(abs(weighted_return))` over all symbols with non-null positive `dollar_volume`.
+    - KPI: `100 * numerator / denominator`.
+  - This metric is bounded in `[0, 100]` and represents share of total absolute daily return impact.
 
 ### Top Gainers + Losers
 - Top 5 gainers and top 5 losers by latest `returns_1d`.
@@ -20,13 +37,14 @@ A daily overview page built off `gold.prices` and `gold.headlines`. Clicking on 
 - `Hot Ones`: positive 21D return names, ranked by highest 21D return.
 - `Crashing Out`: negative 21D return names, ranked by lowest 21D return.
 - `Sleepy`: lowest volatility names by `realized_vol_21d`.
+- Each list displays up to 6 rows (with blank filler rows to keep card height stable).
 
 Note: `Hot Ones` and `Crashing Out` are filtered by momentum sign and ranked by momentum, not ranked by volatility.
 
 ### Underrated Investments
 - Uses `momentum_12_1` and `pct_below_52w_high`.
 - Composite score = z-score(momentum_12_1) + z-score(pct_below_52w_high).
-- Displays top ranked names.
+- Displays top 6 ranked names (with blank filler rows to keep card height stable).
 
 ### The Good News / The Bad News
 - Based on latest `sentiment_score` and `returns_5d`.
@@ -45,10 +63,15 @@ Focused page for one symbol.
 ### Sections
 
 ### Snapshot KPIs
-- latest close 
-- 5D return  
-- 21D return  
-- 21D volatility
+- `Latest close`: latest `close`.
+- Delta shown under `Latest close`:
+  - Preferred: percent move vs previous close.
+  - Fallback: percent move from latest open to latest close when previous close is unavailable.
+- `5D return`: latest `returns_5d * 100`.
+- `21D return`: latest `returns_21d * 100`.
+- `21D volatility`:
+  - Preferred: latest `realized_vol_21d * 100`.
+  - Fallback: rolling 21-day stddev of `returns_1d` annualized by `sqrt(252)`, then `* 100`.
 
 ### Performance History
 - Candlestick chart with dynamic y-axis.
