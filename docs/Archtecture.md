@@ -26,10 +26,10 @@ This document describes the system architecture and storage layout.
 ### Silver
 - Join-ready and normalized data.
 - `silver.assets` and references in DuckDB.
-- Prices, news, and Wikipedia are written as partitioned parquet datasets.
+- Prices, news, and Wikipedia are written as partitioned parquet datasets under `data/silver`.
 
 ### Gold
-- Analytics and factor layer in DuckDB (`gold.prices`, `gold.headlines`, `gold.activity`).
+- Analytics layer in DuckDB (`gold.prices`, `gold.headlines`, `gold.activity`).
 
 ### Observability
 - Reliability tables in DuckDB (`observability.*`).
