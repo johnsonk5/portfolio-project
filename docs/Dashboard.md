@@ -10,6 +10,9 @@ A daily overview page built off `gold.prices` and `gold.headlines`. Clicking on 
 - All Market Vibecheck KPIs are calculated on `latest_trade_date = MAX(gold.prices.trade_date)`.
 
 ### Big Picture
+
+<img width="768" height="87" alt="image" src="https://github.com/user-attachments/assets/7b3e56a8-c7aa-48cd-a6c2-c85333d40454" />
+
 - `% of stocks up`:
   - Universe: rows where `returns_1d IS NOT NULL`.
   - Formula: `100 * mean(returns_1d > 0)`.
