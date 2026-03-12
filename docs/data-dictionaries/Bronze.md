@@ -1,6 +1,8 @@
 # Bronze Data Dictionary
 
-## `bronze.alpaca_bars` (partitioned parquet)
+All of the tables in this layer are partitioned parquet files unless otherwise stated.
+
+## `bronze.alpaca_bars` 
 
 | Column | Type | Description |
 | --- | --- | --- |
@@ -52,7 +54,7 @@
 | `ingested_ts` | `datetime64[us]` | Ingest timestamp. |
 | `source_url` | `object` | Source URL. |
 
-## `bronze.yahoo_news` (partitioned parquet)
+## `bronze.yahoo_news`
 
 | Column | Type | Description |
 | --- | --- | --- |
@@ -67,14 +69,16 @@
 | `query_date` | `date` | Query partition date. |
 | `ingested_ts` | `datetime64[us]` | Ingest timestamp. |
 
-## `bronze.tranco` (CSV snapshot)
+## `bronze.tranco`
+
+*This table is a csv*
 
 | Column | Type | Description |
 | --- | --- | --- |
 | `rank` | `int` | Global domain rank (1 = most popular). |
 | `domain` | `object` | Base domain name. |
 
-## `bronze.wikipedia_pageviews` (partitioned parquet)
+## `bronze.wikipedia_pageviews`
 
 | Column | Type | Description |
 | --- | --- | --- |

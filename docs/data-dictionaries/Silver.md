@@ -1,6 +1,10 @@
 # Silver Data Dictionary
 
+In order to best manage pipeline speed and query runtime, some of these tables remained in partitioned parquet files and others were brought into DuckDB.
+
 ## `silver.assets`
+
+*DuckDB Table in silver schema*
 
 | Column | Type | Description |
 | --- | --- | --- |
@@ -26,7 +30,9 @@
 | `is_sp500` | `bool` | S&P 500 membership flag. |
 | `wikipedia_title` | `object` | Resolved English Wikipedia title (nullable). |
 
-## `silver.prices` (partitioned parquet)
+## `silver.prices`
+
+*Partitioned Parquet file*
 
 | Column | Type | Description |
 | --- | --- | --- |
@@ -44,6 +50,8 @@
 
 ## `silver.active_assets_history`
 
+*DuckDB Table in silver schema*
+
 | Column | Type | Description |
 | --- | --- | --- |
 | `asset_id` | `int` | Foreign key to `silver.assets.asset_id`. |
@@ -56,6 +64,8 @@
 | `new_is_active` | `bool` | New active flag. |
 
 ## `silver.ref_sp500`
+
+*DuckDB Table in silver schema*
 
 | Column | Type | Description |
 | --- | --- | --- |
@@ -73,6 +83,8 @@
 
 ## `silver.ref_publishers`
 
+*DuckDB Table in silver schema*
+
 | Column | Type | Description |
 | --- | --- | --- |
 | `publisher_id` | `int` | Deterministic publisher id. |
@@ -84,7 +96,9 @@
 | `weight_source` | `object` | `tranco` or `default`. |
 | `weight_updated_ts` | `timestamp` | Last weight refresh timestamp. |
 
-## `silver.news` (partitioned parquet)
+## `silver.news`
+
+*Partitioned Parquet file*
 
 | Column | Type | Description |
 | --- | --- | --- |
@@ -100,7 +114,9 @@
 | `query_date` | `date` | Query partition date. |
 | `ingested_ts` | `datetime64[us]` | Ingest timestamp. |
 
-## `silver.wikipedia_pageviews` (partitioned parquet)
+## `silver.wikipedia_pageviews`
+
+*Partitioned Parquet file*
 
 | Column | Type | Description |
 | --- | --- | --- |

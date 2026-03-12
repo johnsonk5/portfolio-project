@@ -42,7 +42,7 @@ Rolling 30-day headlines table used by dashboard and sentiment logic.
 ### Key Fields
 - `provider_publish_time`
 - `title`
-- `sentiment` (FinBERT label from headline text; fallback to summary text when needed)
+- `sentiment` (FinBERT label from headline text)
 
 ## `gold.activity`
 
