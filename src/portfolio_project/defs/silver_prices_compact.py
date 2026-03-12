@@ -9,7 +9,10 @@ from portfolio_project.defs.silver_prices import PARTITIONS_START_DATE, silver_a
 
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
-SILVER_COMPACT_PARTITIONS = MonthlyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
+SILVER_COMPACT_PARTITIONS = MonthlyPartitionsDefinition(
+    start_date=PARTITIONS_START_DATE,
+    end_offset=1,
+)
 
 
 @asset(
@@ -26,23 +29,23 @@ def silver_alpaca_prices_compact(context: AssetExecutionContext) -> None:
     year_key = month_start.strftime("%Y")
     month_key = month_start.strftime("%m")
 
-    day_glob = (
-        DATA_ROOT
-        / "silver"
-        / "prices"
-        / "date=*"
-        / "symbol=*"
-        / "prices.parquet"
-    ).as_posix()
+    day_paths = sorted(
+        path.as_posix()
+        for path in (
+            DATA_ROOT / "silver" / "prices"
+        ).glob(f"date={year_key}-{month_key}-*/symbol=*/prices.parquet")
+    )
+    if not day_paths:
+        context.log.warning("No silver prices rows found for month %s", context.partition_key)
+        return
 
     con = context.resources.duckdb
     prices_df = con.execute(
         """
         SELECT *
-        FROM read_parquet(?, hive_partitioning = true)
-        WHERE date_trunc('month', CAST(date AS DATE)) = ?
+        FROM read_parquet(?)
         """,
-        [day_glob, month_start],
+        [day_paths],
     ).fetch_df()
 
     if prices_df is None or prices_df.empty:

@@ -35,6 +35,9 @@ def alpaca_resource(context) -> "AlpacaClient":
     if not api_key or not secret_key:
         raise ValueError("ALPACA_API_KEY and ALPACA_SECRET_KEY environment variables must be set")
 
+    ## In future releases, it will be possible to paper or live trade through Alpaca.
+    ## As such, this option allows you to choose paper or live trading.
+
     env_paper = os.getenv("ALPACA_PAPER")
     if env_paper is not None:
         env_paper = env_paper.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
@@ -59,49 +62,7 @@ class AlpacaClient:
         self.client = StockHistoricalDataClient(api_key, secret_key)
         self.trading_client = TradingClient(api_key, secret_key, paper=paper)
     
-    def get_bars(
-        self,
-        symbol_or_symbols,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-    ) -> dict:
-        """
-        Fetch 5-minute bar (OHLCV) data for a given symbol.
-        
-        Args:
-            symbol_or_symbols: Stock ticker symbol or list of symbols (e.g., "AAPL" or ["AAPL", "MSFT"])
-            start_date: Start date for data retrieval (defaults to last business day)
-            end_date: End date for data retrieval (defaults to today)
-        
-        Returns:
-            Dictionary with symbol as key and DataFrame of bar data as value
-        """
-        # Set default dates if not provided
-        if end_date is None:
-            end_date = datetime.now(timezone.utc)
-        if start_date is None:
-            # Default to last 7 days
-            start_date = end_date - timedelta(days=7)
-        
-        # 5-minute timeframe
-        tf = TimeFrame(5, TimeFrameUnit.Minute)
-        
-        if isinstance(symbol_or_symbols, str):
-            symbols = [symbol_or_symbols]
-        else:
-            symbols = list(symbol_or_symbols)
-
-        request = StockBarsRequest(
-            symbol_or_symbols=symbols,
-            timeframe=tf,
-            start=start_date,
-            end=end_date,
-        )
-        
-        bars = self.client.get_stock_bars(request)
-        
-        return bars.df.to_dict() if hasattr(bars, 'df') else bars
-
+    ## Currently, this function pulls 5 minute bars, but this is easy to configure for other time frames.
     def get_bars_df(
         self,
         symbol_or_symbols,
@@ -116,7 +77,13 @@ class AlpacaClient:
         if start_date is None:
             start_date = end_date - timedelta(days=7)
 
+        # 5-minute timeframe - edit this to choose a different time frame
+        # Some sample time frames are included below.
         tf = TimeFrame(5, TimeFrameUnit.Minute)
+
+        # tf = TimeFrame(15, TimeFrameUnit.Minute) -- 15 minute bars
+
+        # tf = TimeFrame(1, TimeFrameUnit.Hour) -- 1 hour bars
 
         if isinstance(symbol_or_symbols, str):
             symbols = [symbol_or_symbols]
@@ -135,17 +102,6 @@ class AlpacaClient:
         if hasattr(bars, "df"):
             return bars.df.copy()
         return pd.DataFrame(bars)
-
-    def get_assets(
-        self,
-        status: AssetStatus = AssetStatus.ACTIVE,
-        asset_class: AssetClass = AssetClass.US_EQUITY,
-    ) -> list:
-        """
-        Fetch the list of tradable assets (tickers) from Alpaca.
-        """
-        request = GetAssetsRequest(status=status, asset_class=asset_class)
-        return self.trading_client.get_all_assets(request)
 
     def get_assets_df(
         self,

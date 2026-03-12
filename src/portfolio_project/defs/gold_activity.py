@@ -57,6 +57,14 @@ def gold_activity(context: AssetExecutionContext) -> None:
         """
     )
 
+    if not parquet_paths:
+        context.log.warning(
+            "No silver Wikipedia pageviews parquet partitions found between %s and %s.",
+            window_start,
+            partition_date,
+        )
+        return
+
     con.execute("DELETE FROM gold.activity WHERE activity_date < ?", [window_start])
     con.execute(
         """
@@ -65,14 +73,6 @@ def gold_activity(context: AssetExecutionContext) -> None:
         """,
         [window_start, window_end],
     )
-
-    if not parquet_paths:
-        context.log.warning(
-            "No silver Wikipedia pageviews parquet partitions found between %s and %s.",
-            window_start,
-            partition_date,
-        )
-        return
 
     insert_sql = """
         WITH source_data AS (

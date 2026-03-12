@@ -250,7 +250,7 @@ def gold_headlines(context: AssetExecutionContext) -> None:
             SET sentiment = u.sentiment
             FROM sentiment_updates_df AS u
             WHERE g.sentiment IS NULL
-              AND g.symbol = u.symbol
+              AND coalesce(g.symbol, '') = coalesce(u.symbol, '')
               AND coalesce(g.uuid, '') = coalesce(u.uuid, '')
               AND coalesce(g.link, '') = coalesce(u.link, '')
               AND coalesce(g.title, '') = coalesce(u.title, '')

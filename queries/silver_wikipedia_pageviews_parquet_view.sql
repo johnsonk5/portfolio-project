@@ -3,6 +3,10 @@
 
 CREATE SCHEMA IF NOT EXISTS silver;
 
-CREATE OR REPLACE VIEW silver.vs_wikipedia_pageviews AS
+CREATE OR REPLACE VIEW silver.vw_wikipedia_pageviews AS
 SELECT *
 FROM read_parquet('data/silver/wikipedia_pageviews/view_date=*/data_0.parquet', hive_partitioning = true);
+
+-- Backward-compatible alias for previous typo in view name.
+CREATE OR REPLACE VIEW silver.vs_wikipedia_pageviews AS
+SELECT * FROM silver.vw_wikipedia_pageviews;

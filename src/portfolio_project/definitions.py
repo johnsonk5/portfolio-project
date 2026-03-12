@@ -11,11 +11,9 @@ from dagster import (
 )
 
 from portfolio_project.defs.bronze_assets import (
-    BRONZE_MONTHLY_BACKFILL_PARTITIONS,
     BRONZE_PARTITIONS,
     bronze_alpaca_assets,
     bronze_alpaca_bars,
-    bronze_alpaca_bars_monthly_backfill,
 )
 from portfolio_project.defs.silver_assets import (
     silver_alpaca_active_assets_history,
@@ -23,7 +21,6 @@ from portfolio_project.defs.silver_assets import (
     silver_alpaca_assets_status_updates,
 )
 from portfolio_project.defs.silver_prices import (
-    silver_alpaca_prices_monthly_backfill,
     silver_alpaca_prices_parquet,
 )
 from portfolio_project.defs.silver_prices_compact import (
@@ -32,7 +29,6 @@ from portfolio_project.defs.silver_prices_compact import (
 )
 from portfolio_project.defs.gold_prices import (
     gold_alpaca_prices,
-    gold_alpaca_prices_monthly_backfill,
 )
 from portfolio_project.defs.gold_activity import gold_activity
 from portfolio_project.defs.sp500_assets import (
@@ -55,9 +51,13 @@ from portfolio_project.defs.wikipedia_pageviews import (
     bronze_wikipedia_pageviews,
     silver_wikipedia_pageviews,
 )
+from portfolio_project.defs.demo_seed_assets import (
+    seed_demo_data,
+)
 from portfolio_project.defs.run_log import (
     dagster_run_log_failure,
     dagster_run_log_success,
+    _is_us_trading_day,
 )
 
 from portfolio_project.defs.alpaca_resource import alpaca_resource
@@ -74,18 +74,6 @@ daily_prices_job = define_asset_job(
     name="daily_prices_job",
     selection=prices_selection,
     partitions_def=BRONZE_PARTITIONS,
-    executor_def=in_process_executor,
-    hooks={dagster_run_log_success, dagster_run_log_failure},
-)
-
-monthly_prices_backfill_job = define_asset_job(
-    name="monthly_prices_backfill_job",
-    selection=AssetSelection.assets(
-        bronze_alpaca_bars_monthly_backfill,
-        silver_alpaca_prices_monthly_backfill,
-        gold_alpaca_prices_monthly_backfill,
-    ),
-    partitions_def=BRONZE_MONTHLY_BACKFILL_PARTITIONS,
     executor_def=in_process_executor,
     hooks={dagster_run_log_success, dagster_run_log_failure},
 )
@@ -156,6 +144,14 @@ tranco_update_job = define_asset_job(
     hooks={dagster_run_log_success, dagster_run_log_failure},
 )
 
+sample_demo_seed_job = define_asset_job(
+    name="sample_demo_seed_job",
+    selection=AssetSelection.assets(
+        seed_demo_data,
+    ),
+    hooks={dagster_run_log_success, dagster_run_log_failure},
+)
+
 sp500_weekly_schedule = ScheduleDefinition(
     name="sp500_weekly_schedule",
     cron_schedule="0 17 * * 5",
@@ -164,14 +160,10 @@ sp500_weekly_schedule = ScheduleDefinition(
 )
 
 def _previous_trading_day(local_date):
-    weekday = local_date.weekday()
-    if weekday == 0:
-        return local_date - timedelta(days=3)
-    if weekday == 6:
-        return local_date - timedelta(days=2)
-    if weekday == 5:
-        return local_date - timedelta(days=1)
-    return local_date - timedelta(days=1)
+    candidate = local_date - timedelta(days=1)
+    while not _is_us_trading_day(candidate.isoformat()):
+        candidate -= timedelta(days=1)
+    return candidate
 
 
 def _daily_prices_schedule_fn(context):
@@ -203,8 +195,9 @@ def _prices_compaction_schedule_fn(context):
     scheduled_local = scheduled_time.astimezone(ZoneInfo("America/New_York"))
     partition_date = _previous_trading_day(scheduled_local.date())
     partition_key = partition_date.replace(day=1).strftime("%Y-%m-%d")
+    run_key = f"{partition_key}|{scheduled_local.date().isoformat()}"
     return RunRequest(
-        run_key=partition_key,
+        run_key=run_key,
         partition_key=partition_key,
     )
 
@@ -270,11 +263,11 @@ defs = Definitions(
     assets=[
         bronze_alpaca_bars,
         bronze_alpaca_assets,
-        bronze_alpaca_bars_monthly_backfill,
         bronze_yahoo_news,
         bronze_tranco_snapshot,
         bronze_wikipedia_pageviews,
         silver_wikipedia_pageviews,
+        seed_demo_data,
         silver_ref_publishers,
         silver_news,
         gold_headlines,
@@ -282,23 +275,21 @@ defs = Definitions(
         silver_alpaca_active_assets_history,
         silver_alpaca_assets_status_updates,
         silver_alpaca_prices_parquet,
-        silver_alpaca_prices_monthly_backfill,
         silver_alpaca_prices_compact,
         gold_alpaca_prices,
-        gold_alpaca_prices_monthly_backfill,
         gold_activity,
         bronze_sp500_companies,
         silver_sp500_companies,
     ],
     jobs=[
         daily_prices_job,
-        monthly_prices_backfill_job,
         prices_compaction_job,
         daily_news_job,
         wikipedia_activity_job,
         asset_status_updates_job,
         sp500_update_job,
         tranco_update_job,
+        sample_demo_seed_job,
     ],
     schedules=[
         daily_prices_schedule,

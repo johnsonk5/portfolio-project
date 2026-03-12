@@ -11,15 +11,14 @@ from dagster import (
     AssetKey,
     DailyPartitionsDefinition,
     Field,
-    MonthlyPartitionsDefinition,
     String,
     asset,
 )
 
+from portfolio_project.defs.observability_modules import write_dq_log
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 BRONZE_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
-BRONZE_MONTHLY_BACKFILL_PARTITIONS = MonthlyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 TICKERS_ENV = "ALPACA_TICKERS"
 ALPACA_SYMBOL_BATCH_SIZE = int(os.getenv("ALPACA_SYMBOL_BATCH_SIZE", "200"))
@@ -38,10 +37,7 @@ def _normalize_bars_df(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
     normalized = df.copy()
-    if "symbol" not in normalized.columns:
-        normalized = normalized.reset_index()
-    if "timestamp" not in normalized.columns and normalized.index.name == "timestamp":
-        normalized = normalized.reset_index()
+    normalized = normalized.reset_index()
     if "symbol" not in normalized.columns:
         return pd.DataFrame()
     normalized["symbol"] = normalized["symbol"].astype(str).str.upper()
@@ -50,11 +46,24 @@ def _normalize_bars_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _resolve_active_symbols(context: AssetExecutionContext) -> list[str]:
+    # Pull fallback symbols
     env_symbols = [
         s.strip().upper() for s in os.getenv(TICKERS_ENV, "").split(",") if s.strip()
     ]
-    config_symbols = context.op_config.get("symbols", None)
+    config_symbols_raw = (getattr(context, "op_config", None) or {}).get("symbols")
+    config_symbols_set: set[str] = set()
+    for symbol in config_symbols_raw or []:
+        if symbol is None:
+            continue
+        symbol_value = str(symbol).strip().upper()
+        if symbol_value:
+            config_symbols_set.add(symbol_value)
+    config_symbols = sorted(config_symbols_set)
+
+    # Pull active symbols from db
     active_symbols: list[str] = []
+    silver_assets_issue_reason: str | None = None
+    silver_assets_error: str | None = None
     try:
         active_symbols = [
             row[0]
@@ -63,20 +72,47 @@ def _resolve_active_symbols(context: AssetExecutionContext) -> list[str]:
             ).fetchall()
             if row and row[0]
         ]
+        if not active_symbols:
+            silver_assets_issue_reason = "silver_assets_empty"
+            context.log.warning("silver.assets returned no active symbols; using fallback resolution.")
     except Exception as exc:
+        silver_assets_issue_reason = "silver_assets_read_failed"
+        silver_assets_error = str(exc)
         context.log.warning("Unable to read silver.assets for active symbols: %s", exc)
 
+    # If there is one active symbol, return that
     if active_symbols:
         return sorted({str(symbol).upper() for symbol in active_symbols})
-    if env_symbols:
-        if config_symbols:
-            intersect = sorted({s.upper() for s in config_symbols} & set(env_symbols))
-            if intersect:
-                return intersect
-        return sorted(set(env_symbols))
+
+    # Set default symbols
+    fallback_source = "default"
+    resolved_symbols = ["AAPL"]
+
+    # If there are either config or env symbols use those (config first)
     if config_symbols:
-        return sorted({str(symbol).upper() for symbol in config_symbols if symbol})
-    return ["AAPL"]
+        resolved_symbols = config_symbols
+        fallback_source = "config"
+    elif env_symbols:
+        resolved_symbols = sorted(set(env_symbols))
+        fallback_source = "env"
+
+    # Log warning if active symbols wasn't used
+    if silver_assets_issue_reason is not None:
+        write_dq_log(
+            context=context,
+            check_name="dq_active_symbols_source_silver_assets_readable",
+            severity="YELLOW",
+            status="WARN",
+            measured_value=1.0,
+            threshold_value=0.0,
+            details={
+                "reason": silver_assets_issue_reason,
+                "fallback_source": fallback_source,
+            },
+            error_name=silver_assets_issue_reason,
+            error_message=silver_assets_error,
+        )
+    return resolved_symbols
 
 
 def _fetch_bars_df_with_retry(
@@ -85,7 +121,8 @@ def _fetch_bars_df_with_retry(
     start_date: datetime,
     end_date: datetime,
 ) -> pd.DataFrame:
-    for attempt in range(1, ALPACA_REQUEST_MAX_RETRIES + 2):
+    max_attempts = ALPACA_REQUEST_MAX_RETRIES + 1
+    for attempt in range(1, max_attempts + 1):
         try:
             return context.resources.alpaca.get_bars_df(
                 symbol_or_symbols=symbols,
@@ -93,7 +130,7 @@ def _fetch_bars_df_with_retry(
                 end_date=end_date,
             )
         except Exception as exc:
-            if attempt > ALPACA_REQUEST_MAX_RETRIES:
+            if attempt == max_attempts:
                 raise
             sleep_seconds = ALPACA_REQUEST_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
             context.log.warning(
@@ -181,45 +218,6 @@ def bronze_alpaca_bars(context: AssetExecutionContext) -> None:
             "symbol_count": len(symbols),
             "files_written": files_written,
             "row_count": row_count,
-        }
-    )
-
-
-@asset(
-    name="bronze_alpaca_bars_monthly_backfill",
-    partitions_def=BRONZE_MONTHLY_BACKFILL_PARTITIONS,
-    required_resource_keys={"alpaca", "duckdb"},
-    deps=[AssetKey("silver_alpaca_assets")],
-    config_schema={
-        "symbols": Field(Array(String), is_required=False),
-    },
-)
-def bronze_alpaca_bars_monthly_backfill(context: AssetExecutionContext) -> None:
-    """
-    Backfill all days in a month into bronze day+symbol partitions.
-    """
-    month_start = datetime.strptime(context.partition_key, "%Y-%m-%d").date()
-    next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
-    symbols = _resolve_active_symbols(context)
-
-    total_rows = 0
-    total_files = 0
-    total_days = 0
-    cursor = month_start
-    while cursor < next_month:
-        rows, files = _ingest_bronze_day(context, cursor, symbols)
-        total_rows += rows
-        total_files += files
-        total_days += 1
-        cursor += timedelta(days=1)
-
-    context.add_output_metadata(
-        {
-            "partition_month_start": context.partition_key,
-            "symbol_count": len(symbols),
-            "calendar_days_processed": total_days,
-            "files_written": total_files,
-            "row_count": total_rows,
         }
     )
 

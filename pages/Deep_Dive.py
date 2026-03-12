@@ -368,8 +368,13 @@ else:
 
     main_col, side_col = st.columns([2.2, 1], gap="large")
     chart_height = 540
-    side_gap = 44
-    side_chart_height = (chart_height - side_gap) / 2
+    title_block_height = 30
+    between_side_charts_gap = 12
+    side_chart_height = (
+        chart_height
+        + title_block_height
+        - (2 * title_block_height + between_side_charts_gap)
+    ) / 2
     with main_col:
         st.markdown(
             '<div class="section-title" style="margin: 0 0 8px 0; line-height: 1.1;">'
@@ -487,7 +492,11 @@ else:
         st.altair_chart(returns_chart, use_container_width=True)
 
         st.markdown(
-            '<div class="section-title" style="margin: 12px 0 8px 0; line-height: 1.1;">'
+            f'<div style="height: {between_side_charts_gap}px;"></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<div class="section-title" style="margin: 0 0 8px 0; line-height: 1.1;">'
             "Distance From SMA50</div>",
             unsafe_allow_html=True,
         )

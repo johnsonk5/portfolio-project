@@ -18,6 +18,12 @@ from portfolio_project.defs.data_quality import write_data_quality_checks
 from portfolio_project.defs.duckdb_resource import _acquire_duckdb_lock, _release_duckdb_lock
 
 
+def _freshness_severity(check_name: str) -> str:
+    if check_name in {"daily_news_partition_row_count", "wikipedia_assets_with_views_min_count"}:
+        return "YELLOW"
+    return "RED"
+
+
 def _to_utc_datetime(timestamp: Optional[float]) -> Optional[datetime]:
     if timestamp is None:
         return None
@@ -285,11 +291,13 @@ def _with_duckdb_connection():
     db_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = db_path.parent / ".duckdb_write.lock"
     lock_fd = _acquire_duckdb_lock(lock_path)
-    con = duckdb.connect(str(db_path))
+    con = None
     try:
+        con = duckdb.connect(str(db_path))
         yield con
     finally:
-        con.close()
+        if con is not None:
+            con.close()
         _release_duckdb_lock(lock_path, lock_fd)
 
 
@@ -456,7 +464,7 @@ def _check_prices_freshness(con, run_id: str, job_name: str, partition_key: Opti
                 "job_name": job_name,
                 "partition_key": partition_key,
                 "check_name": "prices_active_symbol_coverage",
-                "severity": "RED",
+                "severity": _freshness_severity("prices_active_symbol_coverage"),
                 "status": "SKIPPED",
                 "measured_value": None,
                 "threshold_value": None,
@@ -472,7 +480,7 @@ def _check_prices_freshness(con, run_id: str, job_name: str, partition_key: Opti
                 "job_name": job_name,
                 "partition_key": partition_key,
                 "check_name": "prices_active_symbol_coverage",
-                "severity": "RED",
+                "severity": _freshness_severity("prices_active_symbol_coverage"),
                 "status": "SKIPPED",
                 "measured_value": None,
                 "threshold_value": 0.0,
@@ -570,7 +578,7 @@ def _check_prices_freshness(con, run_id: str, job_name: str, partition_key: Opti
             "job_name": job_name,
             "partition_key": partition_key,
             "check_name": "prices_active_symbol_coverage",
-            "severity": "RED",
+            "severity": _freshness_severity("prices_active_symbol_coverage"),
             "status": status,
             "measured_value": float(missing_symbol_count),
             "threshold_value": 0.0,
@@ -600,7 +608,7 @@ def _check_wikipedia_freshness(con, run_id: str, job_name: str, partition_key: O
                 "job_name": job_name,
                 "partition_key": partition_key,
                 "check_name": "wikipedia_assets_with_views_min_count",
-                "severity": "RED",
+                "severity": _freshness_severity("wikipedia_assets_with_views_min_count"),
                 "status": "SKIPPED",
                 "measured_value": None,
                 "threshold_value": None,
@@ -650,7 +658,7 @@ def _check_wikipedia_freshness(con, run_id: str, job_name: str, partition_key: O
             "job_name": job_name,
             "partition_key": partition_key,
             "check_name": "wikipedia_assets_with_views_min_count",
-            "severity": "RED",
+            "severity": _freshness_severity("wikipedia_assets_with_views_min_count"),
             "status": min_count_status,
             "measured_value": float(assets_with_views),
             "threshold_value": float(min_assets_with_views),
@@ -672,7 +680,7 @@ def _check_news_freshness(con, run_id: str, job_name: str, partition_key: Option
                 "job_name": job_name,
                 "partition_key": partition_key,
                 "check_name": "daily_news_partition_row_count",
-                "severity": "RED",
+                "severity": _freshness_severity("daily_news_partition_row_count"),
                 "status": "SKIPPED",
                 "measured_value": None,
                 "threshold_value": None,
@@ -696,7 +704,7 @@ def _check_news_freshness(con, run_id: str, job_name: str, partition_key: Option
             "job_name": job_name,
             "partition_key": partition_key,
             "check_name": "daily_news_partition_row_count",
-            "severity": "RED",
+            "severity": _freshness_severity("daily_news_partition_row_count"),
             "status": "PASS" if int(row_count) > 0 else "FAIL",
             "measured_value": float(row_count),
             "threshold_value": 1.0,
@@ -734,7 +742,7 @@ def _write_freshness_checks(context) -> None:
                         "job_name": job_name,
                         "partition_key": partition_key,
                         "check_name": check_name,
-                        "severity": "RED",
+                        "severity": _freshness_severity(check_name),
                         "status": "FAIL",
                         "measured_value": None,
                         "threshold_value": None,

@@ -18,6 +18,9 @@ dependencies = [
     "torch>=2.1.0",
 ]
 
+[project.scripts]
+portfolio-bootstrap = "portfolio_project.bootstrap:main"
+
 [dependency-groups]
 dev = [
     "dagster-webserver",

@@ -1,0 +1,97 @@
+# Pipelines
+
+This document describes Dagster jobs, schedules, and primary assets.
+
+## `daily_prices_job`
+
+### Purpose
+Build daily prices and factors for active symbols.
+
+### Flow
+- `bronze_alpaca_bars` -> `silver_alpaca_prices_parquet` -> `gold_alpaca_prices`
+
+### Schedule
+- `daily_prices_schedule`: `30 9 * * *` America/New_York.
+- Uses previous US trading day as partition key.
+
+## `prices_compaction_job`
+
+### Purpose
+Compact silver prices to partition by symbol and month. The silver layer can get big quickly and compacting it makes it easier to query by symbol.
+
+### Flow
+- `silver_alpaca_prices_compact`
+
+### Schedule
+- `prices_compaction_schedule`: `45 9 * * *` America/New_York.
+- Partition key is first day of prior trading month selected by schedule function.
+
+## `daily_news_job`
+
+### Purpose
+Ingest headlines and publish normalized plus gold news tables.
+
+### Flow
+- `bronze_yahoo_news` -> `silver_ref_publishers` -> `silver_news` -> `gold_headlines`
+
+### Schedule
+- `daily_news_schedule`: `0 9 * * *` America/New_York.
+- Uses current local date as partition key.
+
+## `wikipedia_activity_job`
+
+### Purpose
+Ingest Wikipedia pageviews and build activity analytics.
+
+### Flow
+- `bronze_wikipedia_pageviews` -> `silver_wikipedia_pageviews` -> `gold_activity`
+
+### Schedule
+- `wikipedia_daily_schedule`: `45 8 * * *` America/New_York.
+- Uses previous US trading day as partition key.
+
+## `sp500_update_job`
+
+### Purpose
+Refresh S&P 500 reference data.
+
+### Flow
+- `bronze_sp500_companies` -> `silver_sp500_companies`
+
+### Schedule
+- `sp500_weekly_schedule`: `0 17 * * 5` America/New_York.
+
+## `tranco_update_job`
+
+### Purpose
+Ingest monthly Tranco snapshot for publisher weighting.
+
+### Flow
+- `bronze_tranco_snapshot`
+
+### Schedule
+- `tranco_monthly_schedule`: `0 18 1 * *` America/New_York.
+
+## `asset_status_updates_job`
+
+### Purpose
+Update active status flags and history for assets.
+
+### Trigger
+- Manual; no schedule defined.
+
+## `sample_demo_seed_job`
+
+### Purpose
+Seed demo data for local and demo flows.
+
+### Trigger
+- Manual; no schedule defined.
+
+## Observability Hooks
+
+These jobs use success and failure hooks:
+- `dagster_run_log_success`
+- `dagster_run_log_failure`
+
+Success hook writes run log data and triggers freshness and DQ checks.

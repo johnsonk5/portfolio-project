@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -7,6 +8,40 @@ from typing import Optional
 import duckdb
 
 from portfolio_project.defs.duckdb_resource import _acquire_duckdb_lock, _release_duckdb_lock
+from portfolio_project.defs.observability_modules import ensure_data_quality_table
+
+
+def _severity_for_check(check_name: str, threshold_value: Optional[float]) -> str:
+    less_essential_prefixes = ("dq_silver_ref_sp500_", "dq_bronze_tranco_")
+    less_essential_checks = {"dq_sp500_update", "dq_tranco_update"}
+    potential_breakage_checks = {
+        "dq_daily_prices_missing_partition",
+        "dq_daily_news_missing_partition",
+        "dq_wikipedia_activity_missing_partition",
+        "dq_silver_news_partition_exists",
+        "dq_silver_wikipedia_partition_exists",
+        "dq_silver_news_null_threshold_title_or_link",
+        "dq_silver_wikipedia_null_threshold_asset_id",
+        "dq_silver_prices_schema_range_columns",
+        "dq_gold_prices_schema_range_columns",
+        "dq_daily_prices",
+        "dq_daily_news",
+        "dq_wikipedia_activity",
+        "dq_asset_status_updates",
+    }
+
+    if check_name.startswith(less_essential_prefixes) or check_name in less_essential_checks:
+        return "YELLOW"
+    if check_name in potential_breakage_checks:
+        return "YELLOW"
+    if "null_threshold" in check_name:
+        try:
+            if threshold_value is not None and float(threshold_value) > 0:
+                return "YELLOW"
+        except (TypeError, ValueError):
+            pass
+        return "RED"
+    return "RED"
 
 
 def _resolve_duckdb_path() -> Path:
@@ -22,11 +57,13 @@ def _with_duckdb_connection():
     db_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = db_path.parent / ".duckdb_write.lock"
     lock_fd = _acquire_duckdb_lock(lock_path)
-    con = duckdb.connect(str(db_path))
+    con = None
     try:
+        con = duckdb.connect(str(db_path))
         yield con
     finally:
-        con.close()
+        if con is not None:
+            con.close()
         _release_duckdb_lock(lock_path, lock_fd)
 
 
@@ -74,6 +111,7 @@ def _dq_row(
     job_name: str,
     partition_key: Optional[str],
     check_name: str,
+    severity: Optional[str] = None,
     status: str,
     measured_value: Optional[float],
     threshold_value: Optional[float],
@@ -81,11 +119,12 @@ def _dq_row(
     logged_ts: datetime,
 ) -> dict:
     return {
+        "check_id": str(uuid.uuid4()),
         "run_id": run_id,
         "job_name": job_name,
         "partition_key": partition_key,
         "check_name": check_name,
-        "severity": "RED",
+        "severity": severity or _severity_for_check(check_name, threshold_value),
         "status": status,
         "measured_value": measured_value,
         "threshold_value": threshold_value,
@@ -108,30 +147,14 @@ def _silver_price_partition_paths(partition_key: str) -> list[str]:
 
 
 def _write_data_quality_rows(con, rows: list[dict]) -> None:
-    con.execute("CREATE SCHEMA IF NOT EXISTS observability")
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS observability.data_quality_checks (
-            run_id VARCHAR,
-            job_name VARCHAR,
-            partition_key VARCHAR,
-            check_name VARCHAR,
-            severity VARCHAR,
-            status VARCHAR,
-            measured_value DOUBLE,
-            threshold_value DOUBLE,
-            details_json VARCHAR,
-            logged_ts TIMESTAMP
-        )
-        """
-    )
+    ensure_data_quality_table(con)
     if not rows:
         return
-    con.execute("DELETE FROM observability.data_quality_checks WHERE run_id = ?", [rows[0]["run_id"]])
     for row in rows:
         con.execute(
             """
             INSERT INTO observability.data_quality_checks (
+                check_id,
                 run_id,
                 job_name,
                 partition_key,
@@ -143,9 +166,10 @@ def _write_data_quality_rows(con, rows: list[dict]) -> None:
                 details_json,
                 logged_ts
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
+                row["check_id"],
                 row["run_id"],
                 row["job_name"],
                 row["partition_key"],
@@ -181,6 +205,49 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
         ]
 
     rows = []
+    try:
+        duplicate_active_symbol_count = con.execute(
+            """
+            SELECT coalesce(sum(cnt - 1), 0)
+            FROM (
+                SELECT upper(trim(symbol)) AS symbol_key, count(*) AS cnt
+                FROM silver.assets
+                WHERE is_active = TRUE
+                  AND symbol IS NOT NULL
+                  AND trim(symbol) <> ''
+                GROUP BY symbol_key
+                HAVING count(*) > 1
+            )
+            """
+        ).fetchone()[0]
+        rows.append(
+            _dq_row(
+                run_id=run_id,
+                job_name=job_name,
+                partition_key=partition_key,
+                check_name="dq_silver_assets_active_symbol_uniqueness",
+                status="PASS" if int(duplicate_active_symbol_count or 0) == 0 else "FAIL",
+                measured_value=float(duplicate_active_symbol_count or 0),
+                threshold_value=0.0,
+                details={},
+                logged_ts=now,
+            )
+        )
+    except Exception as exc:
+        rows.append(
+            _dq_row(
+                run_id=run_id,
+                job_name=job_name,
+                partition_key=partition_key,
+                check_name="dq_silver_assets_active_symbol_uniqueness",
+                status="FAIL",
+                measured_value=None,
+                threshold_value=0.0,
+                details={"reason": "silver_assets_unreadable", "error_message": str(exc)},
+                logged_ts=now,
+            )
+        )
+
     silver_paths = _silver_price_partition_paths(partition_key)
     if not silver_paths:
         rows.append(
@@ -214,6 +281,22 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
             measured_value=float(len(missing_cols)),
             threshold_value=0.0,
             details={"missing_columns": missing_cols, "required_columns": sorted(required_cols)},
+            logged_ts=now,
+        )
+    )
+
+    range_check_cols = {"trade_count", "vwap"}
+    missing_range_cols = sorted(range_check_cols - present_cols)
+    rows.append(
+        _dq_row(
+            run_id=run_id,
+            job_name=job_name,
+            partition_key=partition_key,
+            check_name="dq_silver_prices_schema_range_columns",
+            status="PASS" if not missing_range_cols else "FAIL",
+            measured_value=float(len(missing_range_cols)),
+            threshold_value=0.0,
+            details={"missing_columns": missing_range_cols, "required_columns": sorted(range_check_cols)},
             logged_ts=now,
         )
     )
@@ -291,42 +374,57 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
         )
     )
 
-    range_violations = con.execute(
-        """
-        SELECT sum(
-            CASE
-                WHEN (open IS NOT NULL AND open < 0)
-                  OR (high IS NOT NULL AND high < 0)
-                  OR (low IS NOT NULL AND low < 0)
-                  OR (close IS NOT NULL AND close < 0)
-                  OR (volume IS NOT NULL AND volume < 0)
-                  OR (trade_count IS NOT NULL AND trade_count < 0)
-                  OR (vwap IS NOT NULL AND vwap < 0)
-                  OR (high IS NOT NULL AND low IS NOT NULL AND high < low)
-                  OR (open IS NOT NULL AND high IS NOT NULL AND open > high)
-                  OR (open IS NOT NULL AND low IS NOT NULL AND open < low)
-                  OR (close IS NOT NULL AND high IS NOT NULL AND close > high)
-                  OR (close IS NOT NULL AND low IS NOT NULL AND close < low)
-                THEN 1 ELSE 0
-            END
+    if missing_range_cols:
+        rows.append(
+            _dq_row(
+                run_id=run_id,
+                job_name=job_name,
+                partition_key=partition_key,
+                check_name="dq_silver_prices_ranges",
+                status="SKIPPED",
+                measured_value=None,
+                threshold_value=0.0,
+                details={"reason": "missing_range_columns", "missing_columns": missing_range_cols},
+                logged_ts=now,
+            )
         )
-        FROM read_parquet(?)
-        """,
-        [silver_paths],
-    ).fetchone()[0]
-    rows.append(
-        _dq_row(
-            run_id=run_id,
-            job_name=job_name,
-            partition_key=partition_key,
-            check_name="dq_silver_prices_ranges",
-            status="PASS" if int(range_violations or 0) == 0 else "FAIL",
-            measured_value=float(range_violations or 0),
-            threshold_value=0.0,
-            details={},
-            logged_ts=now,
+    else:
+        range_violations = con.execute(
+            """
+            SELECT sum(
+                CASE
+                    WHEN (open IS NOT NULL AND open < 0)
+                      OR (high IS NOT NULL AND high < 0)
+                      OR (low IS NOT NULL AND low < 0)
+                      OR (close IS NOT NULL AND close < 0)
+                      OR (volume IS NOT NULL AND volume < 0)
+                      OR (trade_count IS NOT NULL AND trade_count < 0)
+                      OR (vwap IS NOT NULL AND vwap < 0)
+                      OR (high IS NOT NULL AND low IS NOT NULL AND high < low)
+                      OR (open IS NOT NULL AND high IS NOT NULL AND open > high)
+                      OR (open IS NOT NULL AND low IS NOT NULL AND open < low)
+                      OR (close IS NOT NULL AND high IS NOT NULL AND close > high)
+                      OR (close IS NOT NULL AND low IS NOT NULL AND close < low)
+                    THEN 1 ELSE 0
+                END
+            )
+            FROM read_parquet(?)
+            """,
+            [silver_paths],
+        ).fetchone()[0]
+        rows.append(
+            _dq_row(
+                run_id=run_id,
+                job_name=job_name,
+                partition_key=partition_key,
+                check_name="dq_silver_prices_ranges",
+                status="PASS" if int(range_violations or 0) == 0 else "FAIL",
+                measured_value=float(range_violations or 0),
+                threshold_value=0.0,
+                details={},
+                logged_ts=now,
+            )
         )
-    )
 
     if not _table_exists(con, "gold", "prices"):
         rows.append(
@@ -367,6 +465,22 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
             measured_value=float(len(gold_missing)),
             threshold_value=0.0,
             details={"missing_columns": gold_missing, "required_columns": sorted(gold_required)},
+            logged_ts=now,
+        )
+    )
+
+    gold_range_cols = {"trade_count", "vwap", "realized_vol_21d"}
+    gold_missing_range_cols = sorted(gold_range_cols - gold_present)
+    rows.append(
+        _dq_row(
+            run_id=run_id,
+            job_name=job_name,
+            partition_key=partition_key,
+            check_name="dq_gold_prices_schema_range_columns",
+            status="PASS" if not gold_missing_range_cols else "FAIL",
+            measured_value=float(len(gold_missing_range_cols)),
+            threshold_value=0.0,
+            details={"missing_columns": gold_missing_range_cols, "required_columns": sorted(gold_range_cols)},
             logged_ts=now,
         )
     )
@@ -448,45 +562,60 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
         )
     )
 
-    gold_range_violations = con.execute(
-        """
-        SELECT sum(
-            CASE
-                WHEN (open IS NOT NULL AND open < 0)
-                  OR (high IS NOT NULL AND high < 0)
-                  OR (low IS NOT NULL AND low < 0)
-                  OR (close IS NOT NULL AND close < 0)
-                  OR (volume IS NOT NULL AND volume < 0)
-                  OR (trade_count IS NOT NULL AND trade_count < 0)
-                  OR (vwap IS NOT NULL AND vwap < 0)
-                  OR (dollar_volume IS NOT NULL AND dollar_volume < 0)
-                  OR (realized_vol_21d IS NOT NULL AND realized_vol_21d < 0)
-                  OR (high IS NOT NULL AND low IS NOT NULL AND high < low)
-                  OR (open IS NOT NULL AND high IS NOT NULL AND open > high)
-                  OR (open IS NOT NULL AND low IS NOT NULL AND open < low)
-                  OR (close IS NOT NULL AND high IS NOT NULL AND close > high)
-                  OR (close IS NOT NULL AND low IS NOT NULL AND close < low)
-                THEN 1 ELSE 0
-            END
+    if gold_missing_range_cols:
+        rows.append(
+            _dq_row(
+                run_id=run_id,
+                job_name=job_name,
+                partition_key=partition_key,
+                check_name="dq_gold_prices_ranges",
+                status="SKIPPED",
+                measured_value=None,
+                threshold_value=0.0,
+                details={"reason": "missing_range_columns", "missing_columns": gold_missing_range_cols},
+                logged_ts=now,
+            )
         )
-        FROM gold.prices
-        WHERE trade_date = ?
-        """,
-        [partition_key],
-    ).fetchone()[0]
-    rows.append(
-        _dq_row(
-            run_id=run_id,
-            job_name=job_name,
-            partition_key=partition_key,
-            check_name="dq_gold_prices_ranges",
-            status="PASS" if int(gold_range_violations or 0) == 0 else "FAIL",
-            measured_value=float(gold_range_violations or 0),
-            threshold_value=0.0,
-            details={"trade_date": partition_key},
-            logged_ts=now,
+    else:
+        gold_range_violations = con.execute(
+            """
+            SELECT sum(
+                CASE
+                    WHEN (open IS NOT NULL AND open < 0)
+                      OR (high IS NOT NULL AND high < 0)
+                      OR (low IS NOT NULL AND low < 0)
+                      OR (close IS NOT NULL AND close < 0)
+                      OR (volume IS NOT NULL AND volume < 0)
+                      OR (trade_count IS NOT NULL AND trade_count < 0)
+                      OR (vwap IS NOT NULL AND vwap < 0)
+                      OR (dollar_volume IS NOT NULL AND dollar_volume < 0)
+                      OR (realized_vol_21d IS NOT NULL AND realized_vol_21d < 0)
+                      OR (high IS NOT NULL AND low IS NOT NULL AND high < low)
+                      OR (open IS NOT NULL AND high IS NOT NULL AND open > high)
+                      OR (open IS NOT NULL AND low IS NOT NULL AND open < low)
+                      OR (close IS NOT NULL AND high IS NOT NULL AND close > high)
+                      OR (close IS NOT NULL AND low IS NOT NULL AND close < low)
+                    THEN 1 ELSE 0
+                END
+            )
+            FROM gold.prices
+            WHERE trade_date = ?
+            """,
+            [partition_key],
+        ).fetchone()[0]
+        rows.append(
+            _dq_row(
+                run_id=run_id,
+                job_name=job_name,
+                partition_key=partition_key,
+                check_name="dq_gold_prices_ranges",
+                status="PASS" if int(gold_range_violations or 0) == 0 else "FAIL",
+                measured_value=float(gold_range_violations or 0),
+                threshold_value=0.0,
+                details={"trade_date": partition_key},
+                logged_ts=now,
+            )
         )
-    )
     return rows
 
 

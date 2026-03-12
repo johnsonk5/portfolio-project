@@ -1,6 +1,7 @@
 import os
 import time
 from pathlib import Path
+from urllib.parse import unquote
 
 import pandas as pd
 import requests
@@ -16,7 +17,14 @@ WIKIDATA_RETRY_SLEEP_SECONDS = float(os.getenv("WIKIDATA_RETRY_SLEEP_SECONDS", "
 
 
 def _chunked(values: list[str], size: int) -> list[list[str]]:
+    if size <= 0:
+        size = len(values) or 1
     return [values[i : i + size] for i in range(0, len(values), size)]
+
+
+def _sparql_string_literal(value: str) -> str:
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
+    return f'"{escaped}"'
 
 
 def _fetch_wikipedia_titles(context: AssetExecutionContext, symbols: list[str]) -> dict[str, str]:
@@ -35,7 +43,7 @@ def _fetch_wikipedia_titles(context: AssetExecutionContext, symbols: list[str]) 
 
     mapping: dict[str, str] = {}
     for batch in _chunked(symbols, WIKIDATA_MAX_TICKER_BATCH):
-        ticker_values = " ".join(f'"{ticker}"' for ticker in batch)
+        ticker_values = " ".join(_sparql_string_literal(ticker) for ticker in batch)
         query = f"""
         SELECT ?ticker ?enwiki WHERE {{
           VALUES ?ticker {{ {ticker_values} }}
@@ -72,7 +80,8 @@ def _fetch_wikipedia_titles(context: AssetExecutionContext, symbols: list[str]) 
             enwiki_url = row.get("enwiki", {}).get("value")
             if not ticker or not enwiki_url:
                 continue
-            title = enwiki_url.replace("https://en.wikipedia.org/wiki/", "")
+            title = enwiki_url.replace("https://en.wikipedia.org/wiki/", "", 1)
+            title = unquote(title)
             if title:
                 mapping[ticker.upper()] = title
     return mapping
@@ -105,10 +114,8 @@ def silver_alpaca_assets(context: AssetExecutionContext) -> None:
     if rename_map:
         df = df.rename(columns=rename_map)
 
-    if "symbol" in df.columns:
-        df["is_active"] = False
-    else:
-        df["is_active"] = False
+    df["is_active"] = False
+    if "symbol" not in df.columns:
         context.log.warning("No symbol column found; is_active set to False.")
     df["is_sp500"] = False
     df["wikipedia_title"] = pd.NA
@@ -403,20 +410,17 @@ def silver_alpaca_assets_status_updates(context: AssetExecutionContext) -> None:
             CAST(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS DATE) AS change_date,
             CURRENT_TIMESTAMP AT TIME ZONE 'UTC' AS change_ts,
             NULL AS previous_is_active,
-            TRUE AS new_is_active
-        FROM silver.assets
-        WHERE is_active = TRUE
+            new_is_active
+        FROM asset_status_updates_df
         """
     )
 
-    active_snapshot_count = con.execute(
-        "SELECT count(*) FROM silver.assets WHERE is_active = TRUE"
-    ).fetchone()[0]
+    changed_count = len(history_updates_df)
     context.add_output_metadata(
         {
-            "rows_updated": len(history_updates_df),
-            "updated_count": len(history_updates_df),
-            "history_appended_count": len(history_updates_df) + active_snapshot_count,
+            "rows_updated": changed_count,
+            "updated_count": changed_count,
+            "history_appended_count": changed_count * 2,
             "missing_symbols": missing_symbols,
         }
     )
