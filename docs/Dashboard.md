@@ -4,7 +4,7 @@ This document describes the current Streamlit pages and their behavior.
 
 ## Market Vibecheck (`streamlit_app.py`)
 
-A daily overview page built off `gold.prices` and `gold.headlines`. Clicking on any symbol on this page will take you to the `Deep Dive` page or that symbol.
+A daily overview page built off `gold.prices` and `gold.headlines`. Clicking on any symbol on this page will take you to the `Deep Dive` page for that symbol.
 
 ### Data Anchor
 - All Market Vibecheck KPIs are calculated on `latest_trade_date = MAX(gold.prices.trade_date)`.

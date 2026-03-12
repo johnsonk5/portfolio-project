@@ -1,4 +1,4 @@
-# Archtecture
+# Architecture
 
 This document describes the system architecture and storage layout.
 
