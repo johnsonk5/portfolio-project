@@ -110,7 +110,9 @@ def test_daily_prices_path_materializes_with_three_tickers(tmp_path: Path) -> No
 
 
 @pytest.mark.smoke
-def test_silver_prices_rerun_replaces_partition_and_removes_stale_symbol_files(tmp_path: Path) -> None:
+def test_silver_prices_rerun_replaces_partition_and_removes_stale_symbol_files(
+    tmp_path: Path,
+) -> None:
     partition_key = "2026-02-13"
     first_symbols = ["AAPL", "MSFT", "NVDA"]
     second_symbols = ["AAPL", "MSFT"]
@@ -169,7 +171,9 @@ def test_silver_prices_rerun_replaces_partition_and_removes_stale_symbol_files(t
 
 
 @pytest.mark.smoke
-def test_silver_prices_dedupes_duplicate_active_symbols_in_assets(tmp_path: Path) -> None:
+def test_silver_prices_dedupes_duplicate_active_symbols_in_assets(
+    tmp_path: Path,
+) -> None:
     partition_key = "2026-02-13"
     symbol = "AAPL"
 
@@ -187,12 +191,8 @@ def test_silver_prices_dedupes_duplicate_active_symbols_in_assets(tmp_path: Path
         )
         """
     )
-    con.execute(
-        "INSERT INTO silver.assets (asset_id, symbol, is_active) VALUES (1, 'AAPL', TRUE)"
-    )
-    con.execute(
-        "INSERT INTO silver.assets (asset_id, symbol, is_active) VALUES (99, 'AAPL', TRUE)"
-    )
+    con.execute("INSERT INTO silver.assets (asset_id, symbol, is_active) VALUES (1, 'AAPL', TRUE)")
+    con.execute("INSERT INTO silver.assets (asset_id, symbol, is_active) VALUES (99, 'AAPL', TRUE)")
 
     silver_prices_module.DATA_ROOT = data_root
 
@@ -207,7 +207,9 @@ def test_silver_prices_dedupes_duplicate_active_symbols_in_assets(tmp_path: Path
     )
 
     assert result.success
-    out_path = data_root / "silver" / "prices" / f"date={partition_key}" / "symbol=AAPL" / "prices.parquet"
+    out_path = (
+        data_root / "silver" / "prices" / f"date={partition_key}" / "symbol=AAPL" / "prices.parquet"
+    )
     df = pd.read_parquet(out_path)
     assert len(df) == 2
     assert set(df["asset_id"].tolist()) == {1}
@@ -275,11 +277,16 @@ def test_gold_prices_computes_vwap_returns_and_sentiment(tmp_path: Path) -> None
             realized_vol_21d, momentum_12_1, pct_below_52w_high, sma_50, sma_200,
             dist_sma_50, dist_sma_200, sentiment_score
         )
-        VALUES (1, 'AAPL', '2026-02-12', 99, 101, 98, 100, 1000, 10, 100, 100000, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+        VALUES (
+            1, 'AAPL', '2026-02-12', 99, 101, 98, 100, 1000, 10, 100, 100000,
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+        )
         """
     )
 
-    con.execute("CREATE TABLE gold.headlines (asset_id BIGINT, publisher_id BIGINT, provider_publish_time TIMESTAMP, sentiment VARCHAR)")
+    con.execute(
+        "CREATE TABLE gold.headlines (asset_id BIGINT, publisher_id BIGINT, provider_publish_time TIMESTAMP, sentiment VARCHAR)"
+    )
     con.execute(
         """
         INSERT INTO gold.headlines VALUES
@@ -358,7 +365,10 @@ def test_gold_prices_upsert_rolls_back_on_insert_error(tmp_path: Path) -> None:
             realized_vol_21d, momentum_12_1, pct_below_52w_high, sma_50, sma_200,
             dist_sma_50, dist_sma_200, sentiment_score
         )
-        VALUES (1, 'AAPL', ?, 99, 101, 98, 200, 1000, 10, 100, 200000, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+        VALUES (
+            1, 'AAPL', ?, 99, 101, 98, 200, 1000, 10, 100, 200000,
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+        )
         """,
         [partition_key],
     )

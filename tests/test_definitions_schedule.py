@@ -53,7 +53,9 @@ def test_prices_compaction_schedule_keeps_month_partition_and_unique_daily_run_k
     assert request_day_2.run_key == "2026-02-01|2026-02-18"
 
 
-def test_previous_trading_day_skips_configured_market_holiday(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_previous_trading_day_skips_configured_market_holiday(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def _fake_is_us_trading_day(partition_key: str) -> bool:
         if partition_key == "2026-02-16":
             return False

@@ -38,7 +38,9 @@ class _FakeSession:
                         {
                             "id": 12345,
                             "name": "portfolio-demo-data-v1.zip",
-                            "browser_download_url": "https://example.test/portfolio-demo-data-v1.zip",
+                            "browser_download_url": (
+                                "https://example.test/portfolio-demo-data-v1.zip"
+                            ),
                         }
                     ],
                 }
@@ -89,7 +91,9 @@ def test_seed_demo_data_from_url(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(demo_seed_module, "DATA_ROOT", data_root)
     monkeypatch.setattr(demo_seed_module, "DEFAULT_DEMO_ZIP_LOCAL_PATH", "")
     monkeypatch.setattr(demo_seed_module, "DEFAULT_DEMO_ZIP_URL", "https://example.test/demo.zip")
-    monkeypatch.setattr(demo_seed_module.requests, "get", lambda url, timeout: _FakeResponse(zip_bytes))
+    monkeypatch.setattr(
+        demo_seed_module.requests, "get", lambda url, timeout: _FakeResponse(zip_bytes)
+    )
 
     result = materialize(assets=[seed_demo_data])
     assert result.success
@@ -97,7 +101,9 @@ def test_seed_demo_data_from_url(tmp_path: Path, monkeypatch) -> None:
     assert (data_root / "silver" / "demo" / "demo_table.csv").exists()
 
 
-def test_seed_demo_data_from_github_release_with_marker_skips_redownload(tmp_path: Path, monkeypatch) -> None:
+def test_seed_demo_data_from_github_release_with_marker_skips_redownload(
+    tmp_path: Path, monkeypatch
+) -> None:
     source_zip = tmp_path / "source.zip"
     zip_bytes = _build_demo_zip(source_zip)
     session = _FakeSession(zip_bytes=zip_bytes)
