@@ -10,6 +10,9 @@ A daily overview page built off `gold.prices` and `gold.headlines`. Clicking on 
 - All Market Vibecheck KPIs are calculated on `latest_trade_date = MAX(gold.prices.trade_date)`.
 
 ### Big Picture
+
+<img width="768" height="87" alt="image" src="https://github.com/user-attachments/assets/7b3e56a8-c7aa-48cd-a6c2-c85333d40454" />
+
 - `% of stocks up`:
   - Universe: rows where `returns_1d IS NOT NULL`.
   - Formula: `100 * mean(returns_1d > 0)`.
@@ -29,10 +32,16 @@ A daily overview page built off `gold.prices` and `gold.headlines`. Clicking on 
   - This metric is bounded in `[0, 100]` and represents share of total absolute daily return impact.
 
 ### Top Gainers + Losers
+
+<img width="343" height="237" alt="image" src="https://github.com/user-attachments/assets/a8b242e7-040b-4f1c-aa54-d9de3f1bb968" />
+
 - Top 5 gainers and top 5 losers by latest `returns_1d`.
 - Green for positive, red for negative.
 
 ### Risky Bets
+
+<img width="462" height="241" alt="image" src="https://github.com/user-attachments/assets/f0205076-936d-4e05-b79a-baf61cc7e148" />
+
 - Uses latest `realized_vol_21d` and `returns_21d`.
 - `Hot Ones`: positive 21D return names, ranked by highest 21D return.
 - `Crashing Out`: negative 21D return names, ranked by lowest 21D return.
@@ -42,11 +51,17 @@ A daily overview page built off `gold.prices` and `gold.headlines`. Clicking on 
 Note: `Hot Ones` and `Crashing Out` are filtered by momentum sign and ranked by momentum, not ranked by volatility.
 
 ### Underrated Investments
+
+<img width="313" height="212" alt="image" src="https://github.com/user-attachments/assets/4e227968-ce49-4e0f-8d0b-8ff4ed7b8471" />
+
 - Uses `momentum_12_1` and `pct_below_52w_high`.
 - Composite score = z-score(momentum_12_1) + z-score(pct_below_52w_high).
 - Displays top 6 ranked names (with blank filler rows to keep card height stable).
 
 ### The Good News / The Bad News
+
+<img width="471" height="214" alt="image" src="https://github.com/user-attachments/assets/dbd2a59e-b254-4fa5-80a6-fa80ba9063f9" />
+
 - Based on latest `sentiment_score` and `returns_5d`.
 - Good News: highest sentiment names.
 - Bad News: lowest sentiment names.
@@ -63,6 +78,9 @@ Focused page for one symbol.
 ### Sections
 
 ### Snapshot KPIs
+
+<img width="787" height="199" alt="image" src="https://github.com/user-attachments/assets/f54e449e-0897-48f0-a6e8-1d4e99aff88f" />
+
 - `Latest close`: latest `close`.
 - Delta shown under `Latest close`:
   - Preferred: percent move vs previous close.
@@ -74,17 +92,26 @@ Focused page for one symbol.
   - Fallback: rolling 21-day stddev of `returns_1d` annualized by `sqrt(252)`, then `* 100`.
 
 ### Performance History
+
+<img width="791" height="382" alt="image" src="https://github.com/user-attachments/assets/9264050e-1b17-4312-b75b-dcf42a84df98" />
+
 - Candlestick chart with dynamic y-axis.
 - SMA50 overlay.
 - Side chart of cumulative daily return over selected horizon.
 - Side chart of distance from SMA50.
 
 ### Risk
+
+<img width="781" height="194" alt="image" src="https://github.com/user-attachments/assets/a25b6881-27a0-4f0d-8c88-78a4821ead7c" />
+
 - Volatility trend (`realized_vol_21d` or fallback rolling vol from `returns_1d`).
 - Drawdown area chart from rolling peak.
 - Volume bars.
 
 ### Recent Headlines
+
+<img width="783" height="257" alt="image" src="https://github.com/user-attachments/assets/004aae51-2579-49c6-8f7f-44c54e2fe4f8" />
+
 - Table showing recent headlines color coded by sentiment.
 - `Published`, `Headline`, `Sentiment`.
 - Sentiment color coding (positive, neutral, negative).
