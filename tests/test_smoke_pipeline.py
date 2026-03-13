@@ -285,7 +285,14 @@ def test_gold_prices_computes_vwap_returns_and_sentiment(tmp_path: Path) -> None
     )
 
     con.execute(
-        "CREATE TABLE gold.headlines (asset_id BIGINT, publisher_id BIGINT, provider_publish_time TIMESTAMP, sentiment VARCHAR)"
+        """
+        CREATE TABLE gold.headlines (
+            asset_id BIGINT,
+            publisher_id BIGINT,
+            provider_publish_time TIMESTAMP,
+            sentiment VARCHAR
+        )
+        """
     )
     con.execute(
         """

@@ -6,8 +6,8 @@ import pytest
 from portfolio_project.definitions import (
     _daily_news_schedule_fn,
     _daily_prices_schedule_fn,
-    _prices_compaction_schedule_fn,
     _previous_trading_day,
+    _prices_compaction_schedule_fn,
 )
 
 
