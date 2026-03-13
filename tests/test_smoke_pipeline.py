@@ -1,11 +1,10 @@
 from datetime import date, datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 import duckdb
 import pandas as pd
 import pytest
-from dagster import AssetKey, SourceAsset, materialize
+from dagster import AssetKey, SourceAsset, build_asset_context, materialize
 
 import portfolio_project.defs.gold_prices as gold_prices_module
 import portfolio_project.defs.silver_prices as silver_prices_module
@@ -380,21 +379,22 @@ def test_gold_prices_upsert_rolls_back_on_insert_error(tmp_path: Path) -> None:
         [partition_key],
     )
 
-    context = SimpleNamespace(
-        resources=SimpleNamespace(duckdb=con),
-        log=SimpleNamespace(warning=lambda *_args, **_kwargs: None),
-    )
+    context = build_asset_context(resources={"duckdb": con})
 
     with pytest.raises(Exception):
         gold_prices_module._upsert_gold_for_day(context, partition_date)
 
-    rows_after = con.execute(
+    rows_after_row = con.execute(
         "SELECT count(*) FROM gold.prices WHERE trade_date = ?",
         [partition_key],
-    ).fetchone()[0]
-    close_after = con.execute(
+    ).fetchone()
+    close_after_row = con.execute(
         "SELECT close FROM gold.prices WHERE trade_date = ? AND asset_id = 1",
         [partition_key],
-    ).fetchone()[0]
+    ).fetchone()
+    assert rows_after_row is not None
+    assert close_after_row is not None
+    rows_after = rows_after_row[0]
+    close_after = close_after_row[0]
     assert rows_after == 1
     assert close_after == pytest.approx(200.0)

@@ -23,7 +23,7 @@ class _FakeResponse:
 
 class _FakeSession:
     def __init__(self, zip_bytes: bytes):
-        self.headers = {}
+        self.headers: dict[str, str] = {}
         self.zip_bytes = zip_bytes
         self.release_calls = 0
         self.download_calls = 0
