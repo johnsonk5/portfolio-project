@@ -84,8 +84,22 @@ What this does:
 * Writes a source marker file `data/demo/.demo_data_source.json`.
 * Extracts the zip into `data/` so downstream pipelines can run normally on local data.
 
+Once that's finished running, create a virtual environment
+
+```bash
+.venv/Scripts/activate.ps1
+```
+
+Then run the streamlit app and you'll see sample data.
+
+```bash
+streamlit run streamlit_app.py
+```
+
 For environment variables and defaults, use:
 - [`docs/.env.sample`](docs/.env.sample)
+
+Be sure to add your Alpaca API key and Secret Key to the .env file so that the pipelines can run.
 
 For reliability behavior (including DuckDB locking, freshness, and data quality checks), see:
 - [`docs/Reliability.md`](docs/Reliability.md)
