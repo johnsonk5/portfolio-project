@@ -6,10 +6,10 @@ import pandas as pd
 import pytest
 from dagster import AssetKey, SourceAsset, build_asset_context, materialize
 
-import portfolio_project.defs.gold_prices as gold_prices_module
-import portfolio_project.defs.silver_prices as silver_prices_module
-from portfolio_project.defs.gold_prices import gold_alpaca_prices
-from portfolio_project.defs.silver_prices import silver_alpaca_prices_parquet
+import portfolio_project.defs.portfolio_db.gold.prices as gold_prices_module
+import portfolio_project.defs.portfolio_db.silver.prices as silver_prices_module
+from portfolio_project.defs.portfolio_db.gold.prices import gold_alpaca_prices
+from portfolio_project.defs.portfolio_db.silver.prices import silver_alpaca_prices_parquet
 
 
 def _write_fixture_bronze_bars(data_root: Path, partition_key: str, symbols: list[str]) -> None:
@@ -398,3 +398,4 @@ def test_gold_prices_upsert_rolls_back_on_insert_error(tmp_path: Path) -> None:
     close_after = close_after_row[0]
     assert rows_after == 1
     assert close_after == pytest.approx(200.0)
+

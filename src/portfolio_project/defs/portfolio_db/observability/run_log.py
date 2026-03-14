@@ -14,8 +14,11 @@ from dagster import (
     success_hook,
 )
 
-from portfolio_project.defs.data_quality import write_data_quality_checks
-from portfolio_project.defs.duckdb_resource import _acquire_duckdb_lock, _release_duckdb_lock
+from portfolio_project.defs.portfolio_db.observability.data_quality import write_data_quality_checks
+from portfolio_project.defs.portfolio_db.resources.duckdb import (
+    _acquire_duckdb_lock,
+    _release_duckdb_lock,
+)
 
 
 def _freshness_severity(check_name: str) -> str:
@@ -1019,3 +1022,4 @@ def dagster_run_log_failure_sensor(context) -> None:
     except Exception as exc:
         context.log.warning("Run log write failed: %s", exc)
         raise RuntimeError(f"Observability failure: run_log_write_failed: {exc}") from exc
+

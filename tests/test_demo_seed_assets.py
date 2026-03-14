@@ -3,8 +3,8 @@ from zipfile import ZipFile
 
 from dagster import materialize
 
-import portfolio_project.defs.demo_seed_assets as demo_seed_module
-from portfolio_project.defs.demo_seed_assets import seed_demo_data
+import portfolio_project.defs.portfolio_db.demo.seed_data as demo_seed_module
+from portfolio_project.defs.portfolio_db.demo.seed_data import seed_demo_data
 
 
 class _FakeResponse:
@@ -126,3 +126,4 @@ def test_seed_demo_data_from_github_release_with_marker_skips_redownload(
     assert session.release_calls == 2
     assert session.download_calls == 1
     assert (data_root / "demo" / ".demo_data_source.json").exists()
+

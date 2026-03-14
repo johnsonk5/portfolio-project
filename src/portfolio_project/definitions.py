@@ -10,58 +10,58 @@ from dagster import (
     in_process_executor,
 )
 
-from portfolio_project.defs.bronze_assets import (
+from portfolio_project.defs.portfolio_db.bronze.alpaca import (
     BRONZE_PARTITIONS,
     bronze_alpaca_assets,
     bronze_alpaca_bars,
 )
-from portfolio_project.defs.silver_assets import (
+from portfolio_project.defs.portfolio_db.silver.assets import (
     silver_alpaca_active_assets_history,
     silver_alpaca_assets,
     silver_alpaca_assets_status_updates,
 )
-from portfolio_project.defs.silver_prices import (
+from portfolio_project.defs.portfolio_db.silver.prices import (
     silver_alpaca_prices_parquet,
 )
-from portfolio_project.defs.silver_prices_compact import (
+from portfolio_project.defs.portfolio_db.silver.prices_compact import (
     SILVER_COMPACT_PARTITIONS,
     silver_alpaca_prices_compact,
 )
-from portfolio_project.defs.gold_prices import (
+from portfolio_project.defs.portfolio_db.gold.prices import (
     gold_alpaca_prices,
 )
-from portfolio_project.defs.gold_activity import gold_activity
-from portfolio_project.defs.sp500_assets import (
+from portfolio_project.defs.portfolio_db.gold.activity import gold_activity
+from portfolio_project.defs.portfolio_db.reference.sp500 import (
     bronze_sp500_companies,
     silver_sp500_companies,
 )
-from portfolio_project.defs.yahoo_news_assets import (
+from portfolio_project.defs.portfolio_db.bronze.news import (
     BRONZE_NEWS_PARTITIONS,
     bronze_yahoo_news,
 )
-from portfolio_project.defs.silver_news_assets import (
+from portfolio_project.defs.portfolio_db.silver.news import (
     silver_ref_publishers,
     silver_news,
 )
-from portfolio_project.defs.tranco_assets import bronze_tranco_snapshot
-from portfolio_project.defs.gold_news_assets import gold_headlines
+from portfolio_project.defs.portfolio_db.bronze.tranco import bronze_tranco_snapshot
+from portfolio_project.defs.portfolio_db.gold.news import gold_headlines
 
-from portfolio_project.defs.wikipedia_pageviews import (
+from portfolio_project.defs.portfolio_db.reference.wikipedia import (
     BRONZE_WIKIPEDIA_PARTITIONS,
     bronze_wikipedia_pageviews,
     silver_wikipedia_pageviews,
 )
-from portfolio_project.defs.demo_seed_assets import (
+from portfolio_project.defs.portfolio_db.demo.seed_data import (
     seed_demo_data,
 )
-from portfolio_project.defs.run_log import (
+from portfolio_project.defs.portfolio_db.observability.run_log import (
     dagster_run_log_failure,
     dagster_run_log_success,
     _is_us_trading_day,
 )
 
-from portfolio_project.defs.alpaca_resource import alpaca_resource
-from portfolio_project.defs.duckdb_resource import duckdb_resource
+from portfolio_project.defs.portfolio_db.resources.alpaca import alpaca_resource
+from portfolio_project.defs.portfolio_db.resources.duckdb import duckdb_resource
 
 
 prices_selection = AssetSelection.assets(
@@ -304,3 +304,4 @@ defs = Definitions(
         "duckdb": duckdb_resource,
     },
 )
+

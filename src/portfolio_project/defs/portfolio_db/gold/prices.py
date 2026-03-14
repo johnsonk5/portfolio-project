@@ -8,8 +8,8 @@ from dagster import (
     asset,
 )
 
-from portfolio_project.defs.silver_assets import silver_alpaca_assets
-from portfolio_project.defs.silver_prices import (
+from portfolio_project.defs.portfolio_db.silver.assets import silver_alpaca_assets
+from portfolio_project.defs.portfolio_db.silver.prices import (
     silver_alpaca_prices_parquet,
 )
 
@@ -375,3 +375,4 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
             "rows_deleted": rows_deleted,
         }
     )
+

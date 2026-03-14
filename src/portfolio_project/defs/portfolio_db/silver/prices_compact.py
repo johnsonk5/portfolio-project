@@ -4,8 +4,11 @@ from pathlib import Path
 
 from dagster import AssetExecutionContext, MonthlyPartitionsDefinition, asset
 
-from portfolio_project.defs.silver_assets import silver_alpaca_assets
-from portfolio_project.defs.silver_prices import PARTITIONS_START_DATE, silver_alpaca_prices_parquet
+from portfolio_project.defs.portfolio_db.silver.assets import silver_alpaca_assets
+from portfolio_project.defs.portfolio_db.silver.prices import (
+    PARTITIONS_START_DATE,
+    silver_alpaca_prices_parquet,
+)
 
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
@@ -77,3 +80,4 @@ def silver_alpaca_prices_compact(context: AssetExecutionContext) -> None:
             "row_count": rows_written,
         }
     )
+

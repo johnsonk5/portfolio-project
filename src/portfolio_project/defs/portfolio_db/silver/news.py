@@ -6,8 +6,8 @@ from pathlib import Path
 import pandas as pd
 from dagster import AssetExecutionContext, DailyPartitionsDefinition, asset
 
-from portfolio_project.defs.silver_assets import silver_alpaca_assets
-from portfolio_project.defs.yahoo_news_assets import bronze_yahoo_news
+from portfolio_project.defs.portfolio_db.silver.assets import silver_alpaca_assets
+from portfolio_project.defs.portfolio_db.bronze.news import bronze_yahoo_news
 
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
@@ -473,3 +473,4 @@ def silver_news(context: AssetExecutionContext) -> None:
             "missing_publisher_id_count": int(counts[2]) if counts[2] is not None else 0,
         }
     )
+

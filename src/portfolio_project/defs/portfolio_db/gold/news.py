@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 from dagster import AssetExecutionContext, DailyPartitionsDefinition, asset
 
-from portfolio_project.defs.silver_news_assets import silver_news
+from portfolio_project.defs.portfolio_db.silver.news import silver_news
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 GOLD_NEWS_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
@@ -276,3 +276,4 @@ def gold_headlines(context: AssetExecutionContext) -> None:
             "sentiment_updated": sentiment_updated,
         }
     )
+

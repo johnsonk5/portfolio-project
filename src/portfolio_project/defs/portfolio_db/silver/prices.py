@@ -10,10 +10,10 @@ from dagster import (
     asset,
 )
 
-from portfolio_project.defs.bronze_assets import (
+from portfolio_project.defs.portfolio_db.bronze.alpaca import (
     bronze_alpaca_bars,
 )
-from portfolio_project.defs.silver_assets import silver_alpaca_assets
+from portfolio_project.defs.portfolio_db.silver.assets import silver_alpaca_assets
 
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
@@ -188,5 +188,6 @@ def silver_alpaca_prices_parquet(context: AssetExecutionContext) -> None:
             "active_symbol_count": len(active_symbols),
         }
     )
+
 
 

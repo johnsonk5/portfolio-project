@@ -7,7 +7,7 @@ import pandas as pd
 import requests
 from dagster import Array, AssetExecutionContext, Field, String, asset
 
-from portfolio_project.defs.bronze_assets import bronze_alpaca_assets
+from portfolio_project.defs.portfolio_db.bronze.alpaca import bronze_alpaca_assets
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 WIKIDATA_SPARQL_URL = "https://query.wikidata.org/sparql"
@@ -424,3 +424,4 @@ def silver_alpaca_assets_status_updates(context: AssetExecutionContext) -> None:
             "missing_symbols": missing_symbols,
         }
     )
+

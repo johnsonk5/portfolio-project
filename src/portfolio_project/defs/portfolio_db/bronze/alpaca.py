@@ -15,7 +15,7 @@ from dagster import (
     asset,
 )
 
-from portfolio_project.defs.observability_modules import write_dq_log
+from portfolio_project.defs.portfolio_db.observability.observability_modules import write_dq_log
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 BRONZE_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
@@ -249,3 +249,4 @@ def bronze_alpaca_assets(context: AssetExecutionContext) -> None:
     context.add_output_metadata(
         {"path": str(out_path), "row_count": len(df)}
     )
+

@@ -4,8 +4,8 @@ import time
 import pytest
 from dagster import DagsterResourceFunctionError, build_resources
 
-import portfolio_project.defs.duckdb_resource as duckdb_resource_module
-from portfolio_project.defs.duckdb_resource import (
+import portfolio_project.defs.portfolio_db.resources.duckdb as duckdb_resource_module
+from portfolio_project.defs.portfolio_db.resources.duckdb import (
     _acquire_duckdb_lock,
     _release_duckdb_lock,
     duckdb_resource,
@@ -113,3 +113,4 @@ def test_duckdb_resource_uses_operation_scoped_locking(tmp_path, monkeypatch) ->
 
     # One lock acquire for connect + one per execute above.
     assert acquire_calls >= 4
+
