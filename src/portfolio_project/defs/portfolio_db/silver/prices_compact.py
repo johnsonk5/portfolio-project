@@ -36,7 +36,7 @@ def silver_alpaca_prices_compact(context: AssetExecutionContext) -> None:
         path.as_posix()
         for path in (
             DATA_ROOT / "silver" / "prices"
-        ).glob(f"date={year_key}-{month_key}-*/symbol=*/prices.parquet")
+        ).glob(f"date={year_key}-{month_key}-*/symbol=*/*.parquet")
     )
     if not day_paths:
         context.log.warning("No silver prices rows found for month %s", context.partition_key)

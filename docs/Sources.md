@@ -14,7 +14,7 @@ This document describes each source, what it powers, and important operational d
 
 ### Operational Notes
 - The prices pipeline runs for the previous US trading day.
-- Silver prices are written as partitioned parquet under `data/silver/prices/date=YYYY-MM-DD/symbol=.../prices.parquet`.
+- Silver prices are written as partitioned parquet under `data/silver/prices/date=YYYY-MM-DD/symbol=.../prices*.parquet`.
 
 ## Yahoo Finance Search API
 

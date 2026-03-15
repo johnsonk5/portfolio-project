@@ -6,8 +6,10 @@ import pandas as pd
 import pytest
 from dagster import AssetKey, SourceAsset, build_asset_context, materialize
 
+import portfolio_project.defs.portfolio_db.gold.news as gold_news_module
 import portfolio_project.defs.portfolio_db.gold.prices as gold_prices_module
 import portfolio_project.defs.portfolio_db.silver.prices as silver_prices_module
+from portfolio_project.defs.portfolio_db.gold.news import gold_headlines
 from portfolio_project.defs.portfolio_db.gold.prices import gold_alpaca_prices
 from portfolio_project.defs.portfolio_db.silver.prices import silver_alpaca_prices_parquet
 
@@ -46,7 +48,7 @@ def _write_fixture_silver_prices(
 ) -> None:
     out_dir = data_root / "silver" / "prices" / f"date={partition_key}" / f"symbol={symbol}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(out_dir / "prices.parquet", index=False)
+    frame.to_parquet(out_dir / "prices0.parquet", index=False)
 
 
 @pytest.mark.smoke
@@ -90,7 +92,7 @@ def test_daily_prices_path_materializes_with_three_tickers(tmp_path: Path) -> No
 
     assert result.success
     silver_glob = (
-        data_root / "silver" / "prices" / f"date={partition_key}" / "symbol=*" / "prices.parquet"
+        data_root / "silver" / "prices" / f"date={partition_key}" / "symbol=*" / "prices0.parquet"
     ).as_posix()
     silver_row = con.execute(
         "SELECT count(*) FROM read_parquet(?)",
@@ -166,7 +168,7 @@ def test_silver_prices_rerun_replaces_partition_and_removes_stale_symbol_files(
     day_dir = data_root / "silver" / "prices" / f"date={partition_key}"
     written_symbols = sorted(path.name.split("=", 1)[1] for path in day_dir.glob("symbol=*"))
     assert written_symbols == sorted(second_symbols)
-    assert not (day_dir / "symbol=NVDA" / "prices.parquet").exists()
+    assert not (day_dir / "symbol=NVDA" / "prices0.parquet").exists()
 
 
 @pytest.mark.smoke
@@ -207,7 +209,7 @@ def test_silver_prices_dedupes_duplicate_active_symbols_in_assets(
 
     assert result.success
     out_path = (
-        data_root / "silver" / "prices" / f"date={partition_key}" / "symbol=AAPL" / "prices.parquet"
+        data_root / "silver" / "prices" / f"date={partition_key}" / "symbol=AAPL" / "prices0.parquet"
     )
     df = pd.read_parquet(out_path)
     assert len(df) == 2
@@ -325,6 +327,85 @@ def test_gold_prices_computes_vwap_returns_and_sentiment(tmp_path: Path) -> None
     assert row[1] == pytest.approx((100.0 * 10 + 102.0 * 20) / 30.0)
     assert row[2] == pytest.approx(0.02)
     assert row[3] == pytest.approx(1.0 / 3.0)
+
+
+
+@pytest.mark.smoke
+def test_gold_headlines_rerun_upserts_window_without_rebuilding_sentiment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    partition_key = "2026-02-13"
+    data_root = tmp_path / "data"
+    gold_news_module.DATA_ROOT = data_root
+
+    news_dir = data_root / "silver" / "news" / f"date={partition_key}"
+    news_dir.mkdir(parents=True, exist_ok=True)
+    news_df = pd.DataFrame(
+        {
+            "asset_id": [1, 2],
+            "symbol": ["AAPL", "MSFT"],
+            "uuid": ["u1", "u2"],
+            "title": ["AAPL title", "MSFT title"],
+            "publisher_id": [10, 20],
+            "link": ["https://example.com/aapl", "https://example.com/msft"],
+            "provider_publish_time": [
+                datetime(2026, 2, 13, 15, 0, tzinfo=timezone.utc),
+                datetime(2026, 2, 13, 16, 0, tzinfo=timezone.utc),
+            ],
+            "type": ["STORY", "STORY"],
+            "summary": ["AAPL summary", "MSFT summary"],
+            "query_date": [date(2026, 2, 13), date(2026, 2, 13)],
+            "ingested_ts": [
+                datetime(2026, 2, 13, 18, 0, tzinfo=timezone.utc),
+                datetime(2026, 2, 13, 18, 5, tzinfo=timezone.utc),
+            ],
+        }
+    )
+    news_df.to_parquet(news_dir / "news.parquet", index=False)
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA gold")
+    con.execute(
+        """
+        CREATE TABLE gold.headlines (
+            asset_id BIGINT,
+            symbol VARCHAR,
+            uuid VARCHAR,
+            title VARCHAR,
+            publisher_id BIGINT,
+            link VARCHAR,
+            provider_publish_time TIMESTAMP,
+            type VARCHAR,
+            summary VARCHAR,
+            query_date DATE,
+            ingested_ts TIMESTAMP,
+            sentiment VARCHAR
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO gold.headlines VALUES
+            (1, 'AAPL', 'u1', 'Old AAPL title', 10, 'https://example.com/aapl', '2026-02-13 15:00:00+00:00', 'STORY', 'Old summary', '2026-02-13', '2026-02-13 17:00:00+00:00', 'positive'),
+            (3, 'NVDA', 'u3', 'NVDA stale', 30, 'https://example.com/nvda', '2026-02-12 15:00:00+00:00', 'STORY', 'NVDA summary', '2026-02-12', '2026-02-12 17:00:00+00:00', 'negative')
+        """
+    )
+
+    def fake_sentiment_pipeline(texts, batch_size):
+        return [{"label": "neutral"} for _ in texts]
+
+    monkeypatch.setattr(gold_news_module, "_get_sentiment_pipeline", lambda: fake_sentiment_pipeline)
+
+    context = build_asset_context(resources={"duckdb": con}, partition_key=partition_key)
+    gold_headlines(context)
+
+    rows = con.execute(
+        "SELECT symbol, uuid, title, sentiment FROM gold.headlines ORDER BY symbol"
+    ).fetchall()
+    assert rows == [
+        ('AAPL', 'u1', 'AAPL title', 'positive'),
+        ('MSFT', 'u2', 'MSFT title', 'neutral'),
+    ]
 
 
 @pytest.mark.smoke

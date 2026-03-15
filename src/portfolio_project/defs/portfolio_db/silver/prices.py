@@ -21,15 +21,8 @@ PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 SILVER_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
 
 
-def _silver_day_file_path(trade_date: date, symbol: str) -> Path:
-    return (
-        DATA_ROOT
-        / "silver"
-        / "prices"
-        / f"date={trade_date.isoformat()}"
-        / f"symbol={symbol.upper()}"
-        / "prices.parquet"
-    )
+def _silver_day_partition_path(trade_date: date) -> Path:
+    return DATA_ROOT / "silver" / "prices" / f"date={trade_date.isoformat()}"
 
 
 def _active_symbol_rows(con) -> list[tuple[int, str]]:
@@ -46,36 +39,8 @@ def _active_symbol_rows(con) -> list[tuple[int, str]]:
     return [(int(row[0]), str(row[1])) for row in rows if row and row[0] is not None and row[1]]
 
 
-def _normalize_silver_columns(prices_df: pd.DataFrame) -> pd.DataFrame:
-    column_order = [
-        "asset_id",
-        "symbol",
-        "timestamp",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "trade_count",
-        "vwap",
-        "ingested_ts",
-    ]
-    existing_cols = [col for col in column_order if col in prices_df.columns]
-    remaining_cols = [col for col in prices_df.columns if col not in existing_cols]
-    return prices_df[existing_cols + remaining_cols]
-
-
-def _query_silver_prices_for_day(
-    con,
-    parquet_paths: list[str],
-    trade_date: date,
-) -> pd.DataFrame:
-    if not parquet_paths:
-        return pd.DataFrame()
-    start_dt = datetime.combine(trade_date, datetime.min.time())
-    end_dt = start_dt + timedelta(days=1)
-    return con.execute(
-        """
+def _silver_prices_sql() -> str:
+    return """
         WITH bars AS (
             SELECT *
             FROM read_parquet(?)
@@ -104,38 +69,62 @@ def _query_silver_prices_for_day(
         FROM bars
         INNER JOIN active_assets AS assets
             ON upper(trim(bars.symbol)) = assets.symbol
-        """,
-        [parquet_paths, start_dt, end_dt],
-    ).fetch_df()
+    """
+
+
+def _query_silver_prices_for_day(
+    con,
+    parquet_paths: list[str],
+    trade_date: date,
+) -> pd.DataFrame:
+    if not parquet_paths:
+        return pd.DataFrame()
+    start_dt = datetime.combine(trade_date, datetime.min.time())
+    end_dt = start_dt + timedelta(days=1)
+    return con.execute(_silver_prices_sql(), [parquet_paths, start_dt, end_dt]).fetch_df()
 
 
 def _clear_silver_day_partition(trade_date: date) -> None:
-    day_dir = DATA_ROOT / "silver" / "prices" / f"date={trade_date.isoformat()}"
+    day_dir = _silver_day_partition_path(trade_date)
     if day_dir.exists():
         shutil.rmtree(day_dir)
 
 
-def _write_silver_day_symbol_files(prices_df: pd.DataFrame) -> tuple[int, int]:
-    if prices_df is None or prices_df.empty:
-        return 0, 0
-    prices_df = _normalize_silver_columns(prices_df)
-    if "timestamp" not in prices_df.columns or "symbol" not in prices_df.columns:
+def _write_silver_day_symbol_files(
+    con,
+    parquet_paths: list[str],
+    trade_date: date,
+) -> tuple[int, int]:
+    if not parquet_paths:
         return 0, 0
 
-    timestamp_values = pd.to_datetime(prices_df["timestamp"], utc=True, errors="coerce")
-    prices_df = prices_df[timestamp_values.notna()].copy()
-    prices_df["trade_date"] = timestamp_values[timestamp_values.notna()].dt.date
+    start_dt = datetime.combine(trade_date, datetime.min.time())
+    end_dt = start_dt + timedelta(days=1)
+    sql = _silver_prices_sql()
+    row_count, files_written = con.execute(
+        f"""
+        SELECT
+            count(*) AS row_count,
+            count(DISTINCT symbol) AS files_written
+        FROM ({sql}) AS silver_prices
+        """,
+        [parquet_paths, start_dt, end_dt],
+    ).fetchone()
+    if not row_count:
+        return 0, 0
 
-    rows_written = 0
-    files_written = 0
-    for (symbol, trade_date), group in prices_df.groupby(["symbol", "trade_date"], sort=True):
-        out_path = _silver_day_file_path(trade_date, str(symbol))
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = group.drop(columns=["trade_date"])
-        payload.to_parquet(out_path, index=False)
-        rows_written += len(payload)
-        files_written += 1
-    return rows_written, files_written
+    out_dir = _silver_day_partition_path(trade_date)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    con.execute(
+        f"""
+        COPY (
+            {sql}
+        ) TO '{out_dir.as_posix()}'
+        (FORMAT PARQUET, PARTITION_BY (symbol), FILENAME_PATTERN 'prices', OVERWRITE_OR_IGNORE TRUE)
+        """,
+        [parquet_paths, start_dt, end_dt],
+    )
+    return int(row_count), int(files_written)
 
 
 def _bronze_day_symbol_paths(trade_date: date, symbols: list[str]) -> list[str]:
@@ -173,13 +162,12 @@ def silver_alpaca_prices_parquet(context: AssetExecutionContext) -> None:
         context.log.warning("No bronze bars parquet files found for %s", context.partition_key)
         return
 
-    prices_df = _query_silver_prices_for_day(con, bronze_paths, trade_date)
-    if prices_df is None or prices_df.empty:
+    _clear_silver_day_partition(trade_date)
+    row_count, files_written = _write_silver_day_symbol_files(con, bronze_paths, trade_date)
+    if row_count == 0:
         context.log.warning("No active bar data for partition %s.", context.partition_key)
         return
 
-    _clear_silver_day_partition(trade_date)
-    row_count, files_written = _write_silver_day_symbol_files(prices_df)
     context.add_output_metadata(
         {
             "row_count": row_count,
@@ -188,6 +176,3 @@ def silver_alpaca_prices_parquet(context: AssetExecutionContext) -> None:
             "active_symbol_count": len(active_symbols),
         }
     )
-
-
-

@@ -180,12 +180,13 @@ def _ingest_bronze_day(
     end_date = start_date + timedelta(days=1)
 
     frames: list[pd.DataFrame] = []
-    for symbol_batch in _chunked(symbols, ALPACA_SYMBOL_BATCH_SIZE):
+    symbol_batches = _chunked(symbols, ALPACA_SYMBOL_BATCH_SIZE)
+    for idx, symbol_batch in enumerate(symbol_batches):
         batch_df = _fetch_bars_df_with_retry(context, symbol_batch, start_date, end_date)
         normalized = _normalize_bars_df(batch_df)
         if not normalized.empty:
             frames.append(normalized)
-        if ALPACA_REQUEST_SLEEP_SECONDS > 0:
+        if ALPACA_REQUEST_SLEEP_SECONDS > 0 and idx < len(symbol_batches) - 1:
             time.sleep(ALPACA_REQUEST_SLEEP_SECONDS)
 
     if not frames:

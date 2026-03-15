@@ -40,8 +40,7 @@ def _silver_paths_for_day(trade_date: date) -> list[str]:
         return []
     paths: list[str] = []
     for symbol_dir in day_dir.glob("symbol=*"):
-        candidate = symbol_dir / "prices.parquet"
-        if candidate.exists():
+        for candidate in symbol_dir.glob("*.parquet"):
             paths.append(candidate.as_posix())
     return sorted(paths)
 

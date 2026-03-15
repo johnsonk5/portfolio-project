@@ -443,8 +443,7 @@ def _silver_price_partition_paths(partition_key: str) -> list[str]:
         return []
     paths: list[str] = []
     for symbol_dir in day_dir.glob("symbol=*"):
-        candidate = symbol_dir / "prices.parquet"
-        if candidate.exists():
+        for candidate in symbol_dir.glob("*.parquet"):
             paths.append(candidate.as_posix())
     return sorted(paths)
 
