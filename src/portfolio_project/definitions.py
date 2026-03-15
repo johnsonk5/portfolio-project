@@ -54,6 +54,9 @@ from portfolio_project.defs.portfolio_db.reference.wikipedia import (
 from portfolio_project.defs.portfolio_db.demo.seed_data import (
     seed_demo_data,
 )
+from portfolio_project.defs.portfolio_db.demo.multi_duckdb_writer_test import (
+    multi_duckdb_writer_smoke_test_job,
+)
 from portfolio_project.defs.portfolio_db.observability.run_log import (
     dagster_run_log_failure,
     dagster_run_log_success,
@@ -290,6 +293,7 @@ defs = Definitions(
         sp500_update_job,
         tranco_update_job,
         sample_demo_seed_job,
+        multi_duckdb_writer_smoke_test_job,
     ],
     schedules=[
         daily_prices_schedule,
@@ -302,6 +306,12 @@ defs = Definitions(
     resources={
         "alpaca": alpaca_resource,
         "duckdb": duckdb_resource,
+        "research_duckdb": duckdb_resource.configured(
+            {
+                "env_var": "PORTFOLIO_RESEARCH_DUCKDB_PATH",
+                "default_db_name": "research.duckdb",
+            }
+        ),
     },
 )
 

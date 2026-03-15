@@ -73,7 +73,7 @@ uv run mypy
 
 - Python version target is `>=3.10,<3.14`.
 - Default data root is `data/`, controlled by `PORTFOLIO_DATA_DIR`.
-- Default DuckDB path is `data/duckdb/portfolio.duckdb`, overridable with `PORTFOLIO_DUCKDB_PATH`.
+- Default DuckDB paths are `data/duckdb/portfolio.duckdb` and `data/duckdb/research.duckdb`, overridable with `PORTFOLIO_DUCKDB_PATH` and `PORTFOLIO_RESEARCH_DUCKDB_PATH`.
 - Environment variable examples live in `docs/.env.sample`.
 - Alpaca credentials are required for live market ingestion.
 - Demo and local development flows rely on `portfolio-bootstrap` and `seed_demo_data`.
@@ -99,7 +99,7 @@ Prefer environment-driven paths over hardcoded paths. Existing modules often res
 ### DuckDB
 
 - Use the existing `duckdb_resource` instead of opening ad hoc write connections inside Dagster assets.
-- The repository already enforces operation-scoped filesystem locking via `.duckdb_write.lock`. Preserve that behavior when touching resource code.
+- The repository already enforces operation-scoped filesystem locking via per-database lock files such as `.portfolio.duckdb.write.lock`. Preserve that behavior when touching resource code.
 - If you change locking, connection lifecycle, or write semantics, run `tests/test_duckdb_resource_locking.py`.
 
 ### Streamlit

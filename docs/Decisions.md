@@ -31,8 +31,8 @@ This document records important architecture, tech stack, and operating decision
 - Status: Accepted
 - Why: DuckDB gives the project a lightweight local analytical store for curated tables, logging, and dashboard queries without introducing external infrastructure.
 - Current defaults:
-  - Default database path: `data/duckdb/portfolio.duckdb`
-  - Override supported through `PORTFOLIO_DUCKDB_PATH`
+  - Default database paths: `data/duckdb/portfolio.duckdb` and `data/duckdb/research.duckdb`
+  - Overrides supported through `PORTFOLIO_DUCKDB_PATH` and `PORTFOLIO_RESEARCH_DUCKDB_PATH`
   - Base data directory override supported through `PORTFOLIO_DATA_DIR`
 
 ### 5. Streamlit is the application layer
@@ -61,7 +61,7 @@ This document records important architecture, tech stack, and operating decision
 - Status: Accepted
 - Why: The current platform uses a lock file to avoid concurrent access issues against DuckDB from overlapping Dagster activity.
 - Current behavior:
-  - Lock path is colocated with the DuckDB file as `.duckdb_write.lock`
+  - Lock path is colocated with each DuckDB file and includes the database name, for example `.portfolio.duckdb.write.lock`
   - Locking is operation-scoped rather than held for the full run
   - Timeout and stale-lock behavior are configurable
 
@@ -125,6 +125,6 @@ This document records important architecture, tech stack, and operating decision
 These are not decided yet and should remain out of scope for this file until explicitly chosen:
 
 - Final layout for the `src/portfolio_project` reorganization
-- Exact configuration model for multiple DuckDB writers across live and research databases
+- Whether multiple DuckDB resources should be registered explicitly in `Definitions` or composed from environment-specific config
 - Whether the initial research universe should remain S&P 500-only or expand after coverage/cost review
 - Final alert severity policy once Phase 2 research pipelines are live
