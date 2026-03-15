@@ -5,13 +5,27 @@ from pathlib import Path
 import pandas as pd
 from dagster import AssetExecutionContext, DailyPartitionsDefinition, asset
 
-from portfolio_project.defs.silver_news_assets import silver_news
+from portfolio_project.defs.portfolio_db.silver.news import silver_news
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 GOLD_NEWS_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 SENTIMENT_BATCH_SIZE = int(os.getenv("NEWS_SENTIMENT_BATCH_SIZE", "32"))
 _SENTIMENT_PIPELINE = None
+
+
+def _headline_dedupe_expr(alias: str) -> str:
+    return f"""
+        concat(
+            upper({alias}.symbol),
+            '::',
+            coalesce(
+                nullif({alias}.uuid, ''),
+                nullif({alias}.link, ''),
+                nullif({alias}.title, '')
+            )
+        )
+    """
 
 
 def _get_sentiment_pipeline():
@@ -112,23 +126,8 @@ def gold_headlines(context: AssetExecutionContext) -> None:
         [parquet_paths, cutoff_date],
     ).fetchone()[0]
 
-    deleted_window_refresh_count = con.execute(
-        """
-        SELECT count(*)
-        FROM gold.headlines
-        WHERE provider_publish_time >= ? AND provider_publish_time < ?
-        """,
-        [window_start, window_end],
-    ).fetchone()[0]
-    con.execute(
-        """
-        DELETE FROM gold.headlines
-        WHERE provider_publish_time >= ? AND provider_publish_time < ?
-        """,
-        [window_start, window_end],
-    )
-
-    insert_sql = """
+    source_sql = """
+        CREATE OR REPLACE TEMP TABLE current_gold_headlines AS
         WITH source_news AS (
             SELECT *
             FROM read_parquet(?)
@@ -147,23 +146,14 @@ def gold_headlines(context: AssetExecutionContext) -> None:
                 query_date,
                 ingested_ts,
                 NULL AS sentiment,
-                concat(
-                    upper(symbol),
-                    '::',
-                    coalesce(
-                        nullif(uuid, ''),
-                        nullif(link, ''),
-                        nullif(title, '')
-                    )
-                ) AS dedupe_key,
+                {dedupe_expr} AS dedupe_key,
                 ROW_NUMBER() OVER (
-                    PARTITION BY dedupe_key
+                    PARTITION BY {dedupe_expr}
                     ORDER BY ingested_ts DESC NULLS LAST
                 ) AS rn
             FROM source_news
             WHERE provider_publish_time >= ? AND provider_publish_time < ?
         )
-        INSERT INTO gold.headlines
         SELECT
             asset_id,
             symbol,
@@ -176,14 +166,92 @@ def gold_headlines(context: AssetExecutionContext) -> None:
             summary,
             query_date,
             ingested_ts,
-            sentiment
+            sentiment,
+            dedupe_key
         FROM deduped
         WHERE rn = 1
-    """
-    con.execute(
-        insert_sql,
-        [parquet_paths, window_start, window_end],
-    )
+    """.format(dedupe_expr=_headline_dedupe_expr('source_news'))
+    con.execute(source_sql, [parquet_paths, window_start, window_end])
+
+    deleted_window_refresh_count = con.execute(
+        """
+        SELECT count(*)
+        FROM gold.headlines AS g
+        WHERE g.provider_publish_time >= ?
+          AND g.provider_publish_time < ?
+          AND {target_dedupe} NOT IN (
+              SELECT dedupe_key FROM current_gold_headlines
+          )
+        """.format(target_dedupe=_headline_dedupe_expr('g')),
+        [window_start, window_end],
+    ).fetchone()[0]
+
+    merge_sql = """
+        MERGE INTO gold.headlines AS target
+        USING current_gold_headlines AS source
+        ON {target_dedupe} = source.dedupe_key
+        WHEN MATCHED THEN UPDATE SET
+            asset_id = source.asset_id,
+            symbol = source.symbol,
+            uuid = source.uuid,
+            title = source.title,
+            publisher_id = source.publisher_id,
+            link = source.link,
+            provider_publish_time = source.provider_publish_time,
+            type = source.type,
+            summary = source.summary,
+            query_date = source.query_date,
+            ingested_ts = source.ingested_ts,
+            sentiment = target.sentiment
+        WHEN NOT MATCHED THEN INSERT (
+            asset_id,
+            symbol,
+            uuid,
+            title,
+            publisher_id,
+            link,
+            provider_publish_time,
+            type,
+            summary,
+            query_date,
+            ingested_ts,
+            sentiment
+        ) VALUES (
+            source.asset_id,
+            source.symbol,
+            source.uuid,
+            source.title,
+            source.publisher_id,
+            source.link,
+            source.provider_publish_time,
+            source.type,
+            source.summary,
+            source.query_date,
+            source.ingested_ts,
+            source.sentiment
+        )
+    """.format(target_dedupe=_headline_dedupe_expr('target'))
+
+    try:
+        con.execute("BEGIN TRANSACTION")
+        con.execute(
+            """
+            DELETE FROM gold.headlines AS g
+            WHERE g.provider_publish_time >= ?
+              AND g.provider_publish_time < ?
+              AND {target_dedupe} NOT IN (
+                  SELECT dedupe_key FROM current_gold_headlines
+              )
+            """.format(target_dedupe=_headline_dedupe_expr('g')),
+            [window_start, window_end],
+        )
+        con.execute(merge_sql)
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
+    finally:
+        con.execute("DROP TABLE IF EXISTS current_gold_headlines")
 
     row_count = con.execute(
         """
@@ -274,5 +342,6 @@ def gold_headlines(context: AssetExecutionContext) -> None:
             "deleted_out_of_window_count": int(deleted_out_of_window_count or 0),
             "deleted_window_refresh_count": int(deleted_window_refresh_count or 0),
             "sentiment_updated": sentiment_updated,
+            "eligible_count": int(eligible_count or 0),
         }
     )

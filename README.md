@@ -8,7 +8,8 @@ The system automates ingestion, transformation, quality checks, and observabilit
 
 ## Documentation
 
-- [Architecture](docs/Archtecture.md)
+- [Architecture](docs/Architecture.md)
+- [Decisions](docs/Decisions.md)
 - [Pipelines](docs/Pipelines.md)
 - [Sources](docs/Sources.md)
 - [Dashboard](docs/Dashboard.md)

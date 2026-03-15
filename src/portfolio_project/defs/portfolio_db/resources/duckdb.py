@@ -7,6 +7,25 @@ import duckdb
 from dagster import Field, Int, String, resource
 
 
+def resolve_duckdb_path(
+    configured_path: str | None = None,
+    *,
+    env_var: str = "PORTFOLIO_DUCKDB_PATH",
+    default_db_name: str = "portfolio.duckdb",
+) -> Path:
+    env_path = os.getenv(env_var)
+    if configured_path:
+        return Path(configured_path)
+    if env_path:
+        return Path(env_path)
+    data_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
+    return data_root / "duckdb" / default_db_name
+
+
+def duckdb_lock_path_for(db_path: Path) -> Path:
+    return db_path.parent / f".{db_path.name}.write.lock"
+
+
 def _acquire_duckdb_lock(
     path: Path,
     timeout_seconds: int = 120,
@@ -131,6 +150,8 @@ class LockedDuckDBConnection:
 @resource(
     config_schema={
         "db_path": Field(String, is_required=False),
+        "env_var": Field(String, is_required=False, default_value="PORTFOLIO_DUCKDB_PATH"),
+        "default_db_name": Field(String, is_required=False, default_value="portfolio.duckdb"),
         "lock_timeout_seconds": Field(Int, is_required=False, default_value=120),
         "stale_lock_seconds": Field(Int, is_required=False, default_value=600),
     }
@@ -141,21 +162,21 @@ def duckdb_resource(context):
 
     Configuration:
     - db_path: Optional explicit path to the DuckDB file.
-    - PORTFOLIO_DUCKDB_PATH: Environment variable fallback.
+    - env_var: Environment variable used when db_path is not set.
+    - default_db_name: Default filename under PORTFOLIO_DATA_DIR/duckdb when db_path and env_var are unset.
     - PORTFOLIO_DATA_DIR: Base data directory fallback (defaults to "data").
     """
     configured_path = context.resource_config.get("db_path")
-    env_path = os.getenv("PORTFOLIO_DUCKDB_PATH")
-    if configured_path:
-        db_path = Path(configured_path)
-    elif env_path:
-        db_path = Path(env_path)
-    else:
-        data_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
-        db_path = data_root / "duckdb" / "portfolio.duckdb"
+    env_var = context.resource_config.get("env_var", "PORTFOLIO_DUCKDB_PATH")
+    default_db_name = context.resource_config.get("default_db_name", "portfolio.duckdb")
+    db_path = resolve_duckdb_path(
+        configured_path,
+        env_var=env_var,
+        default_db_name=default_db_name,
+    )
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = db_path.parent / ".duckdb_write.lock"
+    lock_path = duckdb_lock_path_for(db_path)
 
     lock_timeout_seconds = context.resource_config.get("lock_timeout_seconds", 120)
     stale_lock_seconds = context.resource_config.get("stale_lock_seconds", 600)

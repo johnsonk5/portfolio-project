@@ -8,8 +8,8 @@ from dagster import (
     asset,
 )
 
-from portfolio_project.defs.silver_assets import silver_alpaca_assets
-from portfolio_project.defs.silver_prices import (
+from portfolio_project.defs.portfolio_db.silver.assets import silver_alpaca_assets
+from portfolio_project.defs.portfolio_db.silver.prices import (
     silver_alpaca_prices_parquet,
 )
 
@@ -40,8 +40,7 @@ def _silver_paths_for_day(trade_date: date) -> list[str]:
         return []
     paths: list[str] = []
     for symbol_dir in day_dir.glob("symbol=*"):
-        candidate = symbol_dir / "prices.parquet"
-        if candidate.exists():
+        for candidate in symbol_dir.glob("*.parquet"):
             paths.append(candidate.as_posix())
     return sorted(paths)
 
@@ -375,3 +374,4 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
             "rows_deleted": rows_deleted,
         }
     )
+
