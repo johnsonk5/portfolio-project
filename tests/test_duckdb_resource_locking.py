@@ -116,7 +116,6 @@ def test_duckdb_resource_uses_operation_scoped_locking(tmp_path, monkeypatch) ->
     assert acquire_calls >= 4
 
 
-
 def test_duckdb_lock_path_isolated_per_database(tmp_path) -> None:
     live_db_path = tmp_path / "duckdb" / "portfolio.duckdb"
     research_db_path = tmp_path / "duckdb" / "research.duckdb"

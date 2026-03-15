@@ -126,4 +126,3 @@ def test_seed_demo_data_from_github_release_with_marker_skips_redownload(
     assert session.release_calls == 2
     assert session.download_calls == 1
     assert (data_root / "demo" / ".demo_data_source.json").exists()
-

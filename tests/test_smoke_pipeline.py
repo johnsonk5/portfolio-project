@@ -209,7 +209,12 @@ def test_silver_prices_dedupes_duplicate_active_symbols_in_assets(
 
     assert result.success
     out_path = (
-        data_root / "silver" / "prices" / f"date={partition_key}" / "symbol=AAPL" / "prices0.parquet"
+        data_root
+        / "silver"
+        / "prices"
+        / f"date={partition_key}"
+        / "symbol=AAPL"
+        / "prices0.parquet"
     )
     df = pd.read_parquet(out_path)
     assert len(df) == 2
@@ -329,7 +334,6 @@ def test_gold_prices_computes_vwap_returns_and_sentiment(tmp_path: Path) -> None
     assert row[3] == pytest.approx(1.0 / 3.0)
 
 
-
 @pytest.mark.smoke
 def test_gold_headlines_rerun_upserts_window_without_rebuilding_sentiment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -394,7 +398,9 @@ def test_gold_headlines_rerun_upserts_window_without_rebuilding_sentiment(
     def fake_sentiment_pipeline(texts, batch_size):
         return [{"label": "neutral"} for _ in texts]
 
-    monkeypatch.setattr(gold_news_module, "_get_sentiment_pipeline", lambda: fake_sentiment_pipeline)
+    monkeypatch.setattr(
+        gold_news_module, "_get_sentiment_pipeline", lambda: fake_sentiment_pipeline
+    )
 
     context = build_asset_context(resources={"duckdb": con}, partition_key=partition_key)
     gold_headlines(context)
@@ -403,8 +409,8 @@ def test_gold_headlines_rerun_upserts_window_without_rebuilding_sentiment(
         "SELECT symbol, uuid, title, sentiment FROM gold.headlines ORDER BY symbol"
     ).fetchall()
     assert rows == [
-        ('AAPL', 'u1', 'AAPL title', 'positive'),
-        ('MSFT', 'u2', 'MSFT title', 'neutral'),
+        ("AAPL", "u1", "AAPL title", "positive"),
+        ("MSFT", "u2", "MSFT title", "neutral"),
     ]
 
 
@@ -479,4 +485,3 @@ def test_gold_prices_upsert_rolls_back_on_insert_error(tmp_path: Path) -> None:
     close_after = close_after_row[0]
     assert rows_after == 1
     assert close_after == pytest.approx(200.0)
-

@@ -155,4 +155,3 @@ def test_collect_materialization_asset_metrics_rolls_up_by_asset_key() -> None:
 def test_is_us_trading_day_rejects_weekends_and_bad_inputs() -> None:
     assert _is_us_trading_day("2026-02-14") is False
     assert _is_us_trading_day("not-a-date") is False
-
