@@ -390,8 +390,34 @@ def test_gold_headlines_rerun_upserts_window_without_rebuilding_sentiment(
     con.execute(
         """
         INSERT INTO gold.headlines VALUES
-            (1, 'AAPL', 'u1', 'Old AAPL title', 10, 'https://example.com/aapl', '2026-02-13 15:00:00+00:00', 'STORY', 'Old summary', '2026-02-13', '2026-02-13 17:00:00+00:00', 'positive'),
-            (3, 'NVDA', 'u3', 'NVDA stale', 30, 'https://example.com/nvda', '2026-02-12 15:00:00+00:00', 'STORY', 'NVDA summary', '2026-02-12', '2026-02-12 17:00:00+00:00', 'negative')
+            (
+                1,
+                'AAPL',
+                'u1',
+                'Old AAPL title',
+                10,
+                'https://example.com/aapl',
+                '2026-02-13 15:00:00+00:00',
+                'STORY',
+                'Old summary',
+                '2026-02-13',
+                '2026-02-13 17:00:00+00:00',
+                'positive'
+            ),
+            (
+                3,
+                'NVDA',
+                'u3',
+                'NVDA stale',
+                30,
+                'https://example.com/nvda',
+                '2026-02-12 15:00:00+00:00',
+                'STORY',
+                'NVDA summary',
+                '2026-02-12',
+                '2026-02-12 17:00:00+00:00',
+                'negative'
+            )
         """
     )
 
