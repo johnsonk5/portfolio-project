@@ -46,6 +46,9 @@ from portfolio_project.defs.portfolio_db.silver.news import (
     silver_ref_publishers,
     silver_news,
 )
+from portfolio_project.defs.portfolio_db.silver.factors import (
+    silver_fama_french_factors_parquet,
+)
 from portfolio_project.defs.portfolio_db.bronze.tranco import bronze_tranco_snapshot
 from portfolio_project.defs.portfolio_db.gold.news import gold_headlines
 
@@ -117,6 +120,18 @@ news_selection = AssetSelection.assets(
     silver_ref_publishers,
     silver_news,
     gold_headlines,
+)
+
+factors_selection = AssetSelection.assets(
+    bronze_fama_french_factors,
+    silver_fama_french_factors_parquet,
+)
+
+monthly_factors_job = define_asset_job(
+    name="monthly_factors_job",
+    selection=factors_selection,
+    executor_def=in_process_executor,
+    hooks={dagster_run_log_success, dagster_run_log_failure},
 )
 
 daily_news_job = define_asset_job(
@@ -234,6 +249,13 @@ daily_news_schedule = ScheduleDefinition(
     execution_fn=_daily_news_schedule_fn,
 )
 
+monthly_factors_schedule = ScheduleDefinition(
+    name="monthly_factors_schedule",
+    cron_schedule="15 9 1 * *",
+    execution_timezone="America/New_York",
+    job=monthly_factors_job,
+)
+
 def _daily_wikipedia_schedule_fn(context):
     scheduled_time = context.scheduled_execution_time
     if scheduled_time is None:
@@ -274,6 +296,7 @@ defs = Definitions(
         seed_demo_data,
         silver_ref_publishers,
         silver_news,
+        silver_fama_french_factors_parquet,
         gold_headlines,
         silver_alpaca_assets,
         silver_alpaca_active_assets_history,
@@ -289,6 +312,7 @@ defs = Definitions(
         daily_prices_job,
         prices_compaction_job,
         daily_news_job,
+        monthly_factors_job,
         wikipedia_activity_job,
         asset_status_updates_job,
         sp500_update_job,
@@ -299,6 +323,7 @@ defs = Definitions(
         daily_prices_schedule,
         prices_compaction_schedule,
         daily_news_schedule,
+        monthly_factors_schedule,
         wikipedia_daily_schedule,
         sp500_weekly_schedule,
         tranco_monthly_schedule,

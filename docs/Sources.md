@@ -70,3 +70,10 @@ This document describes each source, what it powers, and important operational d
 ### Operational Notes
 - Refreshed weekly.
 - Joined to `silver.assets` where symbol matching is possible.
+
+## Kenneth R. French Data Library
+
+- Daily Fama-French 3 factors plus daily momentum factor.
+- Bronze ingestion stores snapshot parquet files under `data/bronze/fama_french_factors/date=YYYY-MM-DD/factors.parquet`.
+- Silver normalization rebuilds a single parquet file at `data/silver/factors/factors.parquet`.
+- Feeds `silver.factors`.

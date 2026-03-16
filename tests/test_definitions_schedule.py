@@ -8,6 +8,7 @@ from portfolio_project.definitions import (
     _daily_prices_schedule_fn,
     _previous_trading_day,
     _prices_compaction_schedule_fn,
+    monthly_factors_schedule,
 )
 
 
@@ -64,3 +65,9 @@ def test_previous_trading_day_skips_configured_market_holiday(
 
     monkeypatch.setattr("portfolio_project.definitions._is_us_trading_day", _fake_is_us_trading_day)
     assert _previous_trading_day(datetime(2026, 2, 17).date()).isoformat() == "2026-02-13"
+
+
+def test_monthly_factors_schedule_runs_on_first_of_month() -> None:
+    assert monthly_factors_schedule.cron_schedule == "15 9 1 * *"
+    assert monthly_factors_schedule.execution_timezone == "America/New_York"
+    assert monthly_factors_schedule.job.name == "monthly_factors_job"
