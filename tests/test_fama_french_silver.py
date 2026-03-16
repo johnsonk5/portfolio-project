@@ -20,8 +20,12 @@ def test_latest_bronze_factors_snapshot_picks_most_recent_date(tmp_path: Path) -
     second_dir = data_root / "bronze" / "fama_french_factors" / "date=2026-03-15"
     first_dir.mkdir(parents=True, exist_ok=True)
     second_dir.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({"factor_date": pd.to_datetime(["2026-03-14"])}).to_parquet(first_dir / "factors.parquet", index=False)
-    pd.DataFrame({"factor_date": pd.to_datetime(["2026-03-15"])}).to_parquet(second_dir / "factors.parquet", index=False)
+    pd.DataFrame({"factor_date": pd.to_datetime(["2026-03-14"])}).to_parquet(
+        first_dir / "factors.parquet", index=False
+    )
+    pd.DataFrame({"factor_date": pd.to_datetime(["2026-03-15"])}).to_parquet(
+        second_dir / "factors.parquet", index=False
+    )
 
     snapshot = _latest_bronze_factors_snapshot()
 
@@ -65,7 +69,10 @@ def test_silver_fama_french_factors_materializes_single_parquet_file(tmp_path: P
 
         df = pd.read_parquet(out_path)
         assert df["factor_date"].dt.strftime("%Y-%m-%d").tolist() == ["2026-01-30", "2026-02-03"]
-        assert df["bronze_snapshot_date"].dt.strftime("%Y-%m-%d").tolist() == ["2026-03-15", "2026-03-15"]
+        assert df["bronze_snapshot_date"].dt.strftime("%Y-%m-%d").tolist() == [
+            "2026-03-15",
+            "2026-03-15",
+        ]
         assert df["mom"].tolist() == [0.6, -0.1]
     finally:
         con.close()
