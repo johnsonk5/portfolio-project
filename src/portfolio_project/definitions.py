@@ -39,6 +39,9 @@ from portfolio_project.defs.portfolio_db.bronze.news import (
     BRONZE_NEWS_PARTITIONS,
     bronze_yahoo_news,
 )
+from portfolio_project.defs.portfolio_db.bronze.fama_french import (
+    bronze_fama_french_factors,
+)
 from portfolio_project.defs.portfolio_db.silver.news import (
     silver_ref_publishers,
     silver_news,
@@ -264,6 +267,7 @@ defs = Definitions(
         bronze_alpaca_bars,
         bronze_alpaca_assets,
         bronze_yahoo_news,
+        bronze_fama_french_factors,
         bronze_tranco_snapshot,
         bronze_wikipedia_pageviews,
         silver_wikipedia_pageviews,
