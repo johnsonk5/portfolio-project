@@ -32,7 +32,7 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 
 ## `silver.prices`
 
-*Partitioned Parquet file*
+*Parquet file*
 
 | Column | Type | Description |
 | --- | --- | --- |
@@ -125,3 +125,20 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | `view_date` | `date` | Normalized view date. |
 | `views` | `int` | Pageview count. |
 | `ingested_ts` | `timestamp` | Ingest timestamp. |
+
+## `silver.factors`
+
+*Parquet file*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `factor_date` | `date` | Trading date for the factor observation. |
+| `mkt_rf` | `float` | Market excess return (`MKT-RF`). |
+| `smb` | `float` | Size factor (`SMB`). |
+| `hml` | `float` | Value factor (`HML`). |
+| `rf` | `float` | Daily risk-free rate (`RF`). |
+| `mom` | `float` | Daily momentum factor (`MOM`). |
+| `source` | `object` | Source label for the Kenneth R. French Data Library. |
+| `frequency` | `object` | Frequency label (`daily`). |
+| `ingested_ts` | `timestamp` | Bronze ingest timestamp carried forward. |
+| `bronze_snapshot_date` | `date` | Bronze snapshot date used to build the silver parquet files. |

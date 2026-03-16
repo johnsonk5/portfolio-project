@@ -95,3 +95,14 @@ These jobs use success and failure hooks:
 - `dagster_run_log_failure`
 
 Success hook writes run log data and triggers freshness and DQ checks.
+
+## `monthly_factors_job`
+
+### Purpose
+Ingest Kenneth French factor data and rebuild the silver factors parquet history.
+
+### Flow
+- `bronze_fama_french_factors` -> `silver_fama_french_factors_parquet`
+
+### Schedule
+- `monthly_factors_schedule`: `15 9 1 * *` America/New_York. Runs once a month on the 1st at 9:15 AM ET.

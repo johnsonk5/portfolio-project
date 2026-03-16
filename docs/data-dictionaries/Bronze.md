@@ -109,3 +109,17 @@ All of the tables in this layer are partitioned parquet files unless otherwise s
 | `view_date` | `object` | Date key in `YYYYMMDD` format. |
 | `views` | `int` | Pageview count. |
 | `ingested_ts` | `datetime64[us]` | Ingest timestamp. |
+
+## `bronze.fama_french_factors`
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `factor_date` | `datetime64[ns]` | Trading date for the factor observation. |
+| `mkt_rf` | `float` | Market excess return (`MKT-RF`) from Kenneth French daily factors. |
+| `smb` | `float` | Size factor (`SMB`). |
+| `hml` | `float` | Value factor (`HML`). |
+| `rf` | `float` | Daily risk-free rate (`RF`). |
+| `mom` | `float` | Daily momentum factor (`MOM`). |
+| `source` | `object` | Source label for the Kenneth R. French Data Library. |
+| `frequency` | `object` | Snapshot frequency label (`daily`). |
+| `ingested_ts` | `datetime64[us]` | Ingest timestamp. |
