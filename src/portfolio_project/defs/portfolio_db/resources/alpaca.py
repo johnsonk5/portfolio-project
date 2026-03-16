@@ -20,7 +20,7 @@ from dagster import Bool, Field, resource
 def alpaca_resource(context) -> "AlpacaClient":
     """
     Dagster resource for Alpaca Markets API client.
-    
+
     Configuration (resource config):
     - paper: Whether to use Alpaca paper trading endpoints for trading API calls.
 
@@ -54,15 +54,15 @@ def alpaca_resource(context) -> "AlpacaClient":
 
 class AlpacaClient:
     """Client for interacting with the Alpaca Markets API."""
-    
+
     def __init__(self, api_key: str, secret_key: str, paper: bool = True):
         self.api_key = api_key
         self.secret_key = secret_key
         self.paper = paper
         self.client = StockHistoricalDataClient(api_key, secret_key)
         self.trading_client = TradingClient(api_key, secret_key, paper=paper)
-    
-    ## Currently, this function pulls 5 minute bars, but this is easy to configure for other time frames.
+
+    ## Pull 5-minute bars; switch the timeframe here if needed.
     def get_bars_df(
         self,
         symbol_or_symbols,
@@ -103,6 +103,40 @@ class AlpacaClient:
             return bars.df.copy()
         return pd.DataFrame(bars)
 
+    def get_daily_bars_df(
+        self,
+        symbol_or_symbols,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ) -> pd.DataFrame:
+        """
+        Fetch daily OHLCV data for one or more symbols as a DataFrame.
+        """
+        if end_date is None:
+            end_date = datetime.now(timezone.utc)
+        if start_date is None:
+            start_date = end_date - timedelta(days=30)
+
+        tf = TimeFrame(1, TimeFrameUnit.Day)
+
+        if isinstance(symbol_or_symbols, str):
+            symbols = [symbol_or_symbols]
+        else:
+            symbols = list(symbol_or_symbols)
+
+        request = StockBarsRequest(
+            symbol_or_symbols=symbols,
+            timeframe=tf,
+            start=start_date,
+            end=end_date,
+        )
+
+        bars = self.client.get_stock_bars(request)
+
+        if hasattr(bars, "df"):
+            return bars.df.copy()
+        return pd.DataFrame(bars)
+
     def get_assets_df(
         self,
         status: AssetStatus = AssetStatus.ACTIVE,
@@ -121,3 +155,11 @@ class AlpacaClient:
             else:
                 rows.append(asset.__dict__)
         return pd.DataFrame(rows)
+
+    def get_assets(
+        self,
+        status: AssetStatus = AssetStatus.ACTIVE,
+        asset_class: AssetClass = AssetClass.US_EQUITY,
+    ):
+        request = GetAssetsRequest(status=status, asset_class=asset_class)
+        return self.trading_client.get_all_assets(request)

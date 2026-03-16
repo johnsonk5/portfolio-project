@@ -39,6 +39,23 @@ All of the tables in this layer are partitioned parquet files unless otherwise s
 | `attributes` | `object` | Additional source attributes. |
 | `ingested_ts` | `datetime64[us]` | Ingest timestamp. |
 
+## `bronze.research_prices_daily`
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `symbol` | `object` | Ticker symbol. |
+| `timestamp` | `timestamp` | Daily bar timestamp (UTC). |
+| `trade_date` | `date` | New York trading date represented by the bar. |
+| `open` | `float` | Open price for the day. |
+| `high` | `float` | High price for the day. |
+| `low` | `float` | Low price for the day. |
+| `close` | `float` | Close price for the day. |
+| `volume` | `int` | Daily share volume. |
+| `trade_count` | `int` | Daily trade count when the source provides it. |
+| `vwap` | `float` | Daily VWAP when the source provides it. |
+| `source` | `object` | Upstream source (`alpaca` or `yahoo_finance`). |
+| `ingested_ts` | `timestamp` | Ingest timestamp. |
+
 ## `bronze.sp500_companies`
 
 | Column | Type | Description |
