@@ -15,22 +15,22 @@ from portfolio_project.defs.portfolio_db.bronze.alpaca import (
     bronze_alpaca_assets,
     bronze_alpaca_bars,
 )
+from portfolio_project.defs.portfolio_db.bronze.fama_french import (
+    bronze_fama_french_factors,
+)
 from portfolio_project.defs.portfolio_db.bronze.news import (
     BRONZE_NEWS_PARTITIONS,
     bronze_yahoo_news,
 )
 from portfolio_project.defs.portfolio_db.bronze.research_prices import (
-    bronze_research_prices_daily,
+    bronze_alpaca_prices_daily,
+    bronze_eodhd_prices_daily,
 )
 from portfolio_project.defs.portfolio_db.bronze.tranco import bronze_tranco_snapshot
-from portfolio_project.defs.portfolio_db.demo.seed_data import (
-    seed_demo_data,
-)
+from portfolio_project.defs.portfolio_db.demo.seed_data import seed_demo_data
 from portfolio_project.defs.portfolio_db.gold.activity import gold_activity
 from portfolio_project.defs.portfolio_db.gold.news import gold_headlines
-from portfolio_project.defs.portfolio_db.gold.prices import (
-    gold_alpaca_prices,
-)
+from portfolio_project.defs.portfolio_db.gold.prices import gold_alpaca_prices
 from portfolio_project.defs.portfolio_db.observability.run_log import (
     _is_us_trading_day,
     dagster_run_log_failure,
@@ -40,23 +40,6 @@ from portfolio_project.defs.portfolio_db.reference.sp500 import (
     bronze_sp500_companies,
     silver_sp500_companies,
 )
-from portfolio_project.defs.portfolio_db.bronze.news import (
-    BRONZE_NEWS_PARTITIONS,
-    bronze_yahoo_news,
-)
-from portfolio_project.defs.portfolio_db.bronze.fama_french import (
-    bronze_fama_french_factors,
-)
-from portfolio_project.defs.portfolio_db.silver.news import (
-    silver_ref_publishers,
-    silver_news,
-)
-from portfolio_project.defs.portfolio_db.silver.factors import (
-    silver_fama_french_factors_parquet,
-)
-from portfolio_project.defs.portfolio_db.bronze.tranco import bronze_tranco_snapshot
-from portfolio_project.defs.portfolio_db.gold.news import gold_headlines
-
 from portfolio_project.defs.portfolio_db.reference.wikipedia import (
     BRONZE_WIKIPEDIA_PARTITIONS,
     bronze_wikipedia_pageviews,
@@ -64,10 +47,14 @@ from portfolio_project.defs.portfolio_db.reference.wikipedia import (
 )
 from portfolio_project.defs.portfolio_db.resources.alpaca import alpaca_resource
 from portfolio_project.defs.portfolio_db.resources.duckdb import duckdb_resource
+from portfolio_project.defs.portfolio_db.resources.eodhd import eodhd_resource
 from portfolio_project.defs.portfolio_db.silver.assets import (
     silver_alpaca_active_assets_history,
     silver_alpaca_assets,
     silver_alpaca_assets_status_updates,
+)
+from portfolio_project.defs.portfolio_db.silver.factors import (
+    silver_fama_french_factors_parquet,
 )
 from portfolio_project.defs.portfolio_db.silver.news import (
     silver_news,
@@ -79,6 +66,10 @@ from portfolio_project.defs.portfolio_db.silver.prices import (
 from portfolio_project.defs.portfolio_db.silver.prices_compact import (
     SILVER_COMPACT_PARTITIONS,
     silver_alpaca_prices_compact,
+)
+from portfolio_project.defs.portfolio_db.silver.universe import (
+    silver_universe_membership_daily,
+    silver_universe_membership_events,
 )
 
 prices_selection = AssetSelection.assets(
@@ -188,6 +179,7 @@ sp500_weekly_schedule = ScheduleDefinition(
     job=sp500_update_job,
 )
 
+
 def _previous_trading_day(local_date):
     candidate = local_date - timedelta(days=1)
     while not _is_us_trading_day(candidate.isoformat()):
@@ -267,6 +259,7 @@ monthly_factors_schedule = ScheduleDefinition(
     job=monthly_factors_job,
 )
 
+
 def _daily_wikipedia_schedule_fn(context):
     scheduled_time = context.scheduled_execution_time
     if scheduled_time is None:
@@ -299,7 +292,8 @@ defs = Definitions(
     assets=[
         bronze_alpaca_bars,
         bronze_alpaca_assets,
-        bronze_research_prices_daily,
+        bronze_eodhd_prices_daily,
+        bronze_alpaca_prices_daily,
         bronze_yahoo_news,
         bronze_fama_french_factors,
         bronze_tranco_snapshot,
@@ -315,6 +309,8 @@ defs = Definitions(
         silver_alpaca_assets_status_updates,
         silver_alpaca_prices_parquet,
         silver_alpaca_prices_compact,
+        silver_universe_membership_events,
+        silver_universe_membership_daily,
         gold_alpaca_prices,
         gold_activity,
         bronze_sp500_companies,
@@ -342,6 +338,7 @@ defs = Definitions(
     ],
     resources={
         "alpaca": alpaca_resource,
+        "eodhd": eodhd_resource,
         "duckdb": duckdb_resource,
         "research_duckdb": duckdb_resource.configured(
             {
@@ -351,4 +348,3 @@ defs = Definitions(
         ),
     },
 )
-

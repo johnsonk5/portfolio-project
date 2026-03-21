@@ -11,6 +11,8 @@ from alpaca.trading.enums import AssetClass, AssetStatus
 from alpaca.trading.requests import GetAssetsRequest
 from dagster import Bool, Field, resource
 
+from portfolio_project.defs.portfolio_db.resources.env import load_local_env
+
 
 @resource(
     config_schema={
@@ -29,6 +31,7 @@ def alpaca_resource(context) -> "AlpacaClient":
     - ALPACA_SECRET_KEY: Secret key for Alpaca (from environment)
     - ALPACA_PAPER: Optional boolean override when `paper` is not provided.
     """
+    load_local_env()
     api_key = os.getenv("ALPACA_API_KEY")
     secret_key = os.getenv("ALPACA_SECRET_KEY")
 

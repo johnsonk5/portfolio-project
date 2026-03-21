@@ -63,6 +63,33 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | `previous_is_active` | `bool` | Previous active flag. |
 | `new_is_active` | `bool` | New active flag. |
 
+## `silver.universe_membership_events`
+
+*DuckDB Table in silver schema*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `event_date` | `date` | Effective date of the membership change snapshot. |
+| `symbol` | `object` | Canonical ticker symbol from the historical universe file. |
+| `raw_symbol` | `object` | Original token from the source file, including retirement suffixes when present. |
+| `query_symbol` | `object` | Symbol form used for historical Yahoo Finance lookups. |
+| `event_type` | `object` | Membership change classification (`added` or `removed`). |
+| `source` | `object` | Source label for the historical universe CSV. |
+| `ingested_ts` | `timestamp` | ETL ingest timestamp. |
+
+## `silver.universe_membership_daily`
+
+*DuckDB Table in silver schema*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `member_date` | `date` | Calendar date for the expanded daily universe membership. |
+| `symbol` | `object` | Canonical ticker symbol from the historical universe file. |
+| `raw_symbol` | `object` | Original token from the source file, including retirement suffixes when present. |
+| `query_symbol` | `object` | Symbol form used for historical Yahoo Finance lookups. |
+| `source` | `object` | Source label for the historical universe CSV. |
+| `ingested_ts` | `timestamp` | ETL ingest timestamp. |
+
 ## `silver.ref_sp500`
 
 *DuckDB Table in silver schema*
@@ -142,3 +169,4 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | `frequency` | `object` | Frequency label (`daily`). |
 | `ingested_ts` | `timestamp` | Bronze ingest timestamp carried forward. |
 | `bronze_snapshot_date` | `date` | Bronze snapshot date used to build the silver parquet files. |
+
