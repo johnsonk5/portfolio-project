@@ -66,7 +66,7 @@ DQ checks run on successful runs and write to `observability.data_quality_checks
 
 ## DuckDB Concurrency Safety
 
-DuckDB access uses filesystem locking at `data/duckdb/.duckdb_write.lock` (or configured DuckDB directory).
+DuckDB access uses filesystem locking with one lock file per database, such as `data/duckdb/.portfolio.duckdb.write.lock` (or the configured DuckDB directory).
 
 ### Locking Behavior
 - Lock acquisition is operation-scoped for DB calls (`execute`, `executemany`, `register`, `commit`).

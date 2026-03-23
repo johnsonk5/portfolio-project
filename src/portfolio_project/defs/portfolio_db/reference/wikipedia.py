@@ -9,7 +9,7 @@ import pandas as pd
 import requests
 from dagster import Array, AssetExecutionContext, DailyPartitionsDefinition, Field, Float, Int, String, asset
 
-from portfolio_project.defs.silver_assets import silver_alpaca_assets
+from portfolio_project.defs.portfolio_db.silver.assets import silver_alpaca_assets
 
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
@@ -312,3 +312,4 @@ def silver_wikipedia_pageviews(context: AssetExecutionContext) -> None:
             "rows_deleted": existing_count,
         }
     )
+

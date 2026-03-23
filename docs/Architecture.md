@@ -38,10 +38,10 @@ This document describes the system architecture and storage layout.
 ## Storage Defaults
 
 - Data root: `PORTFOLIO_DATA_DIR` (default `data`).
-- DuckDB path default: `data/duckdb/portfolio.duckdb`.
-- Optional override: `PORTFOLIO_DUCKDB_PATH`.
+- DuckDB path defaults: `data/duckdb/portfolio.duckdb` for the live/app store and `data/duckdb/research.duckdb` for research workflows.
+- Optional overrides: `PORTFOLIO_DUCKDB_PATH` and `PORTFOLIO_RESEARCH_DUCKDB_PATH`.
 
 ## Concurrency and Safety
 
-- Filesystem lock controls DuckDB operations (`.duckdb_write.lock`).
+- A per-database filesystem lock controls DuckDB operations (for example `.portfolio.duckdb.write.lock`).
 - Lock is operation-scoped to avoid blocking while waiting on external APIs.

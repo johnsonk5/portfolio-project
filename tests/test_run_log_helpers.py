@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from dagster import DagsterEventType
 
-from portfolio_project.defs.run_log import (
+from portfolio_project.defs.portfolio_db.observability.run_log import (
     _collect_materialization_asset_metrics,
     _collect_materialization_metrics,
     _is_us_trading_day,

@@ -32,7 +32,7 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 
 ## `silver.prices`
 
-*Partitioned Parquet file*
+*Parquet file*
 
 | Column | Type | Description |
 | --- | --- | --- |
@@ -62,6 +62,56 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | `change_ts` | `timestamp` | Timestamp of change (UTC). |
 | `previous_is_active` | `bool` | Previous active flag. |
 | `new_is_active` | `bool` | New active flag. |
+
+## `silver.research_daily_prices`
+
+*Partitioned Parquet file*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `symbol` | `object` | Canonical ticker symbol. |
+| `timestamp` | `timestamp` | Daily bar timestamp (UTC). |
+| `trade_date` | `date` | Trading date represented by the bar. |
+| `open` | `float` | Open price for the day. |
+| `high` | `float` | High price for the day. |
+| `low` | `float` | Low price for the day. |
+| `close` | `float` | Close price for the day. |
+| `adjusted_close` | `float` | Adjusted close when provided by the source. |
+| `volume` | `int` | Daily share volume. |
+| `trade_count` | `int` | Daily trade count when provided. |
+| `vwap` | `float` | Daily VWAP when provided. |
+| `dollar_volume` | `float` | `close * volume`. |
+| `source` | `object` | Winning upstream provider for the day (`alpaca` preferred over `eodhd`). |
+| `ingested_ts` | `timestamp` | Upstream ingest timestamp carried into silver. |
+
+## `silver.universe_membership_events`
+
+*DuckDB Table in silver schema*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `event_date` | `date` | Trading date where membership changed versus the prior trading day. |
+| `symbol` | `object` | Canonical ticker symbol. |
+| `event_type` | `object` | Membership change classification (`added` or `removed`). |
+| `previous_liquidity_rank` | `int` | Prior-day liquidity rank when the symbol was already in the universe. |
+| `new_liquidity_rank` | `int` | Current-day liquidity rank when the symbol is in the new universe. |
+| `previous_rolling_avg_dollar_volume` | `float` | Prior-day trailing average dollar volume when available. |
+| `new_rolling_avg_dollar_volume` | `float` | Current-day trailing average dollar volume when available. |
+| `source` | `object` | Source label for the liquidity rule. |
+| `ingested_ts` | `timestamp` | ETL ingest timestamp. |
+
+## `silver.universe_membership_daily`
+
+*DuckDB Table in silver schema*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `member_date` | `date` | Trading date for the liquidity-ranked daily universe. |
+| `symbol` | `object` | Canonical ticker symbol. |
+| `liquidity_rank` | `int` | Rank by trailing average dollar volume for that trading day. |
+| `rolling_avg_dollar_volume` | `float` | Trailing average dollar volume used for membership selection. |
+| `source` | `object` | Source label for the liquidity rule. |
+| `ingested_ts` | `timestamp` | ETL ingest timestamp. |
 
 ## `silver.ref_sp500`
 
@@ -125,3 +175,21 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | `view_date` | `date` | Normalized view date. |
 | `views` | `int` | Pageview count. |
 | `ingested_ts` | `timestamp` | Ingest timestamp. |
+
+## `silver.factors`
+
+*Parquet file*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `factor_date` | `date` | Trading date for the factor observation. |
+| `mkt_rf` | `float` | Market excess return (`MKT-RF`). |
+| `smb` | `float` | Size factor (`SMB`). |
+| `hml` | `float` | Value factor (`HML`). |
+| `rf` | `float` | Daily risk-free rate (`RF`). |
+| `mom` | `float` | Daily momentum factor (`MOM`). |
+| `source` | `object` | Source label for the Kenneth R. French Data Library. |
+| `frequency` | `object` | Frequency label (`daily`). |
+| `ingested_ts` | `timestamp` | Bronze ingest timestamp carried forward. |
+| `bronze_snapshot_date` | `date` | Bronze snapshot date used to build the silver parquet files. |
+

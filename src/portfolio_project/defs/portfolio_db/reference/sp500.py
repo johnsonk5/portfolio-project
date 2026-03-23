@@ -6,7 +6,7 @@ import pandas as pd
 import requests
 from dagster import AssetExecutionContext, asset
 
-from portfolio_project.defs.silver_assets import silver_alpaca_assets
+from portfolio_project.defs.portfolio_db.silver.assets import silver_alpaca_assets
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 SP500_WIKIPEDIA_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
@@ -135,3 +135,4 @@ def silver_sp500_companies(context: AssetExecutionContext) -> None:
             "missing_asset_id_count": int(missing_assets),
         }
     )
+

@@ -10,6 +10,27 @@ Build daily prices and factors for active symbols.
 ### Flow
 - `bronze_alpaca_bars` -> `silver_alpaca_prices_parquet` -> `gold_alpaca_prices`
 
+## Research Daily Prices Assets
+
+### Purpose
+Build merged research daily prices and a liquidity-based universe history.
+
+### Flow
+- `bronze_eodhd_prices_daily` + `bronze_alpaca_prices_daily` -> `silver.research_daily_prices`
+- `silver.research_daily_prices` -> `silver.universe_membership_daily` -> `silver.universe_membership_events`
+
+## `research_daily_prices_job`
+
+### Purpose
+Refresh the recent-window research price history from Alpaca and rebuild the downstream silver research prices plus liquidity-universe tables.
+
+### Flow
+- `bronze_alpaca_prices_daily` -> `silver.research_daily_prices` -> `silver.universe_membership_daily` -> `silver.universe_membership_events`
+
+### Schedule
+- `research_daily_prices_schedule`: `35 9 * * *` America/New_York.
+- Uses previous US trading day as partition key.
+
 ### Schedule
 - `daily_prices_schedule`: `30 9 * * *` America/New_York.
 - Uses previous US trading day as partition key.
@@ -95,3 +116,14 @@ These jobs use success and failure hooks:
 - `dagster_run_log_failure`
 
 Success hook writes run log data and triggers freshness and DQ checks.
+
+## `monthly_factors_job`
+
+### Purpose
+Ingest Kenneth French factor data and rebuild the silver factors parquet history.
+
+### Flow
+- `bronze_fama_french_factors` -> `silver_fama_french_factors_parquet`
+
+### Schedule
+- `monthly_factors_schedule`: `15 9 1 * *` America/New_York. Runs once a month on the 1st at 9:15 AM ET.

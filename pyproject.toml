@@ -63,7 +63,7 @@ warn_return_any = false
 check_untyped_defs = false
 files = [
     "src/portfolio_project/definitions.py",
-    "src/portfolio_project/defs/run_log.py",
+    "src/portfolio_project/defs/portfolio_db/observability/run_log.py",
     "tests",
 ]
 
@@ -73,5 +73,6 @@ pythonpath = ["src"]
 markers = [
     "smoke: pipeline smoke tests that run a tiny fixture dataset",
 ]
+
 
 
