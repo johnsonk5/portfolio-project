@@ -13,13 +13,7 @@ def _write_bronze_prices(
     partition_key: str,
     frame: pd.DataFrame,
 ) -> None:
-    out_path = (
-        data_root
-        / "bronze"
-        / dataset_name
-        / f"date={partition_key}"
-        / "prices.parquet"
-    )
+    out_path = data_root / "bronze" / dataset_name / f"date={partition_key}" / "prices.parquet"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(out_path, index=False)
 

@@ -120,13 +120,7 @@ def test_bronze_alpaca_prices_daily_writes_partition(tmp_path: Path, monkeypatch
     )
     research_prices_module.bronze_alpaca_prices_daily(context)
 
-    out_path = (
-        data_root
-        / "bronze"
-        / "alpaca_prices_daily"
-        / "date=2020-01-02"
-        / "prices.parquet"
-    )
+    out_path = data_root / "bronze" / "alpaca_prices_daily" / "date=2020-01-02" / "prices.parquet"
     assert out_path.exists()
 
     out_df = pd.read_parquet(out_path)
@@ -158,13 +152,7 @@ def test_bronze_eodhd_prices_daily_writes_partition(tmp_path: Path) -> None:
     )
     research_prices_module.bronze_eodhd_prices_daily(context)
 
-    out_path = (
-        data_root
-        / "bronze"
-        / "eodhd_prices_daily"
-        / "date=2005-06-15"
-        / "prices.parquet"
-    )
+    out_path = data_root / "bronze" / "eodhd_prices_daily" / "date=2005-06-15" / "prices.parquet"
     assert out_path.exists()
 
     out_df = pd.read_parquet(out_path)
