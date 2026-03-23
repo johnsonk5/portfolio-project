@@ -15,7 +15,7 @@ from dagster import (
 )
 
 from portfolio_project.defs.portfolio_db.observability.data_quality import write_data_quality_checks
-from portfolio_project.defs.portfolio_db.resources.duckdb import (
+from portfolio_project.defs.resources.duckdb import (
     _acquire_duckdb_lock,
     _release_duckdb_lock,
     duckdb_lock_path_for,

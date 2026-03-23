@@ -27,7 +27,8 @@ This project uses a medallion architecture with the following specs:
 
 ## Data Sources
 
-* Alpaca API - For stock data and to build the assets table.
+* Alpaca API - For stock data, assets metadata, and recent-window daily research prices.
+* EODHD API - For broad historical daily US equity prices in the research bronze layer.
 * Wikimedia REST API - Ingest page views data to track attention trends.
 * Yahoo News API - Ingest headlines.
 * Tranco API - Publisher rankings for sentiment scores.
@@ -100,8 +101,7 @@ streamlit run streamlit_app.py
 For environment variables and defaults, use:
 - [`docs/.env.sample`](docs/.env.sample)
 
-Be sure to add your Alpaca API key and Secret Key to the .env file so that the pipelines can run.
+Be sure to add your Alpaca API keys and, if running the research daily price assets, your EODHD API key to the `.env` file.
 
 For reliability behavior (including DuckDB locking, freshness, and data quality checks), see:
 - [`docs/Reliability.md`](docs/Reliability.md)
-

@@ -7,13 +7,15 @@ from typing import Optional
 
 import duckdb
 
-from portfolio_project.defs.portfolio_db.resources.duckdb import (
+from portfolio_project.defs.portfolio_db.observability.observability_modules import (
+    ensure_data_quality_table,
+)
+from portfolio_project.defs.resources.duckdb import (
     _acquire_duckdb_lock,
     _release_duckdb_lock,
     duckdb_lock_path_for,
     resolve_duckdb_path,
 )
-from portfolio_project.defs.portfolio_db.observability.observability_modules import ensure_data_quality_table
 
 
 def _severity_for_check(check_name: str, threshold_value: Optional[float]) -> str:

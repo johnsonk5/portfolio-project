@@ -6,7 +6,6 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
-import requests
 from dagster import (
     Array,
     AssetExecutionContext,
@@ -19,25 +18,28 @@ from dagster import (
 )
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
-RESEARCH_PRICES_PARTITIONS_START_DATE = os.getenv(
-    "RESEARCH_PRICES_PARTITIONS_START_DATE", "2000-01-01"
+RESEARCH_EODHD_PRICES_PARTITIONS_START_DATE = os.getenv(
+    "RESEARCH_EODHD_PRICES_PARTITIONS_START_DATE", "2000-01-01"
 )
-RESEARCH_PRICES_PARTITIONS = DailyPartitionsDefinition(
+RESEARCH_ALPACA_PRICES_PARTITIONS_START_DATE = os.getenv(
+    "RESEARCH_ALPACA_PRICES_PARTITIONS_START_DATE", "2016-01-01"
+)
+RESEARCH_PRICES_PARTITIONS_START_DATE = os.getenv(
+    "RESEARCH_PRICES_PARTITIONS_START_DATE",
+    RESEARCH_EODHD_PRICES_PARTITIONS_START_DATE,
+)
+EODHD_PRICES_PARTITIONS = DailyPartitionsDefinition(
     start_date=RESEARCH_PRICES_PARTITIONS_START_DATE
 )
-YAHOO_FINANCE_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-ALPACA_CUTOFF_DATE = date(2016, 1, 1)
+ALPACA_PRICES_PARTITIONS = DailyPartitionsDefinition(
+    start_date=RESEARCH_PRICES_PARTITIONS_START_DATE
+)
 DEFAULT_EXCEPTION_SYMBOLS = ("SPY",)
 ALPACA_BATCH_SIZE = int(os.getenv("RESEARCH_ALPACA_SYMBOL_BATCH_SIZE", "200"))
 ALPACA_REQUEST_SLEEP_SECONDS = float(os.getenv("RESEARCH_ALPACA_REQUEST_SLEEP_SECONDS", "0.25"))
 ALPACA_REQUEST_MAX_RETRIES = int(os.getenv("RESEARCH_ALPACA_REQUEST_MAX_RETRIES", "4"))
 ALPACA_REQUEST_RETRY_BASE_SECONDS = float(
     os.getenv("RESEARCH_ALPACA_REQUEST_RETRY_BASE_SECONDS", "1.0")
-)
-YAHOO_REQUEST_SLEEP_SECONDS = float(os.getenv("RESEARCH_YAHOO_REQUEST_SLEEP_SECONDS", "0.4"))
-YAHOO_REQUEST_MAX_RETRIES = int(os.getenv("RESEARCH_YAHOO_REQUEST_MAX_RETRIES", "4"))
-YAHOO_REQUEST_RETRY_BASE_SECONDS = float(
-    os.getenv("RESEARCH_YAHOO_REQUEST_RETRY_BASE_SECONDS", "1.5")
 )
 
 _COMMON_STOCK_EXCLUSION_RE = re.compile(
@@ -60,6 +62,25 @@ def _normalize_symbols(symbols: list[str] | None) -> list[str]:
     if not symbols:
         return []
     return sorted({str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()})
+
+
+def _force_include_exception_symbols(symbols: list[str]) -> list[str]:
+    symbol_set = {symbol for symbol in symbols if symbol}
+    for symbol in DEFAULT_EXCEPTION_SYMBOLS:
+        symbol_set.add(symbol)
+    return sorted(symbol_set)
+
+
+def _apply_max_symbol_limit(symbols: list[str], max_symbols: int | None) -> list[str]:
+    if max_symbols is None or max_symbols <= 0 or len(symbols) <= max_symbols:
+        return symbols
+
+    if "SPY" in symbols and max_symbols >= 1:
+        limited_symbols = [symbol for symbol in symbols if symbol != "SPY"][: max_symbols - 1]
+        limited_symbols.append("SPY")
+        return sorted(limited_symbols)
+
+    return symbols[:max_symbols]
 
 
 def _coerce_bool(value: object) -> bool:
@@ -93,6 +114,12 @@ def _is_probable_common_equity(asset_row: pd.Series) -> bool:
     attributes = asset_row.get("attributes")
     if isinstance(attributes, (list, tuple, set)):
         searchable_fields.extend(str(value) for value in attributes if value is not None)
+    elif hasattr(attributes, "tolist"):
+        attribute_values = attributes.tolist()
+        if isinstance(attribute_values, list):
+            searchable_fields.extend(str(value) for value in attribute_values if value is not None)
+        elif attribute_values is not None and not pd.isna(attribute_values):
+            searchable_fields.append(str(attribute_values))
     elif attributes is not None and not pd.isna(attributes):
         searchable_fields.append(str(attributes))
 
@@ -103,42 +130,36 @@ def _is_probable_common_equity(asset_row: pd.Series) -> bool:
     return True
 
 
-def _resolve_research_symbols(
+def _resolve_alpaca_symbols(
     context: AssetExecutionContext,
     configured_symbols: list[str] | None = None,
     max_symbols: int | None = None,
 ) -> list[str]:
     configured = _normalize_symbols(configured_symbols)
     if configured:
-        return configured[:max_symbols] if max_symbols else configured
+        configured = _force_include_exception_symbols(configured)
+        return _apply_max_symbol_limit(configured, max_symbols=max_symbols)
 
     assets_df = context.resources.alpaca.get_assets_df()
     if assets_df is None or assets_df.empty:
         context.log.warning("Alpaca asset universe returned no rows.")
-        return list(DEFAULT_EXCEPTION_SYMBOLS)
+        return _apply_max_symbol_limit(
+            _force_include_exception_symbols([]),
+            max_symbols=max_symbols,
+        )
 
-    filtered_symbols = sorted(
-        {
-            str(row["symbol"]).strip().upper()
-            for _, row in assets_df.iterrows()
-            if row.get("symbol") and _is_probable_common_equity(row)
-        }
-    )
-
-    for symbol in DEFAULT_EXCEPTION_SYMBOLS:
-        if symbol not in filtered_symbols:
-            filtered_symbols.append(symbol)
-
-    filtered_symbols = sorted(set(filtered_symbols))
-    if max_symbols is not None and max_symbols > 0:
-        filtered_symbols = filtered_symbols[:max_symbols]
-    return filtered_symbols
+    symbols = [
+        str(row["symbol"]).strip().upper()
+        for _, row in assets_df.iterrows()
+        if row.get("symbol") and _is_probable_common_equity(row)
+    ]
+    symbols = _force_include_exception_symbols(sorted(set(symbols)))
+    return _apply_max_symbol_limit(symbols, max_symbols=max_symbols)
 
 
-def _normalize_research_bars_df(
+def _normalize_alpaca_daily_bars_df(
     df: pd.DataFrame,
     partition_date: date,
-    source: str,
 ) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
@@ -160,11 +181,13 @@ def _normalize_research_bars_df(
     if normalized.empty:
         return pd.DataFrame()
 
+    if "adjusted_close" not in normalized.columns:
+        normalized["adjusted_close"] = pd.NA
     for optional_col in ["trade_count", "vwap"]:
         if optional_col not in normalized.columns:
             normalized[optional_col] = pd.NA
 
-    normalized["source"] = source
+    normalized["source"] = "alpaca"
     normalized["ingested_ts"] = datetime.now(timezone.utc)
     ordered_columns = [
         "symbol",
@@ -174,6 +197,7 @@ def _normalize_research_bars_df(
         "high",
         "low",
         "close",
+        "adjusted_close",
         "volume",
         "trade_count",
         "vwap",
@@ -182,6 +206,93 @@ def _normalize_research_bars_df(
     ]
     existing_columns = [column for column in ordered_columns if column in normalized.columns]
     return normalized[existing_columns].sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+
+
+def _normalize_eodhd_daily_bars_df(
+    df: pd.DataFrame,
+    partition_date: date,
+) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    normalized = df.copy()
+    symbol_col = None
+    for candidate in ["code", "symbol"]:
+        if candidate in normalized.columns:
+            symbol_col = candidate
+            break
+    if symbol_col is None:
+        return pd.DataFrame()
+
+    date_col = (
+        "date"
+        if "date" in normalized.columns
+        else "trade_date" if "trade_date" in normalized.columns else None
+    )
+    if date_col is None:
+        return pd.DataFrame()
+
+    normalized["symbol"] = normalized[symbol_col].astype(str).str.strip().str.upper()
+    normalized["trade_date"] = pd.to_datetime(normalized[date_col], errors="coerce").dt.date
+    normalized = normalized[normalized["trade_date"] == partition_date].copy()
+    normalized = normalized[normalized["symbol"].ne("")].copy()
+    if normalized.empty:
+        return pd.DataFrame()
+
+    normalized["timestamp"] = pd.to_datetime(normalized["trade_date"], utc=True) + pd.Timedelta(
+        hours=21
+    )
+    if "adjusted_close" not in normalized.columns:
+        normalized["adjusted_close"] = pd.NA
+    for optional_col in ["trade_count", "vwap"]:
+        normalized[optional_col] = pd.NA
+
+    normalized["source"] = "eodhd"
+    normalized["ingested_ts"] = datetime.now(timezone.utc)
+    ordered_columns = [
+        "symbol",
+        "timestamp",
+        "trade_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "adjusted_close",
+        "volume",
+        "trade_count",
+        "vwap",
+        "source",
+        "ingested_ts",
+    ]
+    existing_columns = [column for column in ordered_columns if column in normalized.columns]
+    return normalized[existing_columns].sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+
+
+def _filter_day_df_to_symbols(
+    day_df: pd.DataFrame,
+    configured_symbols: list[str] | None = None,
+    max_symbols: int | None = None,
+) -> pd.DataFrame:
+    if day_df is None or day_df.empty:
+        return pd.DataFrame()
+
+    configured = _normalize_symbols(configured_symbols)
+    if configured:
+        allowed_symbols = set(_force_include_exception_symbols(configured))
+        filtered = day_df[day_df["symbol"].isin(allowed_symbols)].copy()
+    else:
+        filtered = day_df.copy()
+
+    if filtered.empty:
+        return filtered
+
+    if max_symbols is None or max_symbols <= 0:
+        return filtered.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+
+    available_symbols = sorted(filtered["symbol"].dropna().astype(str).unique())
+    limited_symbols = set(_apply_max_symbol_limit(available_symbols, max_symbols))
+    filtered = filtered[filtered["symbol"].isin(limited_symbols)].copy()
+    return filtered.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
 
 
 def _fetch_alpaca_daily_bars_with_retry(
@@ -227,7 +338,7 @@ def _fetch_alpaca_daily_bars_for_day(
     symbol_batches = _chunked(symbols, batch_size)
     for index, symbol_batch in enumerate(symbol_batches):
         batch_df = _fetch_alpaca_daily_bars_with_retry(context, symbol_batch, start_dt, end_dt)
-        normalized = _normalize_research_bars_df(batch_df, partition_date, source="alpaca")
+        normalized = _normalize_alpaca_daily_bars_df(batch_df, partition_date)
         if not normalized.empty:
             frames.append(normalized)
         if request_sleep_seconds > 0 and index < len(symbol_batches) - 1:
@@ -238,149 +349,86 @@ def _fetch_alpaca_daily_bars_for_day(
     return pd.concat(frames, ignore_index=True)
 
 
-def _make_yahoo_session() -> requests.Session:
-    session = requests.Session()
-    session.headers.update(
-        {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0 Safari/537.36"
-            )
-        }
-    )
-    return session
-
-
-def _fetch_yahoo_chart_json(
-    session: requests.Session,
-    symbol: str,
-    partition_date: date,
-) -> dict | None:
-    start_dt = datetime.combine(
-        partition_date - timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc
-    )
-    end_dt = datetime.combine(
-        partition_date + timedelta(days=2), datetime.min.time(), tzinfo=timezone.utc
-    )
-    params = {
-        "period1": int(start_dt.timestamp()),
-        "period2": int(end_dt.timestamp()),
-        "interval": "1d",
-        "includePrePost": "false",
-        "events": "div,splits",
-    }
-
-    max_attempts = YAHOO_REQUEST_MAX_RETRIES + 1
-    url = YAHOO_FINANCE_CHART_URL.format(symbol=symbol)
-    for attempt in range(1, max_attempts + 1):
-        response = session.get(url, params=params, timeout=20)
-        if response.status_code < 400:
-            payload = response.json()
-            result = ((payload.get("chart") or {}).get("result") or [None])[0]
-            return result
-
-        retryable = response.status_code in {429, 500, 502, 503, 504}
-        if not retryable or attempt == max_attempts:
-            response.raise_for_status()
-
-        sleep_seconds = YAHOO_REQUEST_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
-        time.sleep(sleep_seconds)
-    return None
-
-
-def _normalize_yahoo_result(
-    symbol: str,
-    partition_date: date,
-    result: dict | None,
-) -> pd.DataFrame:
-    if not result:
-        return pd.DataFrame()
-
-    timestamps = result.get("timestamp") or []
-    quote = (((result.get("indicators") or {}).get("quote") or [None])[0]) or {}
-    if not timestamps or not quote:
-        return pd.DataFrame()
-
-    lengths = [len(timestamps)]
-    lengths.extend(len(values) for values in quote.values() if isinstance(values, list))
-    row_count = min(lengths)
-    if row_count <= 0:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(
-        {
-            "symbol": [symbol.upper()] * row_count,
-            "timestamp": pd.to_datetime(timestamps[:row_count], unit="s", utc=True),
-            "open": quote.get("open", [])[:row_count],
-            "high": quote.get("high", [])[:row_count],
-            "low": quote.get("low", [])[:row_count],
-            "close": quote.get("close", [])[:row_count],
-            "volume": quote.get("volume", [])[:row_count],
-        }
-    )
-    return _normalize_research_bars_df(df, partition_date, source="yahoo_finance")
-
-
-def _fetch_yahoo_daily_bars_for_day(
-    context: AssetExecutionContext,
-    partition_date: date,
-    symbols: list[str],
-    request_sleep_seconds: float,
-) -> pd.DataFrame:
-    session = _make_yahoo_session()
-    frames: list[pd.DataFrame] = []
-    for index, symbol in enumerate(symbols):
-        try:
-            result = _fetch_yahoo_chart_json(session, symbol, partition_date)
-            normalized = _normalize_yahoo_result(symbol, partition_date, result)
-            if not normalized.empty:
-                frames.append(normalized)
-        except Exception as exc:
-            context.log.warning("Yahoo Finance research bars failed for %s: %s", symbol, exc)
-        if request_sleep_seconds > 0 and index < len(symbols) - 1:
-            time.sleep(request_sleep_seconds)
-
-    if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
-
-
-def _clear_research_day_partition(partition_date: date) -> None:
-    day_dir = DATA_ROOT / "bronze" / "research_prices_daily" / f"date={partition_date.isoformat()}"
+def _clear_day_partition(dataset_name: str, partition_date: date) -> None:
+    day_dir = DATA_ROOT / "bronze" / dataset_name / f"date={partition_date.isoformat()}"
     if day_dir.exists():
         shutil.rmtree(day_dir)
 
 
-def _write_research_day_symbol_files(
+def _write_day_file(
+    dataset_name: str,
     partition_date: date,
     day_df: pd.DataFrame,
 ) -> tuple[int, int]:
     if day_df is None or day_df.empty:
         return 0, 0
 
-    rows_written = 0
-    files_written = 0
-    for symbol, symbol_df in day_df.groupby("symbol", sort=True):
-        out_path = (
-            DATA_ROOT
-            / "bronze"
-            / "research_prices_daily"
-            / f"date={partition_date.isoformat()}"
-            / f"symbol={symbol}"
-            / "prices.parquet"
-        )
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        symbol_df.to_parquet(out_path, index=False)
-        rows_written += len(symbol_df)
-        files_written += 1
-    return rows_written, files_written
+    out_path = (
+        DATA_ROOT
+        / "bronze"
+        / dataset_name
+        / f"date={partition_date.isoformat()}"
+        / "prices.parquet"
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    (
+        day_df.sort_values(["symbol", "timestamp"])
+        .reset_index(drop=True)
+        .to_parquet(out_path, index=False)
+    )
+    return len(day_df), 1
 
 
 @asset(
-    name="research_prices_daily",
+    name="eodhd_prices_daily",
     key_prefix=["bronze"],
-    partitions_def=RESEARCH_PRICES_PARTITIONS,
+    partitions_def=EODHD_PRICES_PARTITIONS,
+    required_resource_keys={"eodhd"},
+    config_schema={
+        "symbols": Field(Array(String), is_required=False),
+        "max_symbols": Field(Int, is_required=False),
+    },
+)
+def bronze_eodhd_prices_daily(context: AssetExecutionContext) -> None:
+    """
+    Write EODHD daily end-of-day prices to bronze parquet with one file per trading day.
+
+    This asset pulls the full configured exchange from EODHD in bulk, then optionally
+    filters to a configured symbol subset for testing or targeted backfills.
+    """
+    partition_date = datetime.strptime(context.partition_key, "%Y-%m-%d").date()
+    op_config = context.op_execution_context.op_config or {}
+
+    raw_df = context.resources.eodhd.get_bulk_eod_prices_df(partition_date)
+    day_df = _normalize_eodhd_daily_bars_df(raw_df, partition_date)
+    day_df = _filter_day_df_to_symbols(
+        day_df,
+        configured_symbols=op_config.get("symbols"),
+        max_symbols=op_config.get("max_symbols"),
+    )
+
+    dataset_name = "eodhd_prices_daily"
+    _clear_day_partition(dataset_name, partition_date)
+    row_count, files_written = _write_day_file(dataset_name, partition_date, day_df)
+    if row_count == 0:
+        context.log.warning("No EODHD price data returned for partition %s.", context.partition_key)
+        return
+
+    context.add_output_metadata(
+        {
+            "partition": context.partition_key,
+            "source": "eodhd",
+            "symbol_count": int(day_df["symbol"].nunique()),
+            "files_written": files_written,
+            "row_count": row_count,
+        }
+    )
+
+
+@asset(
+    name="alpaca_prices_daily",
+    key_prefix=["bronze"],
+    partitions_def=ALPACA_PRICES_PARTITIONS,
     required_resource_keys={"alpaca"},
     config_schema={
         "symbols": Field(Array(String), is_required=False),
@@ -389,64 +437,50 @@ def _write_research_day_symbol_files(
         "alpaca_request_sleep_seconds": Field(
             Float, is_required=False, default_value=ALPACA_REQUEST_SLEEP_SECONDS
         ),
-        "yahoo_request_sleep_seconds": Field(
-            Float, is_required=False, default_value=YAHOO_REQUEST_SLEEP_SECONDS
-        ),
     },
 )
-def bronze_research_prices_daily(context: AssetExecutionContext) -> None:
+def bronze_alpaca_prices_daily(context: AssetExecutionContext) -> None:
     """
-    Write daily research price bars to bronze parquet partitioned by day and symbol.
+    Write Alpaca daily prices to bronze parquet with one file per trading day.
 
-    The universe is current tradable U.S. common equities from Alpaca, excluding
-    ETFs, OTC issues, preferreds, rights, warrants, and similar instruments.
-    SPY is force-included as a benchmark even though it is an ETF.
+    This recent-window dataset is intentionally separate from EODHD so downstream logic
+    can prefer Alpaca wherever it overlaps and fall back to EODHD elsewhere.
     """
     partition_date = datetime.strptime(context.partition_key, "%Y-%m-%d").date()
     op_config = context.op_execution_context.op_config or {}
-    symbols = _resolve_research_symbols(
+    symbols = _resolve_alpaca_symbols(
         context,
         configured_symbols=op_config.get("symbols"),
         max_symbols=op_config.get("max_symbols"),
     )
     if not symbols:
-        context.log.warning("No symbols resolved for research price ingestion.")
+        context.log.warning("No symbols resolved for Alpaca daily price ingestion.")
         return
 
-    if partition_date >= ALPACA_CUTOFF_DATE:
-        day_df = _fetch_alpaca_daily_bars_for_day(
-            context,
-            partition_date,
-            symbols,
-            batch_size=op_config.get("alpaca_symbol_batch_size", ALPACA_BATCH_SIZE),
-            request_sleep_seconds=op_config.get(
-                "alpaca_request_sleep_seconds", ALPACA_REQUEST_SLEEP_SECONDS
-            ),
-        )
-        source_name = "alpaca"
-    else:
-        day_df = _fetch_yahoo_daily_bars_for_day(
-            context,
-            partition_date,
-            symbols,
-            request_sleep_seconds=op_config.get(
-                "yahoo_request_sleep_seconds", YAHOO_REQUEST_SLEEP_SECONDS
-            ),
-        )
-        source_name = "yahoo_finance"
+    day_df = _fetch_alpaca_daily_bars_for_day(
+        context,
+        partition_date,
+        symbols,
+        batch_size=op_config.get("alpaca_symbol_batch_size", ALPACA_BATCH_SIZE),
+        request_sleep_seconds=op_config.get(
+            "alpaca_request_sleep_seconds", ALPACA_REQUEST_SLEEP_SECONDS
+        ),
+    )
 
-    _clear_research_day_partition(partition_date)
-    row_count, files_written = _write_research_day_symbol_files(partition_date, day_df)
+    dataset_name = "alpaca_prices_daily"
+    _clear_day_partition(dataset_name, partition_date)
+    row_count, files_written = _write_day_file(dataset_name, partition_date, day_df)
     if row_count == 0:
         context.log.warning(
-            "No research price data returned for partition %s.", context.partition_key
+            "No Alpaca price data returned for partition %s.",
+            context.partition_key,
         )
         return
 
     context.add_output_metadata(
         {
             "partition": context.partition_key,
-            "source": source_name,
+            "source": "alpaca",
             "symbol_count": len(symbols),
             "files_written": files_written,
             "row_count": row_count,

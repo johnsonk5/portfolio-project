@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 from dagster import build_asset_context
 
-import portfolio_project.defs.portfolio_db.bronze.research_prices as research_prices_module
+import portfolio_project.defs.research_db.bronze.research_prices as research_prices_module
 
 
 class _FakeAlpacaResource:
@@ -15,7 +15,15 @@ class _FakeAlpacaResource:
         return self._assets_df.copy()
 
 
-def test_resolve_research_symbols_filters_to_common_equities_and_keeps_spy() -> None:
+class _FakeEODHDResource:
+    def __init__(self, daily_df: pd.DataFrame | None = None) -> None:
+        self._daily_df = daily_df if daily_df is not None else pd.DataFrame()
+
+    def get_bulk_eod_prices_df(self, trade_date: date) -> pd.DataFrame:
+        return self._daily_df.copy()
+
+
+def test_resolve_alpaca_symbols_filters_to_common_equities_and_keeps_spy() -> None:
     assets_df = pd.DataFrame(
         [
             {
@@ -62,12 +70,12 @@ def test_resolve_research_symbols_filters_to_common_equities_and_keeps_spy() -> 
     )
     context = build_asset_context(resources={"alpaca": _FakeAlpacaResource(assets_df)})
 
-    symbols = research_prices_module._resolve_research_symbols(context)
+    symbols = research_prices_module._resolve_alpaca_symbols(context)
 
     assert symbols == ["AAPL", "SPY"]
 
 
-def test_bronze_research_prices_daily_writes_alpaca_partition(tmp_path: Path, monkeypatch) -> None:
+def test_bronze_alpaca_prices_daily_writes_partition(tmp_path: Path, monkeypatch) -> None:
     data_root = tmp_path / "data"
     research_prices_module.DATA_ROOT = data_root
 
@@ -89,6 +97,7 @@ def test_bronze_research_prices_daily_writes_alpaca_partition(tmp_path: Path, mo
                 "high": [101.0, 201.0],
                 "low": [99.0, 199.0],
                 "close": [100.5, 200.5],
+                "adjusted_close": [pd.NA, pd.NA],
                 "volume": [1000, 2000],
                 "trade_count": [10, 20],
                 "vwap": [100.2, 200.2],
@@ -100,95 +109,54 @@ def test_bronze_research_prices_daily_writes_alpaca_partition(tmp_path: Path, mo
             }
         )
 
-    def fail_yahoo(*args, **kwargs):
-        raise AssertionError("Yahoo path should not be used for 2020 partitions")
-
-    monkeypatch.setattr(research_prices_module, "_resolve_research_symbols", fake_resolve_symbols)
+    monkeypatch.setattr(research_prices_module, "_resolve_alpaca_symbols", fake_resolve_symbols)
     monkeypatch.setattr(
         research_prices_module, "_fetch_alpaca_daily_bars_for_day", fake_fetch_alpaca
     )
-    monkeypatch.setattr(research_prices_module, "_fetch_yahoo_daily_bars_for_day", fail_yahoo)
 
     context = build_asset_context(
         resources={"alpaca": _FakeAlpacaResource()},
         partition_key="2020-01-02",
     )
-    research_prices_module.bronze_research_prices_daily(context)
+    research_prices_module.bronze_alpaca_prices_daily(context)
 
-    aapl_path = (
-        data_root
-        / "bronze"
-        / "research_prices_daily"
-        / "date=2020-01-02"
-        / "symbol=AAPL"
-        / "prices.parquet"
-    )
-    msft_path = (
-        data_root
-        / "bronze"
-        / "research_prices_daily"
-        / "date=2020-01-02"
-        / "symbol=MSFT"
-        / "prices.parquet"
-    )
-    assert aapl_path.exists()
-    assert msft_path.exists()
+    out_path = data_root / "bronze" / "alpaca_prices_daily" / "date=2020-01-02" / "prices.parquet"
+    assert out_path.exists()
 
-    aapl_df = pd.read_parquet(aapl_path)
-    assert len(aapl_df) == 1
-    assert aapl_df.loc[0, "source"] == "alpaca"
+    out_df = pd.read_parquet(out_path)
+    assert len(out_df) == 2
+    assert set(out_df["symbol"]) == {"AAPL", "MSFT"}
+    assert set(out_df["source"]) == {"alpaca"}
 
 
-def test_bronze_research_prices_daily_writes_yahoo_partition(tmp_path: Path, monkeypatch) -> None:
+def test_bronze_eodhd_prices_daily_writes_partition(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     research_prices_module.DATA_ROOT = data_root
 
-    def fake_resolve_symbols(context, configured_symbols=None, max_symbols=None):
-        return ["AAPL"]
-
-    def fail_alpaca(*args, **kwargs):
-        raise AssertionError("Alpaca path should not be used for pre-2016 partitions")
-
-    def fake_fetch_yahoo(context, partition_date, symbols, request_sleep_seconds):
-        assert partition_date == date(2005, 6, 15)
-        assert symbols == ["AAPL"]
-        return pd.DataFrame(
-            {
-                "symbol": ["AAPL"],
-                "timestamp": [datetime(2005, 6, 15, 20, 0, tzinfo=timezone.utc)],
-                "trade_date": [date(2005, 6, 15)],
-                "open": [35.0],
-                "high": [36.0],
-                "low": [34.5],
-                "close": [35.5],
-                "volume": [500000],
-                "trade_count": [pd.NA],
-                "vwap": [pd.NA],
-                "source": ["yahoo_finance"],
-                "ingested_ts": [datetime.now(timezone.utc)],
-            }
-        )
-
-    monkeypatch.setattr(research_prices_module, "_resolve_research_symbols", fake_resolve_symbols)
-    monkeypatch.setattr(research_prices_module, "_fetch_alpaca_daily_bars_for_day", fail_alpaca)
-    monkeypatch.setattr(research_prices_module, "_fetch_yahoo_daily_bars_for_day", fake_fetch_yahoo)
+    raw_df = pd.DataFrame(
+        {
+            "code": ["AAPL", "BF.B", "SPY"],
+            "date": ["2005-06-15", "2005-06-15", "2005-06-15"],
+            "open": [35.0, 50.0, 120.0],
+            "high": [36.0, 51.0, 121.0],
+            "low": [34.5, 49.0, 119.0],
+            "close": [35.5, 50.5, 120.5],
+            "adjusted_close": [35.4, 50.4, 120.4],
+            "volume": [500000, 100000, 750000],
+        }
+    )
 
     context = build_asset_context(
-        resources={"alpaca": _FakeAlpacaResource()},
+        resources={"eodhd": _FakeEODHDResource(raw_df)},
         partition_key="2005-06-15",
     )
-    research_prices_module.bronze_research_prices_daily(context)
+    research_prices_module.bronze_eodhd_prices_daily(context)
 
-    out_path = (
-        data_root
-        / "bronze"
-        / "research_prices_daily"
-        / "date=2005-06-15"
-        / "symbol=AAPL"
-        / "prices.parquet"
-    )
+    out_path = data_root / "bronze" / "eodhd_prices_daily" / "date=2005-06-15" / "prices.parquet"
     assert out_path.exists()
 
-    df = pd.read_parquet(out_path)
-    assert len(df) == 1
-    assert df.loc[0, "source"] == "yahoo_finance"
+    out_df = pd.read_parquet(out_path)
+    assert len(out_df) == 3
+    assert set(out_df["symbol"]) == {"AAPL", "BF.B", "SPY"}
+    assert set(out_df["source"]) == {"eodhd"}
+    assert float(out_df.loc[out_df["symbol"] == "AAPL", "adjusted_close"].iloc[0]) == 35.4

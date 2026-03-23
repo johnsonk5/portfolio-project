@@ -39,7 +39,7 @@ All of the tables in this layer are partitioned parquet files unless otherwise s
 | `attributes` | `object` | Additional source attributes. |
 | `ingested_ts` | `datetime64[us]` | Ingest timestamp. |
 
-## `bronze.research_prices_daily`
+## `bronze.alpaca_prices_daily`
 
 | Column | Type | Description |
 | --- | --- | --- |
@@ -50,10 +50,29 @@ All of the tables in this layer are partitioned parquet files unless otherwise s
 | `high` | `float` | High price for the day. |
 | `low` | `float` | Low price for the day. |
 | `close` | `float` | Close price for the day. |
+| `adjusted_close` | `float` | Adjusted close when available; null for Alpaca raw bars. |
 | `volume` | `int` | Daily share volume. |
 | `trade_count` | `int` | Daily trade count when the source provides it. |
 | `vwap` | `float` | Daily VWAP when the source provides it. |
-| `source` | `object` | Upstream source (`alpaca` or `yahoo_finance`). |
+| `source` | `object` | Upstream source (`alpaca`). |
+| `ingested_ts` | `timestamp` | Ingest timestamp. |
+
+## `bronze.eodhd_prices_daily`
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `symbol` | `object` | Ticker symbol. |
+| `timestamp` | `timestamp` | Synthetic end-of-day timestamp (UTC) for the trading session. |
+| `trade_date` | `date` | Trading date from EODHD. |
+| `open` | `float` | Open price for the day. |
+| `high` | `float` | High price for the day. |
+| `low` | `float` | Low price for the day. |
+| `close` | `float` | Close price for the day. |
+| `adjusted_close` | `float` | Adjusted close from EODHD when provided. |
+| `volume` | `int` | Daily share volume. |
+| `trade_count` | `int` | Daily trade count when the source provides it. |
+| `vwap` | `float` | Daily VWAP when the source provides it. |
+| `source` | `object` | Upstream source (`eodhd`). |
 | `ingested_ts` | `timestamp` | Ingest timestamp. |
 
 ## `bronze.sp500_companies`
