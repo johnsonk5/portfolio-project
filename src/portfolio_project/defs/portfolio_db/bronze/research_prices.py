@@ -24,11 +24,15 @@ RESEARCH_EODHD_PRICES_PARTITIONS_START_DATE = os.getenv(
 RESEARCH_ALPACA_PRICES_PARTITIONS_START_DATE = os.getenv(
     "RESEARCH_ALPACA_PRICES_PARTITIONS_START_DATE", "2016-01-01"
 )
+RESEARCH_PRICES_PARTITIONS_START_DATE = os.getenv(
+    "RESEARCH_PRICES_PARTITIONS_START_DATE",
+    RESEARCH_EODHD_PRICES_PARTITIONS_START_DATE,
+)
 EODHD_PRICES_PARTITIONS = DailyPartitionsDefinition(
-    start_date=RESEARCH_EODHD_PRICES_PARTITIONS_START_DATE
+    start_date=RESEARCH_PRICES_PARTITIONS_START_DATE
 )
 ALPACA_PRICES_PARTITIONS = DailyPartitionsDefinition(
-    start_date=RESEARCH_ALPACA_PRICES_PARTITIONS_START_DATE
+    start_date=RESEARCH_PRICES_PARTITIONS_START_DATE
 )
 DEFAULT_EXCEPTION_SYMBOLS = ("SPY",)
 ALPACA_BATCH_SIZE = int(os.getenv("RESEARCH_ALPACA_SYMBOL_BATCH_SIZE", "200"))
@@ -220,7 +224,11 @@ def _normalize_eodhd_daily_bars_df(
     if symbol_col is None:
         return pd.DataFrame()
 
-    date_col = "date" if "date" in normalized.columns else "trade_date" if "trade_date" in normalized.columns else None
+    date_col = (
+        "date"
+        if "date" in normalized.columns
+        else "trade_date" if "trade_date" in normalized.columns else None
+    )
     if date_col is None:
         return pd.DataFrame()
 
@@ -363,7 +371,11 @@ def _write_day_file(
         / "prices.parquet"
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    day_df.sort_values(["symbol", "timestamp"]).reset_index(drop=True).to_parquet(out_path, index=False)
+    (
+        day_df.sort_values(["symbol", "timestamp"])
+        .reset_index(drop=True)
+        .to_parquet(out_path, index=False)
+    )
     return len(day_df), 1
 
 
@@ -459,7 +471,10 @@ def bronze_alpaca_prices_daily(context: AssetExecutionContext) -> None:
     _clear_day_partition(dataset_name, partition_date)
     row_count, files_written = _write_day_file(dataset_name, partition_date, day_df)
     if row_count == 0:
-        context.log.warning("No Alpaca price data returned for partition %s.", context.partition_key)
+        context.log.warning(
+            "No Alpaca price data returned for partition %s.",
+            context.partition_key,
+        )
         return
 
     context.add_output_metadata(

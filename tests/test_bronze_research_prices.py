@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 from dagster import build_asset_context
 
-import portfolio_project.defs.portfolio_db.bronze.research_prices as research_prices_module
+import portfolio_project.defs.research_db.bronze.research_prices as research_prices_module
 
 
 class _FakeAlpacaResource:

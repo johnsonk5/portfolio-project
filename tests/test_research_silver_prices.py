@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 from dagster import build_asset_context
 
-import portfolio_project.defs.portfolio_db.silver.research_prices as research_silver_prices_module
+import portfolio_project.defs.research_db.silver.research_prices as research_silver_prices_module
 
 
 def _write_bronze_prices(

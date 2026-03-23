@@ -5,8 +5,8 @@ import duckdb
 import pandas as pd
 from dagster import materialize
 
-import portfolio_project.defs.portfolio_db.silver.factors as factors_module
-from portfolio_project.defs.portfolio_db.silver.factors import (
+import portfolio_project.defs.research_db.silver.factors as factors_module
+from portfolio_project.defs.research_db.silver.factors import (
     _latest_bronze_factors_snapshot,
     silver_fama_french_factors_parquet,
 )

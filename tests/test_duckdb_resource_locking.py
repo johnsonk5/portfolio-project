@@ -4,8 +4,8 @@ import time
 import pytest
 from dagster import DagsterResourceFunctionError, build_resources
 
-import portfolio_project.defs.portfolio_db.resources.duckdb as duckdb_resource_module
-from portfolio_project.defs.portfolio_db.resources.duckdb import (
+import portfolio_project.defs.resources.duckdb as duckdb_resource_module
+from portfolio_project.defs.resources.duckdb import (
     _acquire_duckdb_lock,
     _release_duckdb_lock,
     duckdb_lock_path_for,

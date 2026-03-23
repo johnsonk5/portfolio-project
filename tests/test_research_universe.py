@@ -5,7 +5,7 @@ import duckdb
 import pandas as pd
 from dagster import build_asset_context
 
-import portfolio_project.defs.portfolio_db.silver.universe as universe_module
+import portfolio_project.defs.research_db.silver.universe as universe_module
 
 
 def _write_silver_prices_daily(data_root: Path, partition_key: str, frame: pd.DataFrame) -> None:

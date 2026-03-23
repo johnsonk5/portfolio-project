@@ -5,7 +5,7 @@ import pandas as pd
 import requests
 from dagster import Field, StringSource, resource
 
-from portfolio_project.defs.portfolio_db.resources.env import load_local_env
+from portfolio_project.defs.resources.env import load_local_env
 
 
 @resource(
@@ -14,12 +14,6 @@ from portfolio_project.defs.portfolio_db.resources.env import load_local_env
     }
 )
 def eodhd_resource(context) -> "EODHDClient":
-    """
-    Dagster resource for the EODHD API.
-
-    Environment:
-    - EODHD_API_KEY: API key for EODHD.
-    """
     load_local_env()
     api_key = os.getenv("EODHD_API_KEY")
     if not api_key:
@@ -30,8 +24,6 @@ def eodhd_resource(context) -> "EODHDClient":
 
 
 class EODHDClient:
-    """Client for interacting with the EODHD bulk end-of-day API."""
-
     def __init__(self, api_key: str, exchange_code: str = "US") -> None:
         self.api_key = api_key
         self.exchange_code = exchange_code
@@ -40,9 +32,6 @@ class EODHDClient:
         self.session.headers.update({"User-Agent": "portfolio-project/0.1"})
 
     def get_bulk_eod_prices_df(self, trade_date: date) -> pd.DataFrame:
-        """
-        Fetch bulk end-of-day prices for the configured exchange on a specific trading date.
-        """
         url = f"{self.base_url}/eod-bulk-last-day/{self.exchange_code}"
         response = self.session.get(
             url,
