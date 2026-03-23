@@ -18,6 +18,7 @@ This document describes each source, what it powers, and important operational d
 - The app-facing prices pipeline runs for the previous US trading day.
 - Silver prices are written as partitioned parquet under `data/silver/prices/date=YYYY-MM-DD/symbol=.../prices*.parquet`.
 - Research daily prices from Alpaca are written under `data/bronze/alpaca_prices_daily/date=YYYY-MM-DD/prices.parquet`.
+- Downstream research silver prices are merged into `data/silver/research_daily_prices/month=YYYY-MM/date=YYYY-MM-DD.parquet`, with Alpaca preferred on overlapping symbol-days.
 
 ## EODHD API
 
@@ -31,6 +32,7 @@ This document describes each source, what it powers, and important operational d
 ### Operational Notes
 - The current implementation hits EODHD's bulk end-of-day endpoint for the configured exchange, defaulting to `US`.
 - Research daily prices from EODHD are written under `data/bronze/eodhd_prices_daily/date=YYYY-MM-DD/prices.parquet`.
+- EODHD fills the historical gaps in the merged `silver.research_daily_prices` dataset wherever Alpaca does not have overlapping coverage.
 
 ## Yahoo Finance Search API
 

@@ -60,6 +60,9 @@ from portfolio_project.defs.portfolio_db.silver.news import (
     silver_news,
     silver_ref_publishers,
 )
+from portfolio_project.defs.portfolio_db.silver.research_prices import (
+    silver_research_daily_prices,
+)
 from portfolio_project.defs.portfolio_db.silver.prices import (
     silver_alpaca_prices_parquet,
 )
@@ -309,6 +312,7 @@ defs = Definitions(
         silver_alpaca_assets_status_updates,
         silver_alpaca_prices_parquet,
         silver_alpaca_prices_compact,
+        silver_research_daily_prices,
         silver_universe_membership_events,
         silver_universe_membership_daily,
         gold_alpaca_prices,

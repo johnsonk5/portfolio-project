@@ -135,7 +135,15 @@ This document records important architecture, tech stack, and operating decision
   - `2016-01-01` onward: ingest Alpaca daily prices into `bronze.alpaca_prices_daily`.
   - Where both providers overlap, downstream research logic should prefer Alpaca and fall back to EODHD elsewhere.
 - Tradeoff:
-  - The universe-derivation logic is intentionally deferred; the current task only fixes pricing ingestion and contracts.
+  - Provider-specific bronze storage preserves auditability, while the silver layer owns precedence and liquidity-universe logic.
+
+### 18. Research universe membership is derived from price liquidity, not a static constituent file
+- Status: Accepted for implementation
+- Why: The research workflows need a broad, reproducible investable universe that can evolve with market liquidity instead of inheriting a hand-maintained historical index file.
+- Current implementation:
+  - `silver.research_daily_prices` merges daily research prices and prefers Alpaca over EODHD on overlapping symbol-days.
+  - `silver.universe_membership_daily` selects the top 500 symbols by trailing average dollar volume.
+  - `silver.universe_membership_events` records adds and removals versus the prior trading day.
 
 ## Open Items
 
