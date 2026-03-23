@@ -3,8 +3,8 @@ from zipfile import ZipFile
 
 from dagster import materialize
 
-import portfolio_project.defs.portfolio_db.demo.seed_data as demo_seed_module
-from portfolio_project.defs.portfolio_db.demo.seed_data import seed_demo_data
+import portfolio_project.defs.demo_seed_assets as demo_seed_module
+from portfolio_project.defs.demo_seed_assets import seed_demo_data
 
 
 class _FakeResponse:

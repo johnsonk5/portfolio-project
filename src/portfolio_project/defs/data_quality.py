@@ -7,15 +7,8 @@ from typing import Optional
 
 import duckdb
 
-from portfolio_project.defs.portfolio_db.observability.observability_modules import (
-    ensure_data_quality_table,
-)
-from portfolio_project.defs.resources.duckdb import (
-    _acquire_duckdb_lock,
-    _release_duckdb_lock,
-    duckdb_lock_path_for,
-    resolve_duckdb_path,
-)
+from portfolio_project.defs.duckdb_resource import _acquire_duckdb_lock, _release_duckdb_lock
+from portfolio_project.defs.observability_modules import ensure_data_quality_table
 
 
 def _severity_for_check(check_name: str, threshold_value: Optional[float]) -> str:
@@ -51,10 +44,18 @@ def _severity_for_check(check_name: str, threshold_value: Optional[float]) -> st
     return "RED"
 
 
+def _resolve_duckdb_path() -> Path:
+    env_path = os.getenv("PORTFOLIO_DUCKDB_PATH")
+    if env_path:
+        return Path(env_path)
+    data_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
+    return data_root / "duckdb" / "portfolio.duckdb"
+
+
 def _with_duckdb_connection():
-    db_path = resolve_duckdb_path()
+    db_path = _resolve_duckdb_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = duckdb_lock_path_for(db_path)
+    lock_path = db_path.parent / ".duckdb_write.lock"
     lock_fd = _acquire_duckdb_lock(lock_path)
     con = None
     try:
@@ -139,7 +140,8 @@ def _silver_price_partition_paths(partition_key: str) -> list[str]:
         return []
     paths: list[str] = []
     for symbol_dir in day_dir.glob("symbol=*"):
-        for candidate in symbol_dir.glob("*.parquet"):
+        candidate = symbol_dir / "prices.parquet"
+        if candidate.exists():
             paths.append(candidate.as_posix())
     return sorted(paths)
 
@@ -1309,4 +1311,3 @@ def write_data_quality_checks(context) -> None:
     for con in _with_duckdb_connection():
         rows = _run_checks(con)
         _write_data_quality_rows(con, rows)
-

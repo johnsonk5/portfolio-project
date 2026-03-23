@@ -4,11 +4,10 @@ import time
 import pytest
 from dagster import DagsterResourceFunctionError, build_resources
 
-import portfolio_project.defs.resources.duckdb as duckdb_resource_module
-from portfolio_project.defs.resources.duckdb import (
+import portfolio_project.defs.duckdb_resource as duckdb_resource_module
+from portfolio_project.defs.duckdb_resource import (
     _acquire_duckdb_lock,
     _release_duckdb_lock,
-    duckdb_lock_path_for,
     duckdb_resource,
 )
 
@@ -51,7 +50,7 @@ def test_acquire_lock_times_out_when_fresh_lock_exists(tmp_path) -> None:
 
 def test_duckdb_resource_releases_lock_when_connect_fails(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "duckdb" / "portfolio.duckdb"
-    lock_path = duckdb_lock_path_for(db_path)
+    lock_path = db_path.parent / ".duckdb_write.lock"
 
     def _boom(_):
         raise RuntimeError("connect failed")
@@ -79,7 +78,7 @@ def test_duckdb_resource_releases_lock_when_connect_fails(tmp_path, monkeypatch)
 
 def test_duckdb_resource_uses_operation_scoped_locking(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "duckdb" / "portfolio.duckdb"
-    lock_path = duckdb_lock_path_for(db_path)
+    lock_path = db_path.parent / ".duckdb_write.lock"
 
     acquire_calls = 0
     original_acquire = duckdb_resource_module._acquire_duckdb_lock
@@ -114,32 +113,3 @@ def test_duckdb_resource_uses_operation_scoped_locking(tmp_path, monkeypatch) ->
 
     # One lock acquire for connect + one per execute above.
     assert acquire_calls >= 4
-
-
-def test_duckdb_lock_path_isolated_per_database(tmp_path) -> None:
-    live_db_path = tmp_path / "duckdb" / "portfolio.duckdb"
-    research_db_path = tmp_path / "duckdb" / "research.duckdb"
-    live_db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    live_lock_path = duckdb_lock_path_for(live_db_path)
-    research_lock_path = duckdb_lock_path_for(research_db_path)
-
-    assert live_lock_path != research_lock_path
-
-    live_lock_fd = _acquire_duckdb_lock(live_lock_path, timeout_seconds=1, poll_seconds=0.01)
-    try:
-        research_lock_fd = _acquire_duckdb_lock(
-            research_lock_path,
-            timeout_seconds=1,
-            poll_seconds=0.01,
-        )
-        try:
-            assert live_lock_path.exists()
-            assert research_lock_path.exists()
-        finally:
-            _release_duckdb_lock(research_lock_path, research_lock_fd)
-    finally:
-        _release_duckdb_lock(live_lock_path, live_lock_fd)
-
-    assert not live_lock_path.exists()
-    assert not research_lock_path.exists()

@@ -7,10 +7,10 @@ from pathlib import Path
 import duckdb
 from dagster import materialize
 
-from portfolio_project.defs.portfolio_db.demo.seed_data import (
+from portfolio_project.defs.demo_seed_assets import (
     seed_demo_data,
 )
-from portfolio_project.defs.portfolio_db.gold.prices import _ensure_gold_table
+from portfolio_project.defs.gold_prices import _ensure_gold_table
 
 
 DEMO_ASSETS = [
@@ -222,4 +222,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
