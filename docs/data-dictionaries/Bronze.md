@@ -39,42 +39,6 @@ All of the tables in this layer are partitioned parquet files unless otherwise s
 | `attributes` | `object` | Additional source attributes. |
 | `ingested_ts` | `datetime64[us]` | Ingest timestamp. |
 
-## `bronze.alpaca_prices_daily`
-
-| Column | Type | Description |
-| --- | --- | --- |
-| `symbol` | `object` | Ticker symbol. |
-| `timestamp` | `timestamp` | Daily bar timestamp (UTC). |
-| `trade_date` | `date` | New York trading date represented by the bar. |
-| `open` | `float` | Open price for the day. |
-| `high` | `float` | High price for the day. |
-| `low` | `float` | Low price for the day. |
-| `close` | `float` | Close price for the day. |
-| `adjusted_close` | `float` | Adjusted close when available; null for Alpaca raw bars. |
-| `volume` | `int` | Daily share volume. |
-| `trade_count` | `int` | Daily trade count when the source provides it. |
-| `vwap` | `float` | Daily VWAP when the source provides it. |
-| `source` | `object` | Upstream source (`alpaca`). |
-| `ingested_ts` | `timestamp` | Ingest timestamp. |
-
-## `bronze.eodhd_prices_daily`
-
-| Column | Type | Description |
-| --- | --- | --- |
-| `symbol` | `object` | Ticker symbol. |
-| `timestamp` | `timestamp` | Synthetic end-of-day timestamp (UTC) for the trading session. |
-| `trade_date` | `date` | Trading date from EODHD. |
-| `open` | `float` | Open price for the day. |
-| `high` | `float` | High price for the day. |
-| `low` | `float` | Low price for the day. |
-| `close` | `float` | Close price for the day. |
-| `adjusted_close` | `float` | Adjusted close from EODHD when provided. |
-| `volume` | `int` | Daily share volume. |
-| `trade_count` | `int` | Daily trade count when the source provides it. |
-| `vwap` | `float` | Daily VWAP when the source provides it. |
-| `source` | `object` | Upstream source (`eodhd`). |
-| `ingested_ts` | `timestamp` | Ingest timestamp. |
-
 ## `bronze.sp500_companies`
 
 | Column | Type | Description |
@@ -127,18 +91,4 @@ All of the tables in this layer are partitioned parquet files unless otherwise s
 | `granularity` | `object` | Time granularity (`daily`). |
 | `view_date` | `object` | Date key in `YYYYMMDD` format. |
 | `views` | `int` | Pageview count. |
-| `ingested_ts` | `datetime64[us]` | Ingest timestamp. |
-
-## `bronze.fama_french_factors`
-
-| Column | Type | Description |
-| --- | --- | --- |
-| `factor_date` | `datetime64[ns]` | Trading date for the factor observation. |
-| `mkt_rf` | `float` | Market excess return (`MKT-RF`) from Kenneth French daily factors. |
-| `smb` | `float` | Size factor (`SMB`). |
-| `hml` | `float` | Value factor (`HML`). |
-| `rf` | `float` | Daily risk-free rate (`RF`). |
-| `mom` | `float` | Daily momentum factor (`MOM`). |
-| `source` | `object` | Source label for the Kenneth R. French Data Library. |
-| `frequency` | `object` | Snapshot frequency label (`daily`). |
 | `ingested_ts` | `datetime64[us]` | Ingest timestamp. |

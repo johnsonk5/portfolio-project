@@ -4,7 +4,7 @@ from pathlib import Path
 
 from dagster import AssetExecutionContext, DailyPartitionsDefinition, asset
 
-from portfolio_project.defs.portfolio_db.reference.wikipedia import silver_wikipedia_pageviews
+from portfolio_project.defs.wikipedia_pageviews import silver_wikipedia_pageviews
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 GOLD_ACTIVITY_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
@@ -139,4 +139,3 @@ def gold_activity(context: AssetExecutionContext) -> None:
             "row_count": row_count,
         }
     )
-

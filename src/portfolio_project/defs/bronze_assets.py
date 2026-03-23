@@ -15,7 +15,7 @@ from dagster import (
     asset,
 )
 
-from portfolio_project.defs.portfolio_db.observability.observability_modules import write_dq_log
+from portfolio_project.defs.observability_modules import write_dq_log
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 BRONZE_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
@@ -180,13 +180,12 @@ def _ingest_bronze_day(
     end_date = start_date + timedelta(days=1)
 
     frames: list[pd.DataFrame] = []
-    symbol_batches = _chunked(symbols, ALPACA_SYMBOL_BATCH_SIZE)
-    for idx, symbol_batch in enumerate(symbol_batches):
+    for symbol_batch in _chunked(symbols, ALPACA_SYMBOL_BATCH_SIZE):
         batch_df = _fetch_bars_df_with_retry(context, symbol_batch, start_date, end_date)
         normalized = _normalize_bars_df(batch_df)
         if not normalized.empty:
             frames.append(normalized)
-        if ALPACA_REQUEST_SLEEP_SECONDS > 0 and idx < len(symbol_batches) - 1:
+        if ALPACA_REQUEST_SLEEP_SECONDS > 0:
             time.sleep(ALPACA_REQUEST_SLEEP_SECONDS)
 
     if not frames:
@@ -250,4 +249,3 @@ def bronze_alpaca_assets(context: AssetExecutionContext) -> None:
     context.add_output_metadata(
         {"path": str(out_path), "row_count": len(df)}
     )
-
