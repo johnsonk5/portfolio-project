@@ -213,12 +213,7 @@ def test_bronze_alpaca_corporate_actions_daily_writes_split_partition(
     )
     research_prices_module.bronze_alpaca_corporate_actions_daily(context)
 
-    out_path = (
-        data_root
-        / "bronze"
-        / "alpaca_corporate_actions"
-        / "actions.parquet"
-    )
+    out_path = data_root / "bronze" / "alpaca_corporate_actions" / "actions.parquet"
     assert out_path.exists()
 
     out_df = pd.read_parquet(out_path)

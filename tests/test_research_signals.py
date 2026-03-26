@@ -56,16 +56,14 @@ def test_signals_daily_builds_expected_metrics(tmp_path: Path, monkeypatch) -> N
     expected["price_to_sma_200"] = expected["close"] / expected["sma_200"]
     expected["sma_50_to_200"] = expected["sma_50"] / expected["sma_200"]
     expected["realized_vol_21d"] = expected["returns_1d"].rolling(21, min_periods=2).std(ddof=1) * (
-        252.0 ** 0.5
+        252.0**0.5
     )
     expected["realized_vol_63d"] = expected["returns_1d"].rolling(63, min_periods=2).std(ddof=1) * (
-        252.0 ** 0.5
+        252.0**0.5
     )
     expected["rolling_252d_high"] = expected["close"].rolling(252, min_periods=1).max()
     expected["rolling_252d_low"] = expected["close"].rolling(252, min_periods=1).min()
-    expected["drawdown_from_252d_high"] = (
-        expected["close"] / expected["rolling_252d_high"]
-    ) - 1
+    expected["drawdown_from_252d_high"] = (expected["close"] / expected["rolling_252d_high"]) - 1
     expected["avg_dollar_volume_21d"] = expected["dollar_volume"].rolling(21, min_periods=1).mean()
     expected["avg_dollar_volume_63d"] = expected["dollar_volume"].rolling(63, min_periods=1).mean()
 

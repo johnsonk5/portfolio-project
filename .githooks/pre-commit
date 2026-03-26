@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+if [ -x "./.venv/Scripts/ruff.exe" ]; then
+    ./.venv/Scripts/ruff.exe format tests
+elif command -v uv >/dev/null 2>&1; then
+    uv run ruff format tests
+else
+    echo "Missing Ruff formatter. Install dev dependencies before committing." >&2
+    exit 1
+fi
+
+if ! git diff --quiet -- tests; then
+    git add tests
+    echo "Ruff reformatted files under tests/ and staged the updates."
+fi
