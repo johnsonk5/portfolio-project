@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
+from alpaca.data.enums import CorporateActionsType
 from dagster import (
     Array,
     AssetExecutionContext,
@@ -41,6 +42,14 @@ ALPACA_REQUEST_MAX_RETRIES = int(os.getenv("RESEARCH_ALPACA_REQUEST_MAX_RETRIES"
 ALPACA_REQUEST_RETRY_BASE_SECONDS = float(
     os.getenv("RESEARCH_ALPACA_REQUEST_RETRY_BASE_SECONDS", "1.0")
 )
+ALPACA_CORPORATE_ACTION_BATCH_SIZE = int(
+    os.getenv("RESEARCH_ALPACA_CORPORATE_ACTION_BATCH_SIZE", "200")
+)
+ALPACA_CORPORATE_ACTION_TYPES = [
+    CorporateActionsType.FORWARD_SPLIT,
+    CorporateActionsType.REVERSE_SPLIT,
+    CorporateActionsType.CASH_DIVIDEND,
+]
 
 _COMMON_STOCK_EXCLUSION_RE = re.compile(
     r"\b("
@@ -371,12 +380,201 @@ def _write_day_file(
         / "prices.parquet"
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    sort_columns = [
+        column
+        for column in ["symbol", "timestamp", "effective_date", "process_date", "action_type"]
+        if column in day_df.columns
+    ]
+    if sort_columns:
+        output_df = day_df.sort_values(sort_columns).reset_index(drop=True)
+    else:
+        output_df = day_df.reset_index(drop=True)
     (
-        day_df.sort_values(["symbol", "timestamp"])
-        .reset_index(drop=True)
-        .to_parquet(out_path, index=False)
+        output_df.to_parquet(out_path, index=False)
     )
     return len(day_df), 1
+
+
+def _corporate_actions_path() -> Path:
+    return DATA_ROOT / "bronze" / "alpaca_corporate_actions" / "actions.parquet"
+
+
+def _upsert_corporate_actions_file(
+    frame: pd.DataFrame,
+    *,
+    overwrite_effective_dates: list[date] | None = None,
+) -> tuple[int, int]:
+    out_path = _corporate_actions_path()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing_df = pd.DataFrame()
+    if out_path.exists():
+        existing_df = pd.read_parquet(out_path)
+
+    overwrite_dates = set(overwrite_effective_dates or [])
+    if not existing_df.empty and overwrite_dates:
+        existing_effective_dates = pd.to_datetime(
+            existing_df.get("effective_date"), errors="coerce"
+        ).dt.date
+        existing_df = existing_df[~existing_effective_dates.isin(overwrite_dates)].copy()
+
+    if frame is None or frame.empty:
+        combined = existing_df
+    else:
+        combined = pd.concat([existing_df, frame], ignore_index=True)
+
+    if combined.empty:
+        if out_path.exists():
+            out_path.unlink()
+        return 0, 0
+
+    sort_columns = [
+        column
+        for column in ["symbol", "effective_date", "process_date", "action_type"]
+        if column in combined.columns
+    ]
+    if sort_columns:
+        combined = combined.sort_values(sort_columns, kind="stable").reset_index(drop=True)
+    else:
+        combined = combined.reset_index(drop=True)
+
+    combined.to_parquet(out_path, index=False)
+    return int(len(frame) if frame is not None else 0), 1
+
+
+def _normalize_alpaca_corporate_actions_df(
+    df: pd.DataFrame,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    normalized = df.copy()
+    if "symbol" not in normalized.columns:
+        return pd.DataFrame()
+
+    normalized["symbol"] = normalized["symbol"].astype(str).str.strip().str.upper()
+    normalized["action_id"] = normalized.get("id", pd.Series([pd.NA] * len(normalized))).astype(
+        "string"
+    )
+    normalized["action_type"] = normalized.get(
+        "corporate_action_type",
+        normalized.get("corporate_action_group", pd.Series([pd.NA] * len(normalized))),
+    ).astype("string")
+    normalized["effective_date"] = pd.to_datetime(
+        normalized.get("ex_date", normalized.get("effective_date")),
+        errors="coerce",
+    ).dt.date
+    normalized["process_date"] = pd.to_datetime(
+        normalized.get("process_date"),
+        errors="coerce",
+    ).dt.date
+    normalized["old_rate"] = pd.to_numeric(normalized.get("old_rate"), errors="coerce")
+    normalized["new_rate"] = pd.to_numeric(normalized.get("new_rate"), errors="coerce")
+    normalized["cash_rate"] = pd.to_numeric(normalized.get("rate"), errors="coerce")
+    normalized["ingested_ts"] = datetime.now(timezone.utc)
+    normalized = normalized[
+        normalized["symbol"].ne("")
+        & normalized["effective_date"].notna()
+    ].copy()
+    if start_date is not None:
+        normalized = normalized[normalized["effective_date"] >= start_date].copy()
+    if end_date is not None:
+        normalized = normalized[normalized["effective_date"] <= end_date].copy()
+    if normalized.empty:
+        return pd.DataFrame()
+
+    split_mask = (
+        normalized["action_type"].isin(["forward_splits", "reverse_splits"])
+        & normalized["old_rate"].notna()
+        & normalized["new_rate"].notna()
+        & normalized["old_rate"].gt(0)
+        & normalized["new_rate"].gt(0)
+    )
+    dividend_mask = (
+        normalized["action_type"].eq("cash_dividends")
+        & normalized["cash_rate"].notna()
+    )
+    normalized = normalized[split_mask | dividend_mask].copy()
+    if normalized.empty:
+        return pd.DataFrame()
+
+    normalized["split_ratio"] = pd.NA
+    normalized.loc[split_mask.loc[normalized.index], "split_ratio"] = (
+        normalized.loc[split_mask.loc[normalized.index], "new_rate"]
+        / normalized.loc[split_mask.loc[normalized.index], "old_rate"]
+    )
+    normalized["source"] = "alpaca"
+    ordered_columns = [
+        "action_id",
+        "symbol",
+        "action_type",
+        "effective_date",
+        "process_date",
+        "old_rate",
+        "new_rate",
+        "cash_rate",
+        "split_ratio",
+        "source",
+        "ingested_ts",
+    ]
+    return normalized[ordered_columns].sort_values(
+        ["symbol", "effective_date", "process_date", "action_type"],
+        kind="stable",
+    ).reset_index(drop=True)
+
+
+def _fetch_alpaca_corporate_actions_for_day(
+    context: AssetExecutionContext,
+    partition_date: date,
+    symbols: list[str],
+    batch_size: int,
+    request_sleep_seconds: float,
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    symbol_batches = _chunked(symbols, batch_size)
+    max_attempts = ALPACA_REQUEST_MAX_RETRIES + 1
+
+    for index, symbol_batch in enumerate(symbol_batches):
+        for attempt in range(1, max_attempts + 1):
+            try:
+                raw_df = context.resources.alpaca.get_corporate_actions_df(
+                    symbols=symbol_batch,
+                    start_date=partition_date,
+                    end_date=partition_date,
+                    types=ALPACA_CORPORATE_ACTION_TYPES,
+                )
+                normalized = _normalize_alpaca_corporate_actions_df(
+                    raw_df,
+                    start_date=partition_date,
+                    end_date=partition_date,
+                )
+                if not normalized.empty:
+                    frames.append(normalized)
+                break
+            except Exception as exc:
+                if attempt == max_attempts:
+                    raise
+                sleep_seconds = ALPACA_REQUEST_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+                context.log.warning(
+                    "Alpaca corporate actions failed for %s symbols (%s). retry=%s sleep=%.2fs",
+                    len(symbol_batch),
+                    exc,
+                    attempt,
+                    sleep_seconds,
+                )
+                time.sleep(sleep_seconds)
+        if request_sleep_seconds > 0 and index < len(symbol_batches) - 1:
+            time.sleep(request_sleep_seconds)
+
+    if not frames:
+        return pd.DataFrame()
+    combined = pd.concat(frames, ignore_index=True)
+    return combined.drop_duplicates(
+        subset=["symbol", "effective_date", "action_type", "old_rate", "new_rate"],
+        keep="last",
+    ).reset_index(drop=True)
 
 
 @asset(
@@ -484,5 +682,70 @@ def bronze_alpaca_prices_daily(context: AssetExecutionContext) -> None:
             "symbol_count": len(symbols),
             "files_written": files_written,
             "row_count": row_count,
+        }
+    )
+
+
+@asset(
+    name="alpaca_corporate_actions_daily",
+    key_prefix=["bronze"],
+    partitions_def=ALPACA_PRICES_PARTITIONS,
+    required_resource_keys={"alpaca"},
+    config_schema={
+        "symbols": Field(Array(String), is_required=False),
+        "max_symbols": Field(Int, is_required=False),
+        "alpaca_corporate_action_batch_size": Field(
+            Int, is_required=False, default_value=ALPACA_CORPORATE_ACTION_BATCH_SIZE
+        ),
+        "alpaca_request_sleep_seconds": Field(
+            Float, is_required=False, default_value=ALPACA_REQUEST_SLEEP_SECONDS
+        ),
+    },
+)
+def bronze_alpaca_corporate_actions_daily(context: AssetExecutionContext) -> None:
+    """
+    Write Alpaca split corporate actions to bronze parquet keyed by effective date.
+    """
+    partition_date = datetime.strptime(context.partition_key, "%Y-%m-%d").date()
+    op_config = context.op_execution_context.op_config or {}
+    symbols = _resolve_alpaca_symbols(
+        context,
+        configured_symbols=op_config.get("symbols"),
+        max_symbols=op_config.get("max_symbols"),
+    )
+    if not symbols:
+        context.log.warning("No symbols resolved for Alpaca corporate actions ingestion.")
+        return
+
+    actions_df = _fetch_alpaca_corporate_actions_for_day(
+        context,
+        partition_date,
+        symbols,
+        batch_size=op_config.get(
+            "alpaca_corporate_action_batch_size", ALPACA_CORPORATE_ACTION_BATCH_SIZE
+        ),
+        request_sleep_seconds=op_config.get(
+            "alpaca_request_sleep_seconds", ALPACA_REQUEST_SLEEP_SECONDS
+        ),
+    )
+
+    row_count, files_written = _upsert_corporate_actions_file(
+        actions_df,
+        overwrite_effective_dates=[partition_date],
+    )
+
+    context.add_output_metadata(
+        {
+            "partition": context.partition_key,
+            "source": "alpaca",
+            "symbol_count": int(actions_df["symbol"].nunique()) if not actions_df.empty else 0,
+            "files_written": files_written,
+            "row_count": row_count,
+            "action_types": (
+                sorted(actions_df["action_type"].dropna().astype(str).unique().tolist())
+                if not actions_df.empty
+                else []
+            ),
+            "output_path": _corporate_actions_path().as_posix(),
         }
     )

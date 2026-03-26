@@ -3,8 +3,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import pandas as pd
+from alpaca.data.historical.corporate_actions import CorporateActionsClient
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
+from alpaca.data.requests import CorporateActionsRequest, StockBarsRequest
+from alpaca.data.enums import CorporateActionsType
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import AssetClass, AssetStatus
@@ -47,6 +49,7 @@ class AlpacaClient:
         self.secret_key = secret_key
         self.paper = paper
         self.client = StockHistoricalDataClient(api_key, secret_key)
+        self.corporate_actions_client = CorporateActionsClient(api_key, secret_key)
         self.trading_client = TradingClient(api_key, secret_key, paper=paper)
 
     def get_bars_df(
@@ -132,3 +135,33 @@ class AlpacaClient:
     ):
         request = GetAssetsRequest(status=status, asset_class=asset_class)
         return self.trading_client.get_all_assets(request)
+
+    def get_corporate_actions_df(
+        self,
+        symbols: list[str] | None = None,
+        start_date=None,
+        end_date=None,
+        types: list[CorporateActionsType] | None = None,
+    ) -> pd.DataFrame:
+        request = CorporateActionsRequest(
+            symbols=symbols,
+            start=start_date,
+            end=end_date,
+            types=types,
+        )
+        actions = self.corporate_actions_client.get_corporate_actions(request)
+
+        rows: list[dict] = []
+        data = getattr(actions, "data", {}) or {}
+        for action_group, action_list in data.items():
+            for action in action_list:
+                if hasattr(action, "model_dump"):
+                    row = action.model_dump()
+                elif hasattr(action, "dict"):
+                    row = action.dict()
+                else:
+                    row = action.__dict__.copy()
+                row["corporate_action_group"] = action_group
+                rows.append(row)
+
+        return pd.DataFrame(rows)

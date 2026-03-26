@@ -25,7 +25,8 @@ Build merged research daily prices and a liquidity-based universe history.
 Refresh the recent-window research price history from Alpaca and rebuild the downstream silver research prices plus liquidity-universe tables.
 
 ### Flow
-- `bronze_alpaca_prices_daily` -> `silver.research_daily_prices` -> `silver.universe_membership_daily` -> `silver.universe_membership_events`
+- `bronze_alpaca_prices_daily` + `bronze_alpaca_corporate_actions_daily` -> `silver.alpaca_corporate_actions` -> `silver.research_daily_prices` -> `silver.signals_daily`
+- `silver.research_daily_prices` -> `silver.universe_membership_daily` -> `silver.universe_membership_events`
 
 ### Schedule
 - `research_daily_prices_schedule`: `35 9 * * *` America/New_York.

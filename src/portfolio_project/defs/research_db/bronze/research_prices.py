@@ -1,5 +1,1 @@
-import sys
-
-from portfolio_project.defs.portfolio_db.bronze import research_prices as _legacy_module
-
-sys.modules[__name__] = _legacy_module
+from portfolio_project.defs.portfolio_db.bronze.research_prices import *

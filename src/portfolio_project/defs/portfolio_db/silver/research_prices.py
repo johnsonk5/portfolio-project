@@ -32,6 +32,22 @@ PRICE_COLUMNS = [
 ]
 
 
+def _table_exists(con, schema: str, table: str) -> bool:
+    return (
+        con.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = ?
+              AND table_name = ?
+            LIMIT 1
+            """,
+            [schema, table],
+        ).fetchone()
+        is not None
+    )
+
+
 def _bronze_prices_path(dataset_name: str, trade_date: date) -> Path:
     return (
         DATA_ROOT
@@ -115,7 +131,11 @@ def combine_source_daily_prices(trade_date: date) -> pd.DataFrame:
         return pd.DataFrame()
 
     for frame in frames:
-        for column in ["adjusted_close", "trade_count", "vwap"]:
+        for column in [
+            "adjusted_close",
+            "trade_count",
+            "vwap",
+        ]:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
 
     combined = pd.concat(frames, ignore_index=True)
@@ -145,6 +165,7 @@ def write_research_daily_prices_partition(
     name="research_daily_prices",
     key_prefix=["silver"],
     partitions_def=RESEARCH_PRICES_PARTITIONS,
+    required_resource_keys={"research_duckdb"},
 )
 def silver_research_daily_prices(context: AssetExecutionContext) -> None:
     """
@@ -160,6 +181,41 @@ def silver_research_daily_prices(context: AssetExecutionContext) -> None:
             context.partition_key,
         )
         return
+
+    alpaca_rows = day_df["source"].eq("alpaca")
+    if alpaca_rows.any() and _table_exists(context.resources.research_duckdb, "silver", "alpaca_corporate_actions"):
+        symbols = sorted(day_df.loc[alpaca_rows, "symbol"].dropna().astype(str).unique().tolist())
+        if symbols:
+            factor_df = context.resources.research_duckdb.execute(
+                """
+                SELECT
+                    symbol,
+                    exp(sum(ln(old_rate / new_rate))) AS split_adjustment_factor
+                FROM silver.alpaca_corporate_actions
+                WHERE effective_date > ?
+                  AND action_type IN ('forward_splits', 'reverse_splits')
+                  AND symbol = ANY(?)
+                GROUP BY symbol
+                """,
+                [trade_date, symbols],
+            ).fetch_df()
+            if not factor_df.empty:
+                factor_df["symbol"] = factor_df["symbol"].astype(str)
+                factor_map = dict(
+                    zip(
+                        factor_df["symbol"].tolist(),
+                        factor_df["split_adjustment_factor"].astype(float).tolist(),
+                    )
+                )
+                split_factor = (
+                    day_df.loc[alpaca_rows, "symbol"].map(factor_map).fillna(1.0).astype(float)
+                )
+            else:
+                split_factor = pd.Series(1.0, index=day_df.loc[alpaca_rows].index, dtype="float64")
+
+            day_df.loc[alpaca_rows, "adjusted_close"] = (
+                pd.to_numeric(day_df.loc[alpaca_rows, "close"], errors="coerce") * split_factor.values
+            )
 
     files_written, rows_written = write_research_daily_prices_partition(
         trade_date,
