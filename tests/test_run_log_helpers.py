@@ -7,6 +7,7 @@ from dagster import DagsterEventType
 
 from portfolio_project.defs.portfolio_db.observability.run_log import (
     _check_research_prices_freshness,
+    _check_research_universe_freshness,
     _collect_materialization_asset_metrics,
     _collect_materialization_metrics,
     _is_us_trading_day,
@@ -178,6 +179,38 @@ def _write_research_partition(tmp_path, partition_key: str, row_count: int) -> N
     ).to_parquet(out_path, index=False)
 
 
+def _write_universe_counts(con, counts_by_date: dict[str, int]) -> None:
+    con.execute("CREATE SCHEMA IF NOT EXISTS silver")
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE silver.universe_membership_daily (
+            member_date DATE,
+            symbol VARCHAR,
+            liquidity_rank BIGINT,
+            rolling_avg_dollar_volume DOUBLE,
+            source VARCHAR,
+            ingested_ts TIMESTAMP
+        )
+        """
+    )
+    for member_date, symbol_count in counts_by_date.items():
+        for rank in range(1, symbol_count + 1):
+            con.execute(
+                """
+                INSERT INTO silver.universe_membership_daily (
+                    member_date,
+                    symbol,
+                    liquidity_rank,
+                    rolling_avg_dollar_volume,
+                    source,
+                    ingested_ts
+                )
+                VALUES (?, ?, ?, ?, ?, current_timestamp)
+                """,
+                [member_date, f"SYM{rank:04d}", rank, float(symbol_count - rank + 1), "test"],
+            )
+
+
 def test_research_price_freshness_fails_when_expected_latest_partition_is_missing(
     tmp_path, monkeypatch
 ) -> None:
@@ -245,4 +278,76 @@ def test_research_price_freshness_fails_when_row_count_drops_below_recent_baseli
         "2026-02-12": 90,
         "2026-02-11": 110,
         "2026-02-10": 100,
+    }
+
+
+def test_research_universe_freshness_fails_when_expected_latest_member_date_is_missing() -> None:
+    con = duckdb.connect(":memory:")
+    _write_universe_counts(
+        con,
+        {
+            "2026-02-10": 500,
+            "2026-02-11": 500,
+            "2026-02-12": 500,
+        },
+    )
+
+    rows = _check_research_universe_freshness(
+        con,
+        "run-3",
+        "research_daily_prices_job",
+        "2026-02-13",
+    )
+
+    by_name = {row["check_name"]: row for row in rows}
+    latest_row = by_name["research_universe_membership_latest_trading_date_present"]
+    assert latest_row["status"] == "FAIL"
+    assert latest_row["measured_value"] == 0.0
+    assert latest_row["threshold_value"] == 1.0
+    assert json.loads(latest_row["details_json"]) == {
+        "expected_member_date": "2026-02-13",
+        "universe_table_present": True,
+        "expected_member_date_present": False,
+        "expected_member_date_symbol_count": 0,
+        "latest_available_member_date": "2026-02-12",
+        "target_universe_size": 500,
+    }
+
+
+def test_research_universe_freshness_fails_when_symbol_count_drops_below_recent_baseline() -> None:
+    con = duckdb.connect(":memory:")
+    _write_universe_counts(
+        con,
+        {
+            "2026-02-10": 500,
+            "2026-02-11": 500,
+            "2026-02-12": 480,
+            "2026-02-13": 300,
+        },
+    )
+
+    rows = _check_research_universe_freshness(
+        con,
+        "run-4",
+        "research_daily_prices_job",
+        "2026-02-13",
+    )
+
+    by_name = {row["check_name"]: row for row in rows}
+    latest_row = by_name["research_universe_membership_latest_trading_date_present"]
+    count_row = by_name["research_universe_membership_symbol_count_vs_recent_median"]
+
+    assert latest_row["status"] == "PASS"
+    assert latest_row["measured_value"] == 1.0
+    assert count_row["status"] == "FAIL"
+    assert count_row["measured_value"] == 300.0
+    assert count_row["threshold_value"] == 475.0
+
+    count_details = json.loads(count_row["details_json"])
+    assert count_details["baseline_median_symbol_count"] == 500.0
+    assert count_details["symbol_count_ratio_threshold"] == 0.95
+    assert count_details["recent_symbol_counts"] == {
+        "2026-02-12": 480,
+        "2026-02-11": 500,
+        "2026-02-10": 500,
     }

@@ -29,6 +29,7 @@ def _freshness_severity(check_name: str) -> str:
         "daily_news_partition_row_count",
         "wikipedia_assets_with_views_min_count",
         "research_daily_prices_partition_row_count_vs_recent_median",
+        "research_universe_membership_symbol_count_vs_recent_median",
     }:
         return "YELLOW"
     return "RED"
@@ -492,6 +493,22 @@ def _research_silver_price_partition_paths() -> list[Path]:
     return sorted(paths)
 
 
+def _table_exists(con, schema: str, table: str) -> bool:
+    return (
+        con.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = ?
+              AND table_name = ?
+            LIMIT 1
+            """,
+            [schema, table],
+        ).fetchone()
+        is not None
+    )
+
+
 def _check_prices_freshness(
     con, run_id: str, job_name: str, partition_key: Optional[str]
 ) -> list[dict]:
@@ -847,6 +864,194 @@ def _check_research_prices_freshness(
     return [latest_check, row_count_check]
 
 
+def _check_research_universe_freshness(
+    con, run_id: str, job_name: str, partition_key: Optional[str]
+) -> list[dict]:
+    if job_name != "research_daily_prices_job":
+        return []
+
+    now = datetime.now(timezone.utc)
+    latest_check_name = "research_universe_membership_latest_trading_date_present"
+    count_check_name = "research_universe_membership_symbol_count_vs_recent_median"
+    if not partition_key:
+        return [
+            {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": latest_check_name,
+                "severity": _freshness_severity(latest_check_name),
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": json.dumps({"reason": "missing_partition_key"}),
+                "logged_ts": now,
+            },
+            {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": count_check_name,
+                "severity": _freshness_severity(count_check_name),
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": json.dumps({"reason": "missing_partition_key"}),
+                "logged_ts": now,
+            },
+        ]
+
+    if not _is_us_trading_day(partition_key):
+        details = json.dumps({"reason": "non_trading_day", "market": "NYSE"})
+        return [
+            {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": latest_check_name,
+                "severity": _freshness_severity(latest_check_name),
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": details,
+                "logged_ts": now,
+            },
+            {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": count_check_name,
+                "severity": _freshness_severity(count_check_name),
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": details,
+                "logged_ts": now,
+            },
+        ]
+
+    universe_size = int(os.getenv("RESEARCH_UNIVERSE_SIZE", "500"))
+    lookback_partitions = int(
+        os.getenv("RESEARCH_UNIVERSE_FRESHNESS_LOOKBACK_PARTITIONS", "20")
+    )
+    min_history = int(os.getenv("RESEARCH_UNIVERSE_FRESHNESS_MIN_HISTORY", "3"))
+    min_ratio = float(os.getenv("RESEARCH_UNIVERSE_FRESHNESS_MIN_SYMBOL_COUNT_RATIO", "0.95"))
+
+    universe_table_present = _table_exists(con, "silver", "universe_membership_daily")
+    counts_by_date: list[tuple[str, int]] = []
+    if universe_table_present:
+        counts_by_date = [
+            (
+                member_date.isoformat() if hasattr(member_date, "isoformat") else str(member_date),
+                int(symbol_count or 0),
+            )
+            for member_date, symbol_count in con.execute(
+                """
+                SELECT member_date, count(DISTINCT upper(trim(symbol))) AS symbol_count
+                FROM silver.universe_membership_daily
+                WHERE member_date IS NOT NULL
+                  AND symbol IS NOT NULL
+                  AND trim(symbol) <> ''
+                GROUP BY member_date
+                ORDER BY member_date
+                """
+            ).fetchall()
+        ]
+
+    counts_lookup = dict(counts_by_date)
+    current_symbol_count = int(counts_lookup.get(partition_key, 0))
+    latest_available_partition = max(counts_lookup) if counts_lookup else None
+    latest_present_status = (
+        "PASS"
+        if current_symbol_count > 0 and latest_available_partition == partition_key
+        else "FAIL"
+    )
+
+    latest_check = {
+        "run_id": run_id,
+        "job_name": job_name,
+        "partition_key": partition_key,
+        "check_name": latest_check_name,
+        "severity": _freshness_severity(latest_check_name),
+        "status": latest_present_status,
+        "measured_value": 1.0 if latest_present_status == "PASS" else 0.0,
+        "threshold_value": 1.0,
+        "details_json": json.dumps(
+            {
+                "expected_member_date": partition_key,
+                "universe_table_present": universe_table_present,
+                "expected_member_date_present": partition_key in counts_lookup,
+                "expected_member_date_symbol_count": current_symbol_count,
+                "latest_available_member_date": latest_available_partition,
+                "target_universe_size": universe_size,
+            }
+        ),
+        "logged_ts": now,
+    }
+
+    prior_counts = [
+        (member_date, symbol_count)
+        for member_date, symbol_count in reversed(counts_by_date)
+        if member_date < partition_key
+    ][:lookback_partitions]
+
+    if len(prior_counts) < min_history:
+        count_check = {
+            "run_id": run_id,
+            "job_name": job_name,
+            "partition_key": partition_key,
+            "check_name": count_check_name,
+            "severity": _freshness_severity(count_check_name),
+            "status": "SKIPPED",
+            "measured_value": (
+                float(current_symbol_count) if partition_key in counts_lookup else None
+            ),
+            "threshold_value": None,
+            "details_json": json.dumps(
+                {
+                    "reason": "insufficient_history",
+                    "current_symbol_count": current_symbol_count,
+                    "expected_member_date": partition_key,
+                    "target_universe_size": universe_size,
+                    "minimum_history_required": min_history,
+                    "history_partitions_available": len(prior_counts),
+                    "recent_symbol_counts": dict(prior_counts),
+                }
+            ),
+            "logged_ts": now,
+        }
+        return [latest_check, count_check]
+
+    historical_counts = [count for _, count in prior_counts]
+    baseline_median = float(statistics.median(historical_counts))
+    threshold_value = float(baseline_median * min_ratio)
+    count_status = "PASS" if float(current_symbol_count) >= threshold_value else "FAIL"
+
+    count_check = {
+        "run_id": run_id,
+        "job_name": job_name,
+        "partition_key": partition_key,
+        "check_name": count_check_name,
+        "severity": _freshness_severity(count_check_name),
+        "status": count_status,
+        "measured_value": float(current_symbol_count),
+        "threshold_value": threshold_value,
+        "details_json": json.dumps(
+            {
+                "current_symbol_count": current_symbol_count,
+                "expected_member_date": partition_key,
+                "target_universe_size": universe_size,
+                "symbol_count_ratio_threshold": min_ratio,
+                "baseline_median_symbol_count": baseline_median,
+                "history_partitions_considered": len(prior_counts),
+                "recent_symbol_counts": dict(prior_counts),
+            }
+        ),
+        "logged_ts": now,
+    }
+    return [latest_check, count_check]
+
+
 def _check_wikipedia_freshness(
     con, run_id: str, job_name: str, partition_key: Optional[str]
 ) -> list[dict]:
@@ -991,6 +1196,10 @@ def _write_freshness_checks(context) -> None:
         checks = [
             ("prices_active_symbol_coverage", _check_prices_freshness),
             ("research_daily_prices_latest_trading_date_present", _check_research_prices_freshness),
+            (
+                "research_universe_membership_latest_trading_date_present",
+                _check_research_universe_freshness,
+            ),
             ("wikipedia_assets_with_views_min_count", _check_wikipedia_freshness),
             ("daily_news_partition_row_count", _check_news_freshness),
         ]
