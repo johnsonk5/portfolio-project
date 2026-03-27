@@ -7,10 +7,18 @@ from urllib.parse import quote, unquote
 
 import pandas as pd
 import requests
-from dagster import Array, AssetExecutionContext, DailyPartitionsDefinition, Field, Float, Int, String, asset
+from dagster import (
+    Array,
+    AssetExecutionContext,
+    DailyPartitionsDefinition,
+    Field,
+    Float,
+    Int,
+    String,
+    asset,
+)
 
 from portfolio_project.defs.portfolio_db.silver.assets import silver_alpaca_assets
-
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 BRONZE_WIKIPEDIA_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
@@ -181,7 +189,11 @@ def bronze_wikipedia_pageviews(context: AssetExecutionContext) -> None:
             context.log.warning("Wikipedia pageviews fetch failed for %s: %s", name, exc)
             continue
         if not items:
-            context.log.warning("No Wikipedia pageviews found for name=%s article=%s", name, article)
+            context.log.warning(
+                "No Wikipedia pageviews found for name=%s article=%s",
+                name,
+                article,
+            )
             continue
 
         for item in items:
@@ -203,7 +215,10 @@ def bronze_wikipedia_pageviews(context: AssetExecutionContext) -> None:
             time.sleep(request_delay_seconds)
 
     if not rows:
-        context.log.warning("No Wikipedia pageviews returned for partition %s.", context.partition_key)
+        context.log.warning(
+            "No Wikipedia pageviews returned for partition %s.",
+            context.partition_key,
+        )
         return
 
     df = pd.DataFrame(rows)
@@ -312,4 +327,3 @@ def silver_wikipedia_pageviews(context: AssetExecutionContext) -> None:
             "rows_deleted": existing_count,
         }
     )
-

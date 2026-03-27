@@ -1,12 +1,11 @@
 import os
 from datetime import datetime, timedelta, timezone
 
-from dagster import build_resources
-from dotenv import load_dotenv
-
 # 👇 update this import to wherever your resource actually lives
 # e.g. from src.portfolio_project.defs.resources import alpaca_resource
 from alpaca_resource import alpaca_resource
+from dagster import build_resources
+from dotenv import load_dotenv
 
 
 def main():
@@ -18,9 +17,7 @@ def main():
     secret_key = os.getenv("ALPACA_SECRET_KEY")
 
     if not api_key or not secret_key:
-        raise RuntimeError(
-            "Missing ALPACA_API_KEY and/or ALPACA_SECRET_KEY in environment."
-        )
+        raise RuntimeError("Missing ALPACA_API_KEY and/or ALPACA_SECRET_KEY in environment.")
 
     # Build the Dagster resource
     with build_resources({"alpaca": alpaca_resource}) as resources:
@@ -39,10 +36,10 @@ def main():
         start_date = end_date - timedelta(days=3)
 
         print("Requesting bars from Alpaca...")
-        print(f"Symbol: AAPL")
+        print("Symbol: AAPL")
         print(f"Start:  {start_date}")
         print(f"End:    {end_date}")
-        print(f"TF:     1d")
+        print("TF:     1d")
         print("-" * 60)
 
         bars_dict = client.get_bars(
@@ -87,7 +84,6 @@ def main():
             print(preview)
 
         print("\n✅ Alpaca resource test completed.")
-
 
 
 if __name__ == "__main__":

@@ -23,7 +23,9 @@ def _chunked(values: list[str], size: int) -> list[list[str]]:
 
 
 def _sparql_string_literal(value: str) -> str:
-    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
+    escaped = (
+        str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
+    )
     return f'"{escaped}"'
 
 
@@ -132,9 +134,7 @@ def silver_alpaca_assets(context: AssetExecutionContext) -> None:
         existing_map_df = None
 
     try:
-        sp500_df = con.execute(
-            "SELECT symbol FROM silver.ref_sp500"
-        ).fetch_df()
+        sp500_df = con.execute("SELECT symbol FROM silver.ref_sp500").fetch_df()
         if sp500_df is not None and not sp500_df.empty and "symbol" in df.columns:
             sp500_symbols = sp500_df["symbol"].astype(str).str.upper()
             df["is_sp500"] = df["symbol"].astype(str).str.upper().isin(sp500_symbols)
@@ -168,9 +168,7 @@ def silver_alpaca_assets(context: AssetExecutionContext) -> None:
 
         df["asset_id"] = df["asset_id"].astype("int64")
     else:
-        context.log.warning(
-            "No alpaca_id column found; asset_id stability cannot be guaranteed."
-        )
+        context.log.warning("No alpaca_id column found; asset_id stability cannot be guaranteed.")
         df["asset_id"] = range(1, len(df) + 1)
 
     if "is_active_existing" in df.columns:
@@ -189,14 +187,7 @@ def silver_alpaca_assets(context: AssetExecutionContext) -> None:
         df = df.drop(columns=["symbol_norm", "is_active_existing"])
 
     if "symbol" in df.columns:
-        symbols = (
-            df["symbol"]
-            .astype(str)
-            .str.upper()
-            .dropna()
-            .unique()
-            .tolist()
-        )
+        symbols = df["symbol"].astype(str).str.upper().dropna().unique().tolist()
         title_map = _fetch_wikipedia_titles(context, symbols)
         if title_map:
             df["wikipedia_title"] = df["symbol"].astype(str).str.upper().map(title_map)
@@ -205,16 +196,14 @@ def silver_alpaca_assets(context: AssetExecutionContext) -> None:
 
     con.register("silver_assets_df", df)
     con.execute(
-        f"""
+        """
         CREATE OR REPLACE TABLE silver.assets AS
         SELECT *
         FROM silver_assets_df
         """
     )
 
-    context.add_output_metadata(
-        {"table": "silver.assets", "row_count": len(df)}
-    )
+    context.add_output_metadata({"table": "silver.assets", "row_count": len(df)})
 
 
 def _normalize_symbols(symbols) -> set[str]:
@@ -247,12 +236,8 @@ def silver_alpaca_active_assets_history(context: AssetExecutionContext) -> None:
         """
     )
 
-    row_count = con.execute(
-        "SELECT count(*) FROM silver.active_assets_history"
-    ).fetchone()[0]
-    context.add_output_metadata(
-        {"table": "silver.active_assets_history", "row_count": row_count}
-    )
+    row_count = con.execute("SELECT count(*) FROM silver.active_assets_history").fetchone()[0]
+    context.add_output_metadata({"table": "silver.active_assets_history", "row_count": row_count})
 
 
 @asset(
@@ -424,4 +409,3 @@ def silver_alpaca_assets_status_updates(context: AssetExecutionContext) -> None:
             "missing_symbols": missing_symbols,
         }
     )
-

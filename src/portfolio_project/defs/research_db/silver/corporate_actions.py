@@ -2,26 +2,37 @@ import os
 from pathlib import Path
 
 from dagster import AssetExecutionContext, asset
+from dagster._core.errors import DagsterInvalidPropertyError
 
 from portfolio_project.defs.research_db.bronze.research_prices import (
     bronze_alpaca_corporate_actions_daily,
 )
+from portfolio_project.defs.research_db.dq_checks import log_required_field_null_check
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
+
+
+def _safe_partition_key(context: AssetExecutionContext) -> str | None:
+    try:
+        return context.partition_key
+    except Exception:
+        return None
 
 
 @asset(
     name="alpaca_corporate_actions",
     key_prefix=["silver"],
     deps=[bronze_alpaca_corporate_actions_daily],
-    required_resource_keys={"research_duckdb"},
+    required_resource_keys={"research_duckdb", "duckdb"},
 )
 def silver_alpaca_corporate_actions(context: AssetExecutionContext) -> None:
     """
     Build a research silver table of Alpaca split corporate actions keyed by effective date.
     """
     con = context.resources.research_duckdb
-    actions_glob = (DATA_ROOT / "bronze" / "alpaca_corporate_actions" / "actions.parquet").as_posix()
+    actions_glob = (
+        DATA_ROOT / "bronze" / "alpaca_corporate_actions" / "actions.parquet"
+    ).as_posix()
 
     con.execute("CREATE SCHEMA IF NOT EXISTS silver")
     con.execute(
@@ -59,6 +70,71 @@ def silver_alpaca_corporate_actions(context: AssetExecutionContext) -> None:
         ORDER BY effective_date, symbol, action_type, process_date
         """,
         [actions_glob],
+    )
+
+    try:
+        run = getattr(context, "run", None)
+    except DagsterInvalidPropertyError:
+        run = None
+    run_id = getattr(run, "run_id", None)
+    try:
+        job_name = getattr(context, "job_name", None)
+    except DagsterInvalidPropertyError:
+        job_name = None
+    partition_key = _safe_partition_key(context)
+
+    log_required_field_null_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        check_name="dq_research_alpaca_corporate_actions_required_fields_nulls",
+        relation_sql="SELECT * FROM silver.alpaca_corporate_actions",
+        relation_params=[],
+        required_columns=["symbol", "effective_date", "action_type", "source", "ingested_ts"],
+        details={"table": "silver.alpaca_corporate_actions"},
+        run_id=str(run_id) if run_id else None,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+    log_required_field_null_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        check_name="dq_research_alpaca_corporate_actions_split_rate_nulls",
+        relation_sql="""
+            SELECT *
+            FROM silver.alpaca_corporate_actions
+            WHERE action_type IN ('forward_splits', 'reverse_splits')
+        """,
+        relation_params=[],
+        required_columns=["old_rate", "new_rate"],
+        details={
+            "table": "silver.alpaca_corporate_actions",
+            "rule": {
+                "old_rate": "required when action_type in ('forward_splits', 'reverse_splits')",
+                "new_rate": "required when action_type in ('forward_splits', 'reverse_splits')",
+            },
+        },
+        run_id=str(run_id) if run_id else None,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+    log_required_field_null_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        check_name="dq_research_alpaca_corporate_actions_cash_rate_nulls",
+        relation_sql="""
+            SELECT *
+            FROM silver.alpaca_corporate_actions
+            WHERE action_type = 'cash_dividends'
+        """,
+        relation_params=[],
+        required_columns=["cash_rate"],
+        details={
+            "table": "silver.alpaca_corporate_actions",
+            "rule": {"cash_rate": "required when action_type = 'cash_dividends'"},
+        },
+        run_id=str(run_id) if run_id else None,
+        job_name=job_name,
+        partition_key=partition_key,
     )
 
     row_count = con.execute("SELECT count(*) FROM silver.alpaca_corporate_actions").fetchone()[0]

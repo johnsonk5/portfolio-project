@@ -3,10 +3,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import pandas as pd
-from alpaca.data.historical.corporate_actions import CorporateActionsClient
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import CorporateActionsRequest, StockBarsRequest
 from alpaca.data.enums import CorporateActionsType
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.historical.corporate_actions import CorporateActionsClient
+from alpaca.data.requests import CorporateActionsRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import AssetClass, AssetStatus

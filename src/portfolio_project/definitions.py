@@ -63,11 +63,11 @@ from portfolio_project.defs.research_db.bronze.research_prices import (
     bronze_alpaca_prices_daily,
     bronze_eodhd_prices_daily,
 )
-from portfolio_project.defs.research_db.silver.factors import (
-    silver_fama_french_factors_parquet,
-)
 from portfolio_project.defs.research_db.silver.corporate_actions import (
     silver_alpaca_corporate_actions,
+)
+from portfolio_project.defs.research_db.silver.factors import (
+    silver_fama_french_factors_parquet,
 )
 from portfolio_project.defs.research_db.silver.research_prices import (
     silver_research_daily_prices,

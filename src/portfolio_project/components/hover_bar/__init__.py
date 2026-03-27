@@ -3,7 +3,6 @@ from typing import Sequence
 
 import streamlit.components.v1 as components
 
-
 _COMPONENT_PATH = Path(__file__).parent / "frontend"
 _hover_bar = components.declare_component("hover_bar", path=str(_COMPONENT_PATH))
 

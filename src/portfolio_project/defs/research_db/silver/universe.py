@@ -3,7 +3,9 @@ from datetime import date
 from pathlib import Path
 
 from dagster import AssetExecutionContext, asset
+from dagster._core.errors import DagsterInvalidPropertyError
 
+from portfolio_project.defs.research_db.dq_checks import log_required_field_null_check
 from portfolio_project.defs.research_db.silver.research_prices import (
     RESEARCH_DAILY_PRICES_DATASET,
     silver_research_daily_prices,
@@ -13,6 +15,13 @@ DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 LIQUIDITY_LOOKBACK_DAYS = int(os.getenv("RESEARCH_UNIVERSE_LIQUIDITY_LOOKBACK_DAYS", "20"))
 UNIVERSE_SIZE = int(os.getenv("RESEARCH_UNIVERSE_SIZE", "500"))
 UNIVERSE_SOURCE = "rolling_avg_dollar_volume_top_500"
+
+
+def _safe_partition_key(context: AssetExecutionContext) -> str | None:
+    try:
+        return context.partition_key
+    except Exception:
+        return None
 
 
 def _silver_prices_glob() -> str:
@@ -60,7 +69,7 @@ def universe_membership_symbols_for_date(con, target_date: date) -> list[tuple[s
     name="universe_membership_daily",
     key_prefix=["silver"],
     deps=[silver_research_daily_prices],
-    required_resource_keys={"research_duckdb"},
+    required_resource_keys={"research_duckdb", "duckdb"},
 )
 def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
     """
@@ -139,6 +148,37 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
         "SELECT min(member_date), max(member_date) FROM silver.universe_membership_daily"
     ).fetchone()
 
+    try:
+        run = getattr(context, "run", None)
+    except DagsterInvalidPropertyError:
+        run = None
+    run_id = getattr(run, "run_id", None)
+    try:
+        job_name = getattr(context, "job_name", None)
+    except DagsterInvalidPropertyError:
+        job_name = None
+    partition_key = _safe_partition_key(context)
+
+    log_required_field_null_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        check_name="dq_research_universe_membership_daily_required_fields_nulls",
+        relation_sql="SELECT * FROM silver.universe_membership_daily",
+        relation_params=[],
+        required_columns=[
+            "member_date",
+            "symbol",
+            "liquidity_rank",
+            "rolling_avg_dollar_volume",
+            "source",
+            "ingested_ts",
+        ],
+        details={"table": "silver.universe_membership_daily"},
+        run_id=str(run_id) if run_id else None,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
     context.add_output_metadata(
         {
             "table": "silver.universe_membership_daily",
@@ -156,7 +196,7 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
     name="universe_membership_events",
     key_prefix=["silver"],
     deps=[silver_universe_membership_daily],
-    required_resource_keys={"research_duckdb"},
+    required_resource_keys={"research_duckdb", "duckdb"},
 )
 def silver_universe_membership_events(context: AssetExecutionContext) -> None:
     """
@@ -273,6 +313,68 @@ def silver_universe_membership_events(context: AssetExecutionContext) -> None:
     symbol_count = con.execute(
         "SELECT count(DISTINCT symbol) FROM silver.universe_membership_events"
     ).fetchone()[0]
+
+    try:
+        run = getattr(context, "run", None)
+    except DagsterInvalidPropertyError:
+        run = None
+    run_id = getattr(run, "run_id", None)
+    try:
+        job_name = getattr(context, "job_name", None)
+    except DagsterInvalidPropertyError:
+        job_name = None
+    partition_key = _safe_partition_key(context)
+
+    log_required_field_null_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        check_name="dq_research_universe_membership_events_required_fields_nulls",
+        relation_sql="SELECT * FROM silver.universe_membership_events",
+        relation_params=[],
+        required_columns=["event_date", "symbol", "event_type", "source", "ingested_ts"],
+        details={"table": "silver.universe_membership_events"},
+        run_id=str(run_id) if run_id else None,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+    log_required_field_null_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        check_name="dq_research_universe_membership_events_added_fields_nulls",
+        relation_sql="""
+            SELECT *
+            FROM silver.universe_membership_events
+            WHERE event_type = 'added'
+        """,
+        relation_params=[],
+        required_columns=["new_liquidity_rank", "new_rolling_avg_dollar_volume"],
+        details={
+            "table": "silver.universe_membership_events",
+            "rule": "new rank and liquidity are required for added rows",
+        },
+        run_id=str(run_id) if run_id else None,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+    log_required_field_null_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        check_name="dq_research_universe_membership_events_removed_fields_nulls",
+        relation_sql="""
+            SELECT *
+            FROM silver.universe_membership_events
+            WHERE event_type = 'removed'
+        """,
+        relation_params=[],
+        required_columns=["previous_liquidity_rank", "previous_rolling_avg_dollar_volume"],
+        details={
+            "table": "silver.universe_membership_events",
+            "rule": "previous rank and liquidity are required for removed rows",
+        },
+        run_id=str(run_id) if run_id else None,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
 
     context.add_output_metadata(
         {

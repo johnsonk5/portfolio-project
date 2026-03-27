@@ -34,6 +34,9 @@ This document records important architecture, tech stack, and operating decision
   - Default database paths: `data/duckdb/portfolio.duckdb` and `data/duckdb/research.duckdb`
   - Overrides supported through `PORTFOLIO_DUCKDB_PATH` and `PORTFOLIO_RESEARCH_DUCKDB_PATH`
   - Base data directory override supported through `PORTFOLIO_DATA_DIR`
+- Current policy:
+  - Observability tables are centralized in `portfolio.duckdb`.
+  - `research.duckdb` is reserved for research data assets and derived research tables.
 
 ### 5. Streamlit is the application layer
 - Status: Accepted
@@ -88,7 +91,7 @@ This document records important architecture, tech stack, and operating decision
 - Why: Phase 2 introduces research ingestion, factor data, backtesting, and strategy outputs that should not share the same database lifecycle as the live/app-serving store.
 - Intent:
   - Keep research assets distinct from the current live/app database
-  - Add a separate observability schema for research workflows
+  - Keep observability centralized in the portfolio/app database instead of adding a separate research observability schema
   - Reduce coupling between experimental strategy work and the existing app data model
 
 ### 12. Research data will extend the historical window back to 2000

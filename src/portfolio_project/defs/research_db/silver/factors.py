@@ -5,10 +5,19 @@ from pathlib import Path
 
 import pandas as pd
 from dagster import AssetExecutionContext, asset
+from dagster._core.errors import DagsterInvalidPropertyError
 
 from portfolio_project.defs.research_db.bronze.fama_french import bronze_fama_french_factors
+from portfolio_project.defs.research_db.dq_checks import log_required_field_null_check
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
+
+
+def _safe_partition_key(context: AssetExecutionContext) -> str | None:
+    try:
+        return context.partition_key
+    except Exception:
+        return None
 
 
 def _silver_factors_root() -> Path:
@@ -84,7 +93,7 @@ def _write_silver_factors(df: pd.DataFrame) -> tuple[int, int]:
 @asset(
     name="silver_fama_french_factors_parquet",
     deps=[bronze_fama_french_factors],
-    required_resource_keys={"research_duckdb"},
+    required_resource_keys={"research_duckdb", "duckdb"},
 )
 def silver_fama_french_factors_parquet(context: AssetExecutionContext) -> None:
     """
@@ -107,6 +116,68 @@ def silver_fama_french_factors_parquet(context: AssetExecutionContext) -> None:
     if rows_written == 0:
         context.log.warning("No silver factor rows were written from %s.", bronze_path)
         return
+
+    try:
+        run = getattr(context, "run", None)
+    except DagsterInvalidPropertyError:
+        run = None
+    run_id = getattr(run, "run_id", None)
+    try:
+        job_name = getattr(context, "job_name", None)
+    except DagsterInvalidPropertyError:
+        job_name = None
+    partition_key = _safe_partition_key(context)
+
+    parquet_path = _silver_factors_path().as_posix()
+    log_required_field_null_check(
+        measured_con=context.resources.research_duckdb,
+        observability_con=context.resources.duckdb,
+        check_name="dq_research_factors_required_fields_nulls",
+        relation_sql="SELECT * FROM read_parquet(?)",
+        relation_params=[parquet_path],
+        required_columns=[
+            "factor_date",
+            "mkt_rf",
+            "smb",
+            "hml",
+            "rf",
+            "source",
+            "frequency",
+            "ingested_ts",
+            "bronze_snapshot_date",
+        ],
+        details={"path": parquet_path, "table": "silver.factors"},
+        run_id=str(run_id) if run_id else None,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+    log_required_field_null_check(
+        measured_con=context.resources.research_duckdb,
+        observability_con=context.resources.duckdb,
+        check_name="dq_research_factors_mom_required_after_start_nulls",
+        relation_sql="""
+            SELECT *
+            FROM read_parquet(?)
+            WHERE factor_date >= COALESCE(
+                (
+                    SELECT min(factor_date)
+                    FROM read_parquet(?)
+                    WHERE mom IS NOT NULL
+                ),
+                DATE '0001-01-01'
+            )
+        """,
+        relation_params=[parquet_path, parquet_path],
+        required_columns=["mom"],
+        details={
+            "path": parquet_path,
+            "table": "silver.factors",
+            "rule": "mom is required from the first non-null momentum row onward",
+        },
+        run_id=str(run_id) if run_id else None,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
 
     context.add_output_metadata(
         {

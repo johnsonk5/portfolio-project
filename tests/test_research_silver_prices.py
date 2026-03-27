@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -82,9 +83,10 @@ def test_research_daily_prices_prefers_alpaca_on_overlap(tmp_path: Path) -> None
     )
 
     con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
     context = build_asset_context(
         partition_key=partition_key,
-        resources={"research_duckdb": con},
+        resources={"research_duckdb": con, "duckdb": obs_con},
     )
     research_silver_prices_module.silver_research_daily_prices(context)
 
@@ -133,9 +135,10 @@ def test_research_daily_prices_rerun_replaces_stale_partition(tmp_path: Path) ->
 
     _write_bronze_prices(data_root, "alpaca_prices_daily", partition_key, first_frame)
     con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
     context = build_asset_context(
         partition_key=partition_key,
-        resources={"research_duckdb": con},
+        resources={"research_duckdb": con, "duckdb": obs_con},
     )
     research_silver_prices_module.silver_research_daily_prices(context)
 
@@ -197,7 +200,7 @@ def test_research_daily_prices_applies_split_adjustments_for_alpaca_rows(tmp_pat
     )
     context = build_asset_context(
         partition_key=partition_key,
-        resources={"research_duckdb": con},
+        resources={"research_duckdb": con, "duckdb": duckdb.connect(":memory:")},
     )
     research_silver_prices_module.silver_research_daily_prices(context)
 
@@ -211,3 +214,355 @@ def test_research_daily_prices_applies_split_adjustments_for_alpaca_rows(tmp_pat
     out_df = pd.read_parquet(out_path)
     row = out_df.iloc[0]
     assert float(row["adjusted_close"]) == 50.25
+
+
+def test_validate_research_daily_prices_schema_detects_missing_columns_and_type_mismatches(
+    tmp_path: Path,
+) -> None:
+    bad_path = tmp_path / "bad_research_daily_prices.parquet"
+    pd.DataFrame(
+        {
+            "symbol": ["AAPL"],
+            "timestamp": [datetime(2026, 2, 13, 21, 0, tzinfo=timezone.utc)],
+            "trade_date": ["2026-02-13"],
+            "open": ["100.0"],
+            "high": [101.0],
+            "low": [99.0],
+            "close": [100.5],
+            "adjusted_close": [100.5],
+            "volume": [1000],
+            "trade_count": [10],
+            "vwap": [100.2],
+            "dollar_volume": [100500.0],
+            "source": ["alpaca"],
+        }
+    ).to_parquet(bad_path, index=False)
+
+    con = duckdb.connect(":memory:")
+    result = research_silver_prices_module._validate_research_daily_prices_schema(con, bad_path)
+
+    assert result["status"] == "FAIL"
+    assert result["details"]["missing_columns"] == ["ingested_ts"]
+    assert result["details"]["type_mismatches"]["trade_date"]["actual"] == "VARCHAR"
+    assert result["details"]["type_mismatches"]["open"]["actual"] == "VARCHAR"
+
+
+def test_research_daily_prices_writes_schema_dq_check_to_portfolio_observability(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "data"
+    research_silver_prices_module.DATA_ROOT = data_root
+    partition_key = "2026-02-13"
+
+    _write_bronze_prices(
+        data_root,
+        "alpaca_prices_daily",
+        partition_key,
+        pd.DataFrame(
+            {
+                "symbol": ["AAPL"],
+                "timestamp": [datetime(2026, 2, 13, 21, 0, tzinfo=timezone.utc)],
+                "trade_date": ["2026-02-13"],
+                "open": [100.0],
+                "high": [101.0],
+                "low": [99.0],
+                "close": [100.5],
+                "adjusted_close": [pd.NA],
+                "volume": [1000],
+                "trade_count": [10],
+                "vwap": [100.2],
+                "source": ["alpaca"],
+                "ingested_ts": [datetime.now(timezone.utc)],
+            }
+        ),
+    )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(
+        partition_key=partition_key,
+        resources={"research_duckdb": con, "duckdb": obs_con},
+    )
+    research_silver_prices_module.silver_research_daily_prices(context)
+
+    row = obs_con.execute(
+        """
+        SELECT check_name, status, partition_key
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_research_daily_prices_schema_columns_and_types'
+        """
+    ).fetchone()
+
+    assert row == (
+        "dq_research_daily_prices_schema_columns_and_types",
+        "PASS",
+        partition_key,
+    )
+
+
+def test_research_daily_prices_writes_required_fields_dq_check_to_portfolio_observability(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "data"
+    research_silver_prices_module.DATA_ROOT = data_root
+    partition_key = "2026-02-13"
+
+    _write_bronze_prices(
+        data_root,
+        "alpaca_prices_daily",
+        partition_key,
+        pd.DataFrame(
+            {
+                "symbol": ["AAPL"],
+                "timestamp": [datetime(2026, 2, 13, 21, 0, tzinfo=timezone.utc)],
+                "trade_date": ["2026-02-13"],
+                "open": [100.0],
+                "high": [101.0],
+                "low": [99.0],
+                "close": [100.5],
+                "adjusted_close": [pd.NA],
+                "volume": [1000],
+                "trade_count": [10],
+                "vwap": [100.2],
+                "source": ["alpaca"],
+                "ingested_ts": [datetime.now(timezone.utc)],
+            }
+        ),
+    )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(
+        partition_key=partition_key,
+        resources={"research_duckdb": con, "duckdb": obs_con},
+    )
+    research_silver_prices_module.silver_research_daily_prices(context)
+
+    row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value, partition_key
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_research_daily_prices_required_fields_nulls'
+        """
+    ).fetchone()
+
+    assert row == (
+        "dq_research_daily_prices_required_fields_nulls",
+        "PASS",
+        0.0,
+        partition_key,
+    )
+
+
+def test_research_daily_prices_writes_duplicate_symbol_trade_date_dq_check_to_observability(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "data"
+    research_silver_prices_module.DATA_ROOT = data_root
+    partition_key = "2026-02-13"
+
+    _write_bronze_prices(
+        data_root,
+        "alpaca_prices_daily",
+        partition_key,
+        pd.DataFrame(
+            {
+                "symbol": ["AAPL"],
+                "timestamp": [datetime(2026, 2, 13, 21, 0, tzinfo=timezone.utc)],
+                "trade_date": ["2026-02-13"],
+                "open": [100.0],
+                "high": [101.0],
+                "low": [99.0],
+                "close": [100.5],
+                "adjusted_close": [pd.NA],
+                "volume": [1000],
+                "trade_count": [10],
+                "vwap": [100.2],
+                "source": ["alpaca"],
+                "ingested_ts": [datetime.now(timezone.utc)],
+            }
+        ),
+    )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(
+        partition_key=partition_key,
+        resources={"research_duckdb": con, "duckdb": obs_con},
+    )
+    research_silver_prices_module.silver_research_daily_prices(context)
+
+    row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value, partition_key
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_research_daily_prices_uniqueness_symbol_trade_date'
+        """
+    ).fetchone()
+
+    assert row == (
+        "dq_research_daily_prices_uniqueness_symbol_trade_date",
+        "PASS",
+        0.0,
+        partition_key,
+    )
+
+
+def test_research_daily_prices_writes_invalid_values_dq_check_to_observability(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "data"
+    research_silver_prices_module.DATA_ROOT = data_root
+    partition_key = "2026-02-13"
+
+    _write_bronze_prices(
+        data_root,
+        "alpaca_prices_daily",
+        partition_key,
+        pd.DataFrame(
+            {
+                "symbol": ["AAPL"],
+                "timestamp": [datetime(2026, 2, 13, 21, 0, tzinfo=timezone.utc)],
+                "trade_date": ["2026-02-13"],
+                "open": [100.0],
+                "high": [101.0],
+                "low": [99.0],
+                "close": [100.5],
+                "adjusted_close": [100.5],
+                "volume": [1000],
+                "trade_count": [10],
+                "vwap": [100.2],
+                "source": ["alpaca"],
+                "ingested_ts": [datetime.now(timezone.utc)],
+            }
+        ),
+    )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(
+        partition_key=partition_key,
+        resources={"research_duckdb": con, "duckdb": obs_con},
+    )
+    research_silver_prices_module.silver_research_daily_prices(context)
+
+    row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value, partition_key
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_research_daily_prices_invalid_values'
+        """
+    ).fetchone()
+
+    assert row == (
+        "dq_research_daily_prices_invalid_values",
+        "PASS",
+        0.0,
+        partition_key,
+    )
+
+
+def test_research_daily_prices_invalid_values_check_fails_for_logically_impossible_rows(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "data"
+    research_silver_prices_module.DATA_ROOT = data_root
+    partition_key = "2026-02-13"
+
+    _write_bronze_prices(
+        data_root,
+        "alpaca_prices_daily",
+        partition_key,
+        pd.DataFrame(
+            {
+                "symbol": ["AAPL"],
+                "timestamp": [datetime(2026, 2, 13, 21, 0, tzinfo=timezone.utc)],
+                "trade_date": ["2026-02-13"],
+                "open": [110.0],
+                "high": [101.0],
+                "low": [99.0],
+                "close": [100.5],
+                "adjusted_close": [0.0],
+                "volume": [-1000],
+                "trade_count": [10],
+                "vwap": [120.0],
+                "source": ["alpaca"],
+                "ingested_ts": [datetime.now(timezone.utc)],
+            }
+        ),
+    )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(
+        partition_key=partition_key,
+        resources={"research_duckdb": con, "duckdb": obs_con},
+    )
+    research_silver_prices_module.silver_research_daily_prices(context)
+
+    row = obs_con.execute(
+        """
+        SELECT status, measured_value, threshold_value, details_json
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_research_daily_prices_invalid_values'
+        """
+    ).fetchone()
+
+    assert row is not None
+    assert row[0] == "FAIL"
+    assert row[1] == 4.0
+    assert row[2] == 0.0
+    assert json.loads(row[3])["violation_counts"] == {
+        "negative_value_rows": 1,
+        "ohlc_range_violation_rows": 1,
+        "vwap_outside_range_rows": 1,
+        "adjusted_close_non_positive_rows": 1,
+    }
+
+
+def test_log_duplicate_row_check_detects_duplicate_symbol_trade_date_rows() -> None:
+    measured_con = duckdb.connect(":memory:")
+    observability_con = duckdb.connect(":memory:")
+
+    measured_con.execute(
+        """
+        CREATE TABLE duplicate_prices (
+            symbol VARCHAR,
+            trade_date DATE
+        )
+        """
+    )
+    measured_con.execute(
+        """
+        INSERT INTO duplicate_prices VALUES
+            ('AAPL', DATE '2026-02-13'),
+            ('AAPL', DATE '2026-02-13'),
+            ('MSFT', DATE '2026-02-13')
+        """
+    )
+
+    research_silver_prices_module.log_duplicate_row_check(
+        measured_con=measured_con,
+        observability_con=observability_con,
+        check_name="dq_test_duplicate_symbol_trade_date",
+        relation_sql="SELECT * FROM duplicate_prices",
+        relation_params=[],
+        key_columns=["symbol", "trade_date"],
+        details={"table": "duplicate_prices"},
+        partition_key="2026-02-13",
+    )
+
+    row = observability_con.execute(
+        """
+        SELECT check_name, status, measured_value, threshold_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_test_duplicate_symbol_trade_date'
+        """
+    ).fetchone()
+
+    assert row == (
+        "dq_test_duplicate_symbol_trade_date",
+        "FAIL",
+        1.0,
+        0.0,
+    )

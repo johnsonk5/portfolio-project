@@ -2,7 +2,9 @@ import os
 from pathlib import Path
 
 from dagster import AssetExecutionContext, asset
+from dagster._core.errors import DagsterInvalidPropertyError
 
+from portfolio_project.defs.research_db.dq_checks import log_required_field_null_check
 from portfolio_project.defs.research_db.silver.research_prices import (
     silver_research_daily_prices,
 )
@@ -11,6 +13,13 @@ DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 SIGNAL_VERSION = os.getenv("RESEARCH_SIGNALS_VERSION", "v1")
 DUCKDB_SIGNALS_THREADS = int(os.getenv("RESEARCH_SIGNALS_DUCKDB_THREADS", "2"))
 SIGNALS_SYMBOL_BUCKETS = int(os.getenv("RESEARCH_SIGNALS_SYMBOL_BUCKETS", "32"))
+
+
+def _safe_partition_key(context: AssetExecutionContext) -> str | None:
+    try:
+        return context.partition_key
+    except Exception:
+        return None
 
 
 def _signals_select_sql() -> str:
@@ -176,7 +185,7 @@ def _signals_select_sql() -> str:
     name="signals_daily",
     key_prefix=["silver"],
     deps=[silver_research_daily_prices],
-    required_resource_keys={"research_duckdb"},
+    required_resource_keys={"research_duckdb", "duckdb"},
 )
 def silver_signals_daily(context: AssetExecutionContext) -> None:
     """
@@ -222,6 +231,41 @@ def silver_signals_daily(context: AssetExecutionContext) -> None:
         "SELECT count(DISTINCT symbol) FROM silver.signals_daily"
     ).fetchone()[0]
     min_max_row = con.execute("SELECT min(date), max(date) FROM silver.signals_daily").fetchone()
+
+    try:
+        run = getattr(context, "run", None)
+    except DagsterInvalidPropertyError:
+        run = None
+    run_id = getattr(run, "run_id", None)
+    try:
+        job_name = getattr(context, "job_name", None)
+    except DagsterInvalidPropertyError:
+        job_name = None
+    partition_key = _safe_partition_key(context)
+
+    log_required_field_null_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        check_name="dq_research_signals_daily_required_fields_nulls",
+        relation_sql="SELECT * FROM silver.signals_daily",
+        relation_params=[],
+        required_columns=[
+            "date",
+            "symbol",
+            "close",
+            "adjusted_close",
+            "rolling_252d_high",
+            "rolling_252d_low",
+            "avg_dollar_volume_21d",
+            "avg_dollar_volume_63d",
+            "signal_version",
+            "load_timestamp",
+        ],
+        details={"table": "silver.signals_daily"},
+        run_id=str(run_id) if run_id else None,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
 
     context.add_output_metadata(
         {

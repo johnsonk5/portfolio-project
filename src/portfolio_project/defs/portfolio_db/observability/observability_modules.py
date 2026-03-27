@@ -1,7 +1,7 @@
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any
-import uuid
 
 
 def ensure_data_quality_table(con) -> None:
@@ -23,7 +23,12 @@ def ensure_data_quality_table(con) -> None:
         )
         """
     )
-    con.execute("ALTER TABLE observability.data_quality_checks ADD COLUMN IF NOT EXISTS check_id VARCHAR")
+    con.execute(
+        """
+        ALTER TABLE observability.data_quality_checks
+        ADD COLUMN IF NOT EXISTS check_id VARCHAR
+        """
+    )
 
 
 def write_dq_log(
