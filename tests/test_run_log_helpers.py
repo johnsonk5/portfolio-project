@@ -1,8 +1,12 @@
+import json
 from types import SimpleNamespace
 
+import duckdb
+import pandas as pd
 from dagster import DagsterEventType
 
 from portfolio_project.defs.portfolio_db.observability.run_log import (
+    _check_research_prices_freshness,
     _collect_materialization_asset_metrics,
     _collect_materialization_metrics,
     _is_us_trading_day,
@@ -155,3 +159,90 @@ def test_collect_materialization_asset_metrics_rolls_up_by_asset_key() -> None:
 def test_is_us_trading_day_rejects_weekends_and_bad_inputs() -> None:
     assert _is_us_trading_day("2026-02-14") is False
     assert _is_us_trading_day("not-a-date") is False
+
+
+def _write_research_partition(tmp_path, partition_key: str, row_count: int) -> None:
+    out_path = (
+        tmp_path
+        / "silver"
+        / "research_daily_prices"
+        / f"month={partition_key[:7]}"
+        / f"date={partition_key}.parquet"
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "symbol": [f"SYM{i:04d}" for i in range(row_count)],
+            "trade_date": [partition_key] * row_count,
+        }
+    ).to_parquet(out_path, index=False)
+
+
+def test_research_price_freshness_fails_when_expected_latest_partition_is_missing(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("PORTFOLIO_DATA_DIR", str(tmp_path))
+    _write_research_partition(tmp_path, "2026-02-12", 100)
+
+    rows = _check_research_prices_freshness(
+        duckdb.connect(":memory:"),
+        "run-1",
+        "research_daily_prices_job",
+        "2026-02-13",
+    )
+
+    by_name = {row["check_name"]: row for row in rows}
+    latest_row = by_name["research_daily_prices_latest_trading_date_present"]
+    assert latest_row["status"] == "FAIL"
+    assert latest_row["measured_value"] == 0.0
+    assert latest_row["threshold_value"] == 1.0
+    assert json.loads(latest_row["details_json"]) == {
+        "expected_partition_key": "2026-02-13",
+        "expected_partition_path": str(
+            tmp_path
+            / "silver"
+            / "research_daily_prices"
+            / "month=2026-02"
+            / "date=2026-02-13.parquet"
+        ).replace("\\", "/"),
+        "expected_partition_present": False,
+        "expected_partition_row_count": 0,
+        "expected_partition_trade_date": None,
+        "latest_available_partition_key": "2026-02-12",
+    }
+
+
+def test_research_price_freshness_fails_when_row_count_drops_below_recent_baseline(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("PORTFOLIO_DATA_DIR", str(tmp_path))
+    _write_research_partition(tmp_path, "2026-02-10", 100)
+    _write_research_partition(tmp_path, "2026-02-11", 110)
+    _write_research_partition(tmp_path, "2026-02-12", 90)
+    _write_research_partition(tmp_path, "2026-02-13", 20)
+
+    rows = _check_research_prices_freshness(
+        duckdb.connect(":memory:"),
+        "run-2",
+        "research_daily_prices_job",
+        "2026-02-13",
+    )
+
+    by_name = {row["check_name"]: row for row in rows}
+    latest_row = by_name["research_daily_prices_latest_trading_date_present"]
+    count_row = by_name["research_daily_prices_partition_row_count_vs_recent_median"]
+
+    assert latest_row["status"] == "PASS"
+    assert latest_row["measured_value"] == 1.0
+    assert count_row["status"] == "FAIL"
+    assert count_row["measured_value"] == 20.0
+    assert count_row["threshold_value"] == 70.0
+
+    count_details = json.loads(count_row["details_json"])
+    assert count_details["baseline_median_row_count"] == 100.0
+    assert count_details["row_count_ratio_threshold"] == 0.7
+    assert count_details["recent_partition_counts"] == {
+        "2026-02-12": 90,
+        "2026-02-11": 110,
+        "2026-02-10": 100,
+    }

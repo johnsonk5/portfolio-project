@@ -1,5 +1,6 @@
 import json
 import os
+import statistics
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -24,7 +25,11 @@ from portfolio_project.defs.resources.duckdb import (
 
 
 def _freshness_severity(check_name: str) -> str:
-    if check_name in {"daily_news_partition_row_count", "wikipedia_assets_with_views_min_count"}:
+    if check_name in {
+        "daily_news_partition_row_count",
+        "wikipedia_assets_with_views_min_count",
+        "research_daily_prices_partition_row_count_vs_recent_median",
+    }:
         return "YELLOW"
     return "RED"
 
@@ -451,6 +456,42 @@ def _silver_price_partition_paths(partition_key: str) -> list[str]:
     return sorted(paths)
 
 
+def _research_silver_price_partition_path(partition_key: str) -> Path:
+    data_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
+    return (
+        data_root
+        / "silver"
+        / "research_daily_prices"
+        / f"month={partition_key[:7]}"
+        / f"date={partition_key}.parquet"
+    )
+
+
+def _parse_research_partition_date(path: Path) -> Optional[str]:
+    stem = path.stem
+    if not stem.startswith("date="):
+        return None
+    partition_key = stem.removeprefix("date=")
+    try:
+        datetime.strptime(partition_key, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return partition_key
+
+
+def _research_silver_price_partition_paths() -> list[Path]:
+    data_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
+    root = data_root / "silver" / "research_daily_prices"
+    if not root.exists():
+        return []
+    paths = [
+        path
+        for path in root.glob("month=*/date=*.parquet")
+        if _parse_research_partition_date(path) is not None
+    ]
+    return sorted(paths)
+
+
 def _check_prices_freshness(
     con, run_id: str, job_name: str, partition_key: Optional[str]
 ) -> list[dict]:
@@ -597,6 +638,215 @@ def _check_prices_freshness(
     ]
 
 
+def _check_research_prices_freshness(
+    con, run_id: str, job_name: str, partition_key: Optional[str]
+) -> list[dict]:
+    if job_name != "research_daily_prices_job":
+        return []
+
+    now = datetime.now(timezone.utc)
+    if not partition_key:
+        latest_check_name = "research_daily_prices_latest_trading_date_present"
+        row_count_check_name = "research_daily_prices_partition_row_count_vs_recent_median"
+        return [
+            {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": latest_check_name,
+                "severity": _freshness_severity(latest_check_name),
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": json.dumps({"reason": "missing_partition_key"}),
+                "logged_ts": now,
+            },
+            {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": row_count_check_name,
+                "severity": _freshness_severity(row_count_check_name),
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": json.dumps({"reason": "missing_partition_key"}),
+                "logged_ts": now,
+            },
+        ]
+
+    if not _is_us_trading_day(partition_key):
+        latest_check_name = "research_daily_prices_latest_trading_date_present"
+        row_count_check_name = "research_daily_prices_partition_row_count_vs_recent_median"
+        details = json.dumps({"reason": "non_trading_day", "market": "NYSE"})
+        return [
+            {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": latest_check_name,
+                "severity": _freshness_severity(latest_check_name),
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": details,
+                "logged_ts": now,
+            },
+            {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": row_count_check_name,
+                "severity": _freshness_severity(row_count_check_name),
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": details,
+                "logged_ts": now,
+            },
+        ]
+
+    expected_path = _research_silver_price_partition_path(partition_key)
+    partition_paths = _research_silver_price_partition_paths()
+    partition_dates = [
+        parsed_date
+        for parsed_date in (_parse_research_partition_date(path) for path in partition_paths)
+        if parsed_date is not None
+    ]
+    latest_available_partition = max(partition_dates) if partition_dates else None
+
+    expected_present = expected_path.exists()
+    current_row_count = 0
+    current_trade_date = None
+    if expected_present:
+        current_row_count, current_trade_date = con.execute(
+            """
+            SELECT count(*) AS row_count, max(trade_date) AS max_trade_date
+            FROM read_parquet(?)
+            """,
+            [expected_path.as_posix()],
+        ).fetchone()
+        current_row_count = int(current_row_count or 0)
+        if current_trade_date is not None:
+            current_trade_date = (
+                current_trade_date.isoformat()
+                if hasattr(current_trade_date, "isoformat")
+                else str(current_trade_date)
+            )
+
+    latest_present_status = (
+        "PASS"
+        if expected_present and current_row_count > 0 and current_trade_date == partition_key
+        else "FAIL"
+    )
+
+    lookback_partitions = int(os.getenv("RESEARCH_FRESHNESS_ROW_COUNT_LOOKBACK_PARTITIONS", "20"))
+    min_history = int(os.getenv("RESEARCH_FRESHNESS_ROW_COUNT_MIN_HISTORY", "3"))
+    min_ratio = float(os.getenv("RESEARCH_FRESHNESS_MIN_ROW_COUNT_RATIO", "0.7"))
+
+    prior_paths = [
+        path
+        for path in partition_paths
+        if (parsed_date := _parse_research_partition_date(path)) is not None
+        and parsed_date < partition_key
+    ]
+    prior_paths = sorted(
+        prior_paths,
+        key=lambda path: _parse_research_partition_date(path) or "",
+        reverse=True,
+    )[:lookback_partitions]
+
+    prior_partition_counts: list[tuple[str, int]] = []
+    for path in prior_paths:
+        parsed_date = _parse_research_partition_date(path)
+        if parsed_date is None:
+            continue
+        row_count = con.execute(
+            "SELECT count(*) FROM read_parquet(?)",
+            [path.as_posix()],
+        ).fetchone()[0]
+        prior_partition_counts.append((parsed_date, int(row_count or 0)))
+
+    latest_check = {
+        "run_id": run_id,
+        "job_name": job_name,
+        "partition_key": partition_key,
+        "check_name": "research_daily_prices_latest_trading_date_present",
+        "severity": _freshness_severity("research_daily_prices_latest_trading_date_present"),
+        "status": latest_present_status,
+        "measured_value": 1.0 if latest_present_status == "PASS" else 0.0,
+        "threshold_value": 1.0,
+        "details_json": json.dumps(
+            {
+                "expected_partition_key": partition_key,
+                "expected_partition_path": expected_path.as_posix(),
+                "expected_partition_present": expected_present,
+                "expected_partition_row_count": current_row_count,
+                "expected_partition_trade_date": current_trade_date,
+                "latest_available_partition_key": latest_available_partition,
+            }
+        ),
+        "logged_ts": now,
+    }
+
+    if len(prior_partition_counts) < min_history:
+        row_count_check = {
+            "run_id": run_id,
+            "job_name": job_name,
+            "partition_key": partition_key,
+            "check_name": "research_daily_prices_partition_row_count_vs_recent_median",
+            "severity": _freshness_severity(
+                "research_daily_prices_partition_row_count_vs_recent_median"
+            ),
+            "status": "SKIPPED",
+            "measured_value": float(current_row_count) if expected_present else None,
+            "threshold_value": None,
+            "details_json": json.dumps(
+                {
+                    "reason": "insufficient_history",
+                    "current_partition_path": expected_path.as_posix(),
+                    "current_row_count": current_row_count,
+                    "minimum_history_required": min_history,
+                    "history_partitions_available": len(prior_partition_counts),
+                    "recent_partition_counts": dict(prior_partition_counts),
+                }
+            ),
+            "logged_ts": now,
+        }
+        return [latest_check, row_count_check]
+
+    historical_counts = [count for _, count in prior_partition_counts]
+    baseline_median = float(statistics.median(historical_counts))
+    threshold_value = float(baseline_median * min_ratio)
+    row_count_status = "PASS" if float(current_row_count) >= threshold_value else "FAIL"
+
+    row_count_check = {
+        "run_id": run_id,
+        "job_name": job_name,
+        "partition_key": partition_key,
+        "check_name": "research_daily_prices_partition_row_count_vs_recent_median",
+        "severity": _freshness_severity(
+            "research_daily_prices_partition_row_count_vs_recent_median"
+        ),
+        "status": row_count_status,
+        "measured_value": float(current_row_count),
+        "threshold_value": threshold_value,
+        "details_json": json.dumps(
+            {
+                "current_partition_path": expected_path.as_posix(),
+                "current_row_count": current_row_count,
+                "expected_partition_key": partition_key,
+                "row_count_ratio_threshold": min_ratio,
+                "baseline_median_row_count": baseline_median,
+                "history_partitions_considered": len(prior_partition_counts),
+                "recent_partition_counts": dict(prior_partition_counts),
+            }
+        ),
+        "logged_ts": now,
+    }
+    return [latest_check, row_count_check]
+
+
 def _check_wikipedia_freshness(
     con, run_id: str, job_name: str, partition_key: Optional[str]
 ) -> list[dict]:
@@ -740,6 +990,7 @@ def _write_freshness_checks(context) -> None:
         check_rows = []
         checks = [
             ("prices_active_symbol_coverage", _check_prices_freshness),
+            ("research_daily_prices_latest_trading_date_present", _check_research_prices_freshness),
             ("wikipedia_assets_with_views_min_count", _check_wikipedia_freshness),
             ("daily_news_partition_row_count", _check_news_freshness),
         ]

@@ -33,6 +33,10 @@ Refresh the recent-window research price history from Alpaca and rebuild the dow
 - Checks required fields plus logically invalid price/count values and price-range violations for each emitted `silver.research_daily_prices` partition.
 - Checks each emitted `silver.research_daily_prices` partition for duplicate `symbol` + `trade_date` rows.
 
+### Freshness
+- Verifies the expected latest trading-date partition exists in `silver.research_daily_prices`.
+- Compares the current partition row count against the recent median partition size and alerts on material drops.
+
 ### Schedule
 - `research_daily_prices_schedule`: `35 9 * * *` America/New_York.
 - Uses previous US trading day as partition key.
