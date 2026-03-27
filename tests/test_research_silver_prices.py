@@ -297,3 +297,57 @@ def test_research_daily_prices_writes_schema_dq_check_to_portfolio_observability
         "PASS",
         partition_key,
     )
+
+
+def test_research_daily_prices_writes_required_fields_dq_check_to_portfolio_observability(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "data"
+    research_silver_prices_module.DATA_ROOT = data_root
+    partition_key = "2026-02-13"
+
+    _write_bronze_prices(
+        data_root,
+        "alpaca_prices_daily",
+        partition_key,
+        pd.DataFrame(
+            {
+                "symbol": ["AAPL"],
+                "timestamp": [datetime(2026, 2, 13, 21, 0, tzinfo=timezone.utc)],
+                "trade_date": ["2026-02-13"],
+                "open": [100.0],
+                "high": [101.0],
+                "low": [99.0],
+                "close": [100.5],
+                "adjusted_close": [pd.NA],
+                "volume": [1000],
+                "trade_count": [10],
+                "vwap": [100.2],
+                "source": ["alpaca"],
+                "ingested_ts": [datetime.now(timezone.utc)],
+            }
+        ),
+    )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(
+        partition_key=partition_key,
+        resources={"research_duckdb": con, "duckdb": obs_con},
+    )
+    research_silver_prices_module.silver_research_daily_prices(context)
+
+    row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value, partition_key
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_research_daily_prices_required_fields_nulls'
+        """
+    ).fetchone()
+
+    assert row == (
+        "dq_research_daily_prices_required_fields_nulls",
+        "PASS",
+        0.0,
+        partition_key,
+    )

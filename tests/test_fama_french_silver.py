@@ -57,10 +57,11 @@ def test_silver_fama_french_factors_materializes_single_parquet_file(tmp_path: P
     bronze_df.to_parquet(bronze_dir / "factors.parquet", index=False)
 
     con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
     try:
         result = materialize(
             [silver_fama_french_factors_parquet],
-            resources={"research_duckdb": con},
+            resources={"research_duckdb": con, "duckdb": obs_con},
         )
         assert result.success
 
@@ -74,5 +75,21 @@ def test_silver_fama_french_factors_materializes_single_parquet_file(tmp_path: P
             "2026-03-15",
         ]
         assert df["mom"].tolist() == [0.6, -0.1]
+
+        dq_rows = obs_con.execute(
+            """
+            SELECT check_name, status, measured_value
+            FROM observability.data_quality_checks
+            WHERE check_name IN (
+                'dq_research_factors_required_fields_nulls',
+                'dq_research_factors_mom_required_after_start_nulls'
+            )
+            ORDER BY check_name
+            """
+        ).fetchall()
+        assert dq_rows == [
+            ("dq_research_factors_mom_required_after_start_nulls", "PASS", 0.0),
+            ("dq_research_factors_required_fields_nulls", "PASS", 0.0),
+        ]
     finally:
         con.close()

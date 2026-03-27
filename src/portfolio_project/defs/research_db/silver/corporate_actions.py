@@ -2,10 +2,12 @@ import os
 from pathlib import Path
 
 from dagster import AssetExecutionContext, asset
+from dagster._core.errors import DagsterInvalidPropertyError
 
 from portfolio_project.defs.research_db.bronze.research_prices import (
     bronze_alpaca_corporate_actions_daily,
 )
+from portfolio_project.defs.research_db.dq_checks import log_required_field_null_check
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 
@@ -14,7 +16,7 @@ DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
     name="alpaca_corporate_actions",
     key_prefix=["silver"],
     deps=[bronze_alpaca_corporate_actions_daily],
-    required_resource_keys={"research_duckdb"},
+    required_resource_keys={"research_duckdb", "duckdb"},
 )
 def silver_alpaca_corporate_actions(context: AssetExecutionContext) -> None:
     """
@@ -61,6 +63,70 @@ def silver_alpaca_corporate_actions(context: AssetExecutionContext) -> None:
         ORDER BY effective_date, symbol, action_type, process_date
         """,
         [actions_glob],
+    )
+
+    try:
+        run = getattr(context, "run", None)
+    except DagsterInvalidPropertyError:
+        run = None
+    run_id = getattr(run, "run_id", None)
+    try:
+        job_name = getattr(context, "job_name", None)
+    except DagsterInvalidPropertyError:
+        job_name = None
+
+    log_required_field_null_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        check_name="dq_research_alpaca_corporate_actions_required_fields_nulls",
+        relation_sql="SELECT * FROM silver.alpaca_corporate_actions",
+        relation_params=[],
+        required_columns=["symbol", "effective_date", "action_type", "source", "ingested_ts"],
+        details={"table": "silver.alpaca_corporate_actions"},
+        run_id=str(run_id) if run_id else None,
+        job_name=job_name,
+        partition_key=getattr(context, "partition_key", None),
+    )
+    log_required_field_null_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        check_name="dq_research_alpaca_corporate_actions_split_rate_nulls",
+        relation_sql="""
+            SELECT *
+            FROM silver.alpaca_corporate_actions
+            WHERE action_type IN ('forward_splits', 'reverse_splits')
+        """,
+        relation_params=[],
+        required_columns=["old_rate", "new_rate"],
+        details={
+            "table": "silver.alpaca_corporate_actions",
+            "rule": {
+                "old_rate": "required when action_type in ('forward_splits', 'reverse_splits')",
+                "new_rate": "required when action_type in ('forward_splits', 'reverse_splits')",
+            },
+        },
+        run_id=str(run_id) if run_id else None,
+        job_name=job_name,
+        partition_key=getattr(context, "partition_key", None),
+    )
+    log_required_field_null_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        check_name="dq_research_alpaca_corporate_actions_cash_rate_nulls",
+        relation_sql="""
+            SELECT *
+            FROM silver.alpaca_corporate_actions
+            WHERE action_type = 'cash_dividends'
+        """,
+        relation_params=[],
+        required_columns=["cash_rate"],
+        details={
+            "table": "silver.alpaca_corporate_actions",
+            "rule": {"cash_rate": "required when action_type = 'cash_dividends'"},
+        },
+        run_id=str(run_id) if run_id else None,
+        job_name=job_name,
+        partition_key=getattr(context, "partition_key", None),
     )
 
     row_count = con.execute("SELECT count(*) FROM silver.alpaca_corporate_actions").fetchone()[0]

@@ -100,11 +100,12 @@ def test_universe_assets_build_from_rolling_dollar_volume(tmp_path: Path, monkey
     )
 
     con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
 
-    daily_context = build_asset_context(resources={"research_duckdb": con})
+    daily_context = build_asset_context(resources={"research_duckdb": con, "duckdb": obs_con})
     universe_module.silver_universe_membership_daily(daily_context)
 
-    events_context = build_asset_context(resources={"research_duckdb": con})
+    events_context = build_asset_context(resources={"research_duckdb": con, "duckdb": obs_con})
     universe_module.silver_universe_membership_events(events_context)
 
     daily_rows = con.execute(
@@ -141,4 +142,24 @@ def test_universe_assets_build_from_rolling_dollar_volume(tmp_path: Path, monkey
     assert records == [
         ("NVDA", 1, 307000.0),
         ("MSFT", 2, 234000.0),
+    ]
+
+    dq_rows = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name IN (
+            'dq_research_universe_membership_daily_required_fields_nulls',
+            'dq_research_universe_membership_events_required_fields_nulls',
+            'dq_research_universe_membership_events_added_fields_nulls',
+            'dq_research_universe_membership_events_removed_fields_nulls'
+        )
+        ORDER BY check_name
+        """
+    ).fetchall()
+    assert dq_rows == [
+        ("dq_research_universe_membership_daily_required_fields_nulls", "PASS", 0.0),
+        ("dq_research_universe_membership_events_added_fields_nulls", "PASS", 0.0),
+        ("dq_research_universe_membership_events_removed_fields_nulls", "PASS", 0.0),
+        ("dq_research_universe_membership_events_required_fields_nulls", "PASS", 0.0),
     ]

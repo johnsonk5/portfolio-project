@@ -96,7 +96,8 @@ def test_signals_daily_builds_expected_metrics(tmp_path: Path, monkeypatch) -> N
         )
 
     con = duckdb.connect(":memory:")
-    context = build_asset_context(resources={"research_duckdb": con})
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con, "duckdb": obs_con})
     signals_module.silver_signals_daily(context)
 
     actual = con.execute(
@@ -166,3 +167,12 @@ def test_signals_daily_builds_expected_metrics(tmp_path: Path, monkeypatch) -> N
     assert pd.isna(first_row["returns_1d"])
     assert pd.isna(first_row["returns_5d"])
     assert pd.isna(first_row["returns_252d"])
+
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_research_signals_daily_required_fields_nulls'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_research_signals_daily_required_fields_nulls", "PASS", 0.0)

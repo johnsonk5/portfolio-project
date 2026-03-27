@@ -10,6 +10,7 @@ from dagster._core.errors import DagsterInvalidPropertyError
 from portfolio_project.defs.portfolio_db.observability.observability_modules import (
     write_dq_log,
 )
+from portfolio_project.defs.research_db.dq_checks import log_required_field_null_check
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 RESEARCH_PRICES_PARTITIONS_START_DATE = os.getenv(
@@ -191,6 +192,46 @@ def _log_research_daily_prices_schema_check(
     )
 
 
+def _log_research_daily_prices_required_field_check(
+    context: AssetExecutionContext,
+    parquet_path: Path,
+) -> None:
+    try:
+        run = getattr(context, "run", None)
+    except DagsterInvalidPropertyError:
+        run = None
+    run_id = getattr(run, "run_id", None)
+    partition_key = getattr(context, "partition_key", None)
+    try:
+        job_name = getattr(context, "job_name", None)
+    except DagsterInvalidPropertyError:
+        job_name = None
+
+    log_required_field_null_check(
+        measured_con=context.resources.research_duckdb,
+        observability_con=context.resources.duckdb,
+        check_name="dq_research_daily_prices_required_fields_nulls",
+        relation_sql="SELECT * FROM read_parquet(?, hive_partitioning = false)",
+        relation_params=[parquet_path.as_posix()],
+        required_columns=[
+            "symbol",
+            "timestamp",
+            "trade_date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "source",
+            "ingested_ts",
+        ],
+        details={"path": parquet_path.as_posix(), "table": "silver.research_daily_prices"},
+        run_id=str(run_id) if run_id else None,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+
 def _normalize_daily_prices_df(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
@@ -359,6 +400,7 @@ def silver_research_daily_prices(context: AssetExecutionContext) -> None:
         context.resources.duckdb,
         output_path,
     )
+    _log_research_daily_prices_required_field_check(context, output_path)
     source_counts = {
         str(source): int(count)
         for source, count in day_df["source"].value_counts().sort_index().items()
