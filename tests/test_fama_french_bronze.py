@@ -4,8 +4,8 @@ from pathlib import Path
 import pandas as pd
 from dagster import materialize
 
-import portfolio_project.defs.portfolio_db.bronze.fama_french as ff_module
-from portfolio_project.defs.portfolio_db.bronze.fama_french import (
+import portfolio_project.defs.research_db.bronze.fama_french as ff_module
+from portfolio_project.defs.research_db.bronze.fama_french import (
     _extract_daily_rows,
     bronze_fama_french_factors,
 )
