@@ -137,6 +137,11 @@ class LockedDuckDBConnection:
         return getattr(self._connection, name)
 
 
+def _is_file_in_use_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return "cannot open file" in message and "being used by another process" in message
+
+
 @resource(
     config_schema={
         "db_path": Field(String, is_required=False),
@@ -169,7 +174,15 @@ def duckdb_resource(context):
     )
     connection = None
     try:
-        connection = duckdb.connect(str(db_path))
+        try:
+            connection = duckdb.connect(str(db_path))
+        except duckdb.IOException as exc:
+            if _is_file_in_use_error(exc):
+                raise RuntimeError(
+                    "DuckDB database is already open in another process. "
+                    f"Close any external DuckDB sessions for {db_path} and retry."
+                ) from exc
+            raise
     finally:
         _release_duckdb_lock(lock_path, lock_fd)
 
