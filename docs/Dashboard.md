@@ -120,6 +120,8 @@ Focused page for one symbol.
 
 Monitoring page for run health and checks.
 
+All observability tables shown on this page are sourced from the portfolio DuckDB, including checks emitted by research workflows.
+
 ### Recent Failures and Errors:
 - Run failures from `observability.run_log`.
 - Freshness issues from `observability.data_freshness_checks` where status in `FAIL`, `SKIPPED`, `WARN`.

@@ -5,9 +5,17 @@ from pathlib import Path
 
 import pandas as pd
 import requests
-from dagster import Array, AssetExecutionContext, DailyPartitionsDefinition, Field, Float, Int, String, asset
-from dagster import AssetKey
-
+from dagster import (
+    Array,
+    AssetExecutionContext,
+    AssetKey,
+    DailyPartitionsDefinition,
+    Field,
+    Float,
+    Int,
+    String,
+    asset,
+)
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 BRONZE_NEWS_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
@@ -17,9 +25,7 @@ YAHOO_SEARCH_URL = "https://query1.finance.yahoo.com/v1/finance/search"
 
 
 def _resolve_symbols(context: AssetExecutionContext) -> list[str]:
-    env_symbols = [
-        s.strip() for s in os.getenv(TICKERS_ENV, "").split(",") if s.strip()
-    ]
+    env_symbols = [s.strip() for s in os.getenv(TICKERS_ENV, "").split(",") if s.strip()]
     config_symbols = context.op_config.get("symbols", None)
     active_symbols = []
     try:
@@ -40,7 +46,8 @@ def _resolve_symbols(context: AssetExecutionContext) -> list[str]:
             symbols = sorted(set(config_symbols) & set(env_symbols))
             if not symbols:
                 context.log.warning(
-                    "No overlap between configured symbols and symbols from %s; using symbols from %s.",
+                    "No overlap between configured symbols and symbols from %s; "
+                    "using symbols from %s.",
                     TICKERS_ENV,
                     TICKERS_ENV,
                 )
@@ -152,7 +159,10 @@ def bronze_yahoo_news(context: AssetExecutionContext) -> None:
             time.sleep(float(request_delay_seconds))
 
     if not rows:
-        context.log.warning("No Yahoo news items returned for partition %s.", context.partition_key)
+        context.log.warning(
+            "No Yahoo news items returned for partition %s.",
+            context.partition_key,
+        )
         return
 
     df = pd.DataFrame(rows)
@@ -167,7 +177,11 @@ def bronze_yahoo_news(context: AssetExecutionContext) -> None:
         existing = pd.read_parquet(out_path)
         existing_count = len(existing)
         df = pd.concat([existing, df], ignore_index=True)
-        subset_cols = [c for c in ["symbol", "uuid", "link", "title", "provider_publish_time"] if c in df.columns]
+        subset_cols = [
+            c
+            for c in ["symbol", "uuid", "link", "title", "provider_publish_time"]
+            if c in df.columns
+        ]
         if subset_cols:
             df = df.drop_duplicates(subset=subset_cols, keep="last")
 
@@ -177,7 +191,9 @@ def bronze_yahoo_news(context: AssetExecutionContext) -> None:
     rows_updated = 0
     rows_deleted = max(existing_count - final_count, 0)
 
-    subset_cols = [c for c in ["symbol", "uuid", "link", "title", "provider_publish_time"] if c in df.columns]
+    subset_cols = [
+        c for c in ["symbol", "uuid", "link", "title", "provider_publish_time"] if c in df.columns
+    ]
     if had_existing_partition and subset_cols:
         previous_state = existing.drop_duplicates(subset=subset_cols, keep="last")
         current_state = df.drop_duplicates(subset=subset_cols, keep="last")
@@ -198,7 +214,9 @@ def bronze_yahoo_news(context: AssetExecutionContext) -> None:
         )
         rows_deleted = int((deleted_keys["_merge"] == "left_only").sum())
 
-        value_cols = [c for c in current_state.columns if c not in subset_cols and c in previous_state.columns]
+        value_cols = [
+            c for c in current_state.columns if c not in subset_cols and c in previous_state.columns
+        ]
         if value_cols:
             joined = current_state.merge(
                 previous_state,

@@ -1,13 +1,12 @@
+import html
 import os
 import random
 from pathlib import Path
 
-import html
 import duckdb
 import pandas as pd
-import streamlit as st
-from streamlit_plotly_events import plotly_events
 import plotly.graph_objects as go
+import streamlit as st
 
 from portfolio_project.components.hover_bar import hover_bar_chart, hover_grouped_bar_chart
 
@@ -187,11 +186,12 @@ st.markdown(CSS, unsafe_allow_html=True)
 QUOTES = [
     '"Well then buy it...well then sell it, I don\'t know... *vomits*" - Eric Andre',
     '"Don\'t Believe the Hype" - Flavor Flav',
-    '"Mo\' money, Mo\' problems" - The Buddha',
+    "\"Mo' money, Mo' problems\" - The Buddha",
     '"What\'s the most you ever lost on a coin toss?" - Anton Chigurh',
 ]
 
 MAG7_SYMBOLS = {"AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "GOOG", "META", "TSLA"}
+
 
 def _navigate_to_symbol(symbol: str) -> None:
     if not symbol:
@@ -252,7 +252,7 @@ def _render_symbol_table(
     <table class="ticker-table">
       <thead><tr>{headers}</tr></thead>
       <tbody>
-        {''.join(rows)}
+        {"".join(rows)}
       </tbody>
     </table>
     """
@@ -274,9 +274,7 @@ def _load_daily_returns() -> tuple[pd.DataFrame, str | None]:
 
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        latest_date_row = con.execute(
-            "SELECT MAX(trade_date) FROM gold.prices"
-        ).fetchone()
+        latest_date_row = con.execute("SELECT MAX(trade_date) FROM gold.prices").fetchone()
         if not latest_date_row or latest_date_row[0] is None:
             return pd.DataFrame(), "No gold.prices data found."
 
@@ -321,9 +319,7 @@ def _load_risky_bets(
 
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        latest_date_row = con.execute(
-            "SELECT MAX(trade_date) FROM gold.prices"
-        ).fetchone()
+        latest_date_row = con.execute("SELECT MAX(trade_date) FROM gold.prices").fetchone()
         if not latest_date_row or latest_date_row[0] is None:
             return (
                 pd.DataFrame(),
@@ -367,16 +363,8 @@ def _load_risky_bets(
     df["vol_pct"] = df["realized_vol_21d"] * 100.0
     df["mom_pct"] = df["returns_21d"] * 100.0
 
-    hot = (
-        df[df["returns_21d"] > 0]
-        .sort_values("returns_21d", ascending=False)
-        .head(hot_limit)
-    )
-    crash = (
-        df[df["returns_21d"] < 0]
-        .sort_values("returns_21d", ascending=True)
-        .head(crash_limit)
-    )
+    hot = df[df["returns_21d"] > 0].sort_values("returns_21d", ascending=False).head(hot_limit)
+    crash = df[df["returns_21d"] < 0].sort_values("returns_21d", ascending=True).head(crash_limit)
     sleepy = df.sort_values("realized_vol_21d", ascending=True).head(sleepy_limit)
 
     label = pd.to_datetime(trade_date).strftime("%B %d, %Y")
@@ -399,9 +387,7 @@ def _load_underrated_investments(
 
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        latest_date_row = con.execute(
-            "SELECT MAX(trade_date) FROM gold.prices"
-        ).fetchone()
+        latest_date_row = con.execute("SELECT MAX(trade_date) FROM gold.prices").fetchone()
         if not latest_date_row or latest_date_row[0] is None:
             return pd.DataFrame(), None, "No gold.prices data found."
 
@@ -448,9 +434,7 @@ def _load_sentiment_movers(
 
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        latest_date_row = con.execute(
-            "SELECT MAX(trade_date) FROM gold.prices"
-        ).fetchone()
+        latest_date_row = con.execute("SELECT MAX(trade_date) FROM gold.prices").fetchone()
         if not latest_date_row or latest_date_row[0] is None:
             return pd.DataFrame(), None, "No gold.prices data found."
 
@@ -549,9 +533,7 @@ def _load_big_picture(top_n: int = 7) -> tuple[dict, str | None, str | None]:
 
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        latest_date_row = con.execute(
-            "SELECT MAX(trade_date) FROM gold.prices"
-        ).fetchone()
+        latest_date_row = con.execute("SELECT MAX(trade_date) FROM gold.prices").fetchone()
         if not latest_date_row or latest_date_row[0] is None:
             return {}, None, "No gold.prices data found."
 
@@ -590,15 +572,15 @@ def _load_big_picture(top_n: int = 7) -> tuple[dict, str | None, str | None]:
     sma_200_mask = valid_returns["sma_200"].notna() & valid_returns["close"].notna()
 
     pct_above_50 = (
-        (valid_returns.loc[sma_50_mask, "close"]
-        > valid_returns.loc[sma_50_mask, "sma_50"]).mean()
+        (valid_returns.loc[sma_50_mask, "close"] > valid_returns.loc[sma_50_mask, "sma_50"]).mean()
         * 100.0
         if sma_50_mask.any()
         else None
     )
     pct_above_200 = (
-        (valid_returns.loc[sma_200_mask, "close"]
-        > valid_returns.loc[sma_200_mask, "sma_200"]).mean()
+        (
+            valid_returns.loc[sma_200_mask, "close"] > valid_returns.loc[sma_200_mask, "sma_200"]
+        ).mean()
         * 100.0
         if sma_200_mask.any()
         else None
@@ -660,7 +642,7 @@ if error:
     st.info(error)
 else:
     st.markdown(
-        f"<div class=\"metric-pill\">Latest trade date: {label}</div>",
+        f'<div class="metric-pill">Latest trade date: {label}</div>',
         unsafe_allow_html=True,
     )
 
@@ -679,9 +661,7 @@ else:
             st.metric("% above 200D SMA", f"{big_picture['pct_above_200']:.1f}%")
     with bp_cols[3]:
         if big_picture["mag7_contrib"] is None:
-            st.metric(
-                "Mag 7 Return Impact", "n/a"
-            )
+            st.metric("Mag 7 Return Impact", "n/a")
         else:
             st.metric(
                 "Mag 7 Return Impact",
@@ -701,7 +681,7 @@ with left:
         st.info(label or "No data available yet.")
     else:
         st.markdown(
-            f"<div class=\"metric-pill\">Latest trade date: {label}</div>",
+            f'<div class="metric-pill">Latest trade date: {label}</div>',
             unsafe_allow_html=True,
         )
 
@@ -715,9 +695,7 @@ with left:
         row_height = 30
         chart_height = max(320, row_height * len(ordered))
         ordered = ordered.copy()
-        ordered["returns_pct"] = pd.to_numeric(
-            ordered["returns_pct"], errors="coerce"
-        ).fillna(0.0)
+        ordered["returns_pct"] = pd.to_numeric(ordered["returns_pct"], errors="coerce").fillna(0.0)
         x_vals = ordered["returns_pct"].astype(float).tolist()
         y_vals = ordered["symbol"].astype(str).tolist()
         max_abs = max(abs(val) for val in x_vals) if x_vals else 1.0
@@ -753,14 +731,18 @@ with right:
         st.info(error)
     else:
         st.markdown(
-            f"<div class=\"metric-pill\">Latest trade date: {label}</div>",
+            f'<div class="metric-pill">Latest trade date: {label}</div>',
             unsafe_allow_html=True,
         )
 
         hot_col, crash_col, sleepy_col = st.columns([2.0, 2.0, 1.6], gap="medium")
         with hot_col:
             st.markdown(
-                '<span class="tooltip" data-tip="High-volatility names with positive 21-day returns."><strong>Hot Ones 🔥</strong></span>',
+                (
+                    '<span class="tooltip" '
+                    'data-tip="High-volatility names with positive 21-day returns.">'
+                    "<strong>Hot Ones 🔥</strong></span>"
+                ),
                 unsafe_allow_html=True,
             )
             if hot.empty:
@@ -776,7 +758,11 @@ with right:
 
         with crash_col:
             st.markdown(
-                '<span class="tooltip" data-tip="High-volatility names with negative 21-day returns."><strong>Crashing Out 😢</strong></span>',
+                (
+                    '<span class="tooltip" '
+                    'data-tip="High-volatility names with negative 21-day returns.">'
+                    "<strong>Crashing Out 😢</strong></span>"
+                ),
                 unsafe_allow_html=True,
             )
             if crash.empty:
@@ -792,7 +778,11 @@ with right:
 
         with sleepy_col:
             st.markdown(
-                '<span class="tooltip" data-tip="Lowest-volatility names on the latest trade date."><strong>Sleepy 😴</strong></span>',
+                (
+                    '<span class="tooltip" '
+                    'data-tip="Lowest-volatility names on the latest trade date.">'
+                    "<strong>Sleepy 😴</strong></span>"
+                ),
                 unsafe_allow_html=True,
             )
             if sleepy.empty:
@@ -808,16 +798,15 @@ with right:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-underrated_col, good_news_col, bad_news_col = st.columns(
-    [1.2, 0.9, 0.9], gap="medium"
-)
+underrated_col, good_news_col, bad_news_col = st.columns([1.2, 0.9, 0.9], gap="medium")
 
 with underrated_col:
     st.markdown('<div class="section-card" style="margin-top: 18px;">', unsafe_allow_html=True)
     st.markdown(
         '<div class="section-title"><span class="tooltip" '
-        'data-tip="Stocks with strong 12-1 momentum that are still well below their 52-week highs.">'
-        '<strong>Underrated Investments</strong></span></div>',
+        'data-tip="Stocks with strong 12-1 momentum that are still well below their '
+        '52-week highs.">'
+        "<strong>Underrated Investments</strong></span></div>",
         unsafe_allow_html=True,
     )
 
@@ -826,7 +815,7 @@ with underrated_col:
         st.info(error)
     else:
         st.markdown(
-            f"<div class=\"metric-pill\">Latest trade date: {label}</div>",
+            f'<div class="metric-pill">Latest trade date: {label}</div>',
             unsafe_allow_html=True,
         )
         _render_symbol_table(
@@ -844,7 +833,7 @@ with good_news_col:
     st.markdown(
         '<div class="section-title"><span class="tooltip" '
         'data-tip="Highest headline sentiment scores with 5-day returns for context.">'
-        '<strong>The Good News 🙏</strong></span></div>',
+        "<strong>The Good News 🙏</strong></span></div>",
         unsafe_allow_html=True,
     )
 
@@ -853,7 +842,7 @@ with good_news_col:
         st.info(error)
     else:
         st.markdown(
-            f"<div class=\"metric-pill\">Latest trade date: {label}</div>",
+            f'<div class="metric-pill">Latest trade date: {label}</div>',
             unsafe_allow_html=True,
         )
         symbols = good_news_df["symbol"].tolist()
@@ -904,7 +893,7 @@ with bad_news_col:
     st.markdown(
         '<div class="section-title"><span class="tooltip" '
         'data-tip="Lowest headline sentiment scores with 5-day returns for context.">'
-        '<strong>The Bad News 😈</strong></span></div>',
+        "<strong>The Bad News 😈</strong></span></div>",
         unsafe_allow_html=True,
     )
 
@@ -913,7 +902,7 @@ with bad_news_col:
         st.info(error)
     else:
         st.markdown(
-            f"<div class=\"metric-pill\">Latest trade date: {label}</div>",
+            f'<div class="metric-pill">Latest trade date: {label}</div>',
             unsafe_allow_html=True,
         )
         symbols = bad_news_df["symbol"].tolist()
@@ -958,4 +947,3 @@ with bad_news_col:
             _navigate_to_symbol(clicked_symbol)
 
     st.markdown("</div>", unsafe_allow_html=True)
-

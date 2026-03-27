@@ -9,6 +9,8 @@ Reliability is handled with three layers:
 - Freshness checks (`data_freshness_checks`).
 - Data quality checks (`data_quality_checks`).
 
+All observability tables are written to the portfolio DuckDB (`portfolio.duckdb`), even for research workflows that read and write data in `research.duckdb`.
+
 ## Run Observability
 
 ### Tables
@@ -43,6 +45,8 @@ DQ checks run on successful runs and write to `observability.data_quality_checks
   - `silver.assets` active-symbol uniqueness precondition.
   - Silver prices schema, uniqueness, null thresholds, and numeric/range checks.
   - Gold prices schema, uniqueness, null thresholds, and numeric/range checks.
+- `research_daily_prices_job`:
+  - `silver.research_daily_prices` expected columns and DuckDB data types.
 - `daily_news_job`:
   - Silver news schema, uniqueness, and null-threshold checks.
 - `wikipedia_activity_job`:

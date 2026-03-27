@@ -28,6 +28,9 @@ Refresh the recent-window research price history from Alpaca and rebuild the dow
 - `bronze_alpaca_prices_daily` + `bronze_alpaca_corporate_actions_daily` -> `silver.alpaca_corporate_actions` -> `silver.research_daily_prices` -> `silver.signals_daily`
 - `silver.research_daily_prices` -> `silver.universe_membership_daily` -> `silver.universe_membership_events`
 
+### Data Quality
+- Validates expected columns and DuckDB data types for each emitted `silver.research_daily_prices` partition and writes the result to `observability.data_quality_checks` in the portfolio DuckDB.
+
 ### Schedule
 - `research_daily_prices_schedule`: `35 9 * * *` America/New_York.
 - Uses previous US trading day as partition key.

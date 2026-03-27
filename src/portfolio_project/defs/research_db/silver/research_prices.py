@@ -2,8 +2,14 @@ import os
 from datetime import date, datetime
 from pathlib import Path
 
+import duckdb
 import pandas as pd
 from dagster import AssetExecutionContext, DailyPartitionsDefinition, asset
+from dagster._core.errors import DagsterInvalidPropertyError
+
+from portfolio_project.defs.portfolio_db.observability.observability_modules import (
+    write_dq_log,
+)
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 RESEARCH_PRICES_PARTITIONS_START_DATE = os.getenv(
@@ -30,6 +36,22 @@ PRICE_COLUMNS = [
     "source",
     "ingested_ts",
 ]
+EXPECTED_DUCKDB_TYPES = {
+    "symbol": {"VARCHAR"},
+    "timestamp": {"TIMESTAMP WITH TIME ZONE"},
+    "trade_date": {"DATE"},
+    "open": {"DOUBLE"},
+    "high": {"DOUBLE"},
+    "low": {"DOUBLE"},
+    "close": {"DOUBLE"},
+    "adjusted_close": {"DOUBLE"},
+    "volume": {"BIGINT"},
+    "trade_count": {"BIGINT"},
+    "vwap": {"DOUBLE"},
+    "dollar_volume": {"DOUBLE"},
+    "source": {"VARCHAR"},
+    "ingested_ts": {"TIMESTAMP WITH TIME ZONE"},
+}
 
 
 def _table_exists(con, schema: str, table: str) -> bool:
@@ -84,6 +106,89 @@ def _load_bronze_prices(dataset_name: str, trade_date: date) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
     return pd.read_parquet(path)
+
+
+def _validate_research_daily_prices_schema(con, parquet_path: Path) -> dict:
+    del con
+    schema_con = duckdb.connect(":memory:")
+    try:
+        schema_rows = schema_con.execute(
+            "DESCRIBE SELECT * FROM read_parquet(?, hive_partitioning = false)",
+            [parquet_path.as_posix()],
+        ).fetchall()
+    finally:
+        schema_con.close()
+    actual_types = {str(row[0]): str(row[1]).upper() for row in schema_rows}
+    expected_columns = list(EXPECTED_DUCKDB_TYPES)
+    actual_columns = list(actual_types)
+    missing_columns = [column for column in expected_columns if column not in actual_types]
+    unexpected_columns = [
+        column for column in actual_columns if column not in EXPECTED_DUCKDB_TYPES
+    ]
+
+    type_mismatches = {}
+    for column, expected_types in EXPECTED_DUCKDB_TYPES.items():
+        actual_type = actual_types.get(column)
+        if actual_type is None:
+            continue
+        normalized_expected = {expected_type.upper() for expected_type in expected_types}
+        if actual_type not in normalized_expected:
+            type_mismatches[column] = {
+                "expected": sorted(normalized_expected),
+                "actual": actual_type,
+            }
+
+    status = "PASS"
+    if missing_columns or unexpected_columns or type_mismatches:
+        status = "FAIL"
+
+    return {
+        "status": status,
+        "measured_value": float(
+            len(missing_columns) + len(unexpected_columns) + len(type_mismatches)
+        ),
+        "threshold_value": 0.0,
+        "details": {
+            "path": parquet_path.as_posix(),
+            "expected_columns": expected_columns,
+            "actual_columns": actual_columns,
+            "missing_columns": missing_columns,
+            "unexpected_columns": unexpected_columns,
+            "type_mismatches": type_mismatches,
+        },
+    }
+
+
+def _log_research_daily_prices_schema_check(
+    context: AssetExecutionContext,
+    con,
+    parquet_path: Path,
+) -> None:
+    try:
+        run = getattr(context, "run", None)
+    except DagsterInvalidPropertyError:
+        run = None
+    run_id = getattr(run, "run_id", None)
+    partition_key = getattr(context, "partition_key", None)
+    try:
+        job_name = getattr(context, "job_name", None)
+    except DagsterInvalidPropertyError:
+        job_name = None
+
+    result = _validate_research_daily_prices_schema(con, parquet_path)
+    write_dq_log(
+        con=con,
+        check_name="dq_research_daily_prices_schema_columns_and_types",
+        severity="RED",
+        status=result["status"],
+        measured_value=result["measured_value"],
+        threshold_value=result["threshold_value"],
+        details=result["details"],
+        run_id=str(run_id) if run_id else None,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
 
 
 def _normalize_daily_prices_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -165,7 +270,9 @@ def write_research_daily_prices_partition(
         return 0, 0
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    day_df.to_parquet(out_path, index=False)
+    temp_path = out_path.with_suffix(f"{out_path.suffix}.tmp")
+    day_df.to_parquet(temp_path, index=False)
+    temp_path.replace(out_path)
     return 1, len(day_df)
 
 
@@ -173,7 +280,7 @@ def write_research_daily_prices_partition(
     name="research_daily_prices",
     key_prefix=["silver"],
     partitions_def=RESEARCH_PRICES_PARTITIONS,
-    required_resource_keys={"research_duckdb"},
+    required_resource_keys={"research_duckdb", "duckdb"},
 )
 def silver_research_daily_prices(context: AssetExecutionContext) -> None:
     """
@@ -246,6 +353,12 @@ def silver_research_daily_prices(context: AssetExecutionContext) -> None:
         day_df,
         overwrite=True,
     )
+    output_path = _silver_monthly_prices_path(trade_date)
+    _log_research_daily_prices_schema_check(
+        context,
+        context.resources.duckdb,
+        output_path,
+    )
     source_counts = {
         str(source): int(count)
         for source, count in day_df["source"].value_counts().sort_index().items()
@@ -258,6 +371,6 @@ def silver_research_daily_prices(context: AssetExecutionContext) -> None:
             "symbol_count": int(day_df["symbol"].nunique()),
             "source_counts": source_counts,
             "table": "silver.research_daily_prices",
-            "output_path": _silver_monthly_prices_path(trade_date).as_posix(),
+            "output_path": output_path.as_posix(),
         }
     )

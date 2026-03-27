@@ -6,7 +6,6 @@ import duckdb
 import pandas as pd
 import streamlit as st
 
-
 st.set_page_config(
     page_title="Deep Dive",
     page_icon="DD",

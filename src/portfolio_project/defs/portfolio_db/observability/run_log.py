@@ -382,7 +382,10 @@ def _write_freshness_check_rows(con, rows: list[dict]) -> None:
     )
     if not rows:
         return
-    con.execute("DELETE FROM observability.data_freshness_checks WHERE run_id = ?", [rows[0]["run_id"]])
+    con.execute(
+        "DELETE FROM observability.data_freshness_checks WHERE run_id = ?",
+        [rows[0]["run_id"]],
+    )
     for row in rows:
         con.execute(
             """
@@ -448,7 +451,9 @@ def _silver_price_partition_paths(partition_key: str) -> list[str]:
     return sorted(paths)
 
 
-def _check_prices_freshness(con, run_id: str, job_name: str, partition_key: Optional[str]) -> list[dict]:
+def _check_prices_freshness(
+    con, run_id: str, job_name: str, partition_key: Optional[str]
+) -> list[dict]:
     if job_name != "daily_prices_job":
         return []
 
@@ -592,7 +597,9 @@ def _check_prices_freshness(con, run_id: str, job_name: str, partition_key: Opti
     ]
 
 
-def _check_wikipedia_freshness(con, run_id: str, job_name: str, partition_key: Optional[str]) -> list[dict]:
+def _check_wikipedia_freshness(
+    con, run_id: str, job_name: str, partition_key: Optional[str]
+) -> list[dict]:
     if job_name != "wikipedia_activity_job":
         return []
 
@@ -626,7 +633,13 @@ def _check_wikipedia_freshness(con, run_id: str, job_name: str, partition_key: O
     ).fetchone()[0]
 
     data_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
-    wiki_path = data_root / "silver" / "wikipedia_pageviews" / f"view_date={partition_key}" / "data_0.parquet"
+    wiki_path = (
+        data_root
+        / "silver"
+        / "wikipedia_pageviews"
+        / f"view_date={partition_key}"
+        / "data_0.parquet"
+    )
     assets_with_views = 0
     if wiki_path.exists():
         assets_with_views = con.execute(
@@ -664,7 +677,9 @@ def _check_wikipedia_freshness(con, run_id: str, job_name: str, partition_key: O
     ]
 
 
-def _check_news_freshness(con, run_id: str, job_name: str, partition_key: Optional[str]) -> list[dict]:
+def _check_news_freshness(
+    con, run_id: str, job_name: str, partition_key: Optional[str]
+) -> list[dict]:
     if job_name != "daily_news_job":
         return []
 
@@ -773,7 +788,11 @@ def _write_run_log(context, status: str, error_message: Optional[str] = None) ->
     run_id = getattr(run, "run_id", None) or getattr(context, "run_id", None)
     job_name = getattr(run, "job_name", None) or getattr(context, "job_name", None)
     if not run_id:
-        context.log.warning("Run log skipped because run_id is missing (status=%s, job=%s)", status, job_name)
+        context.log.warning(
+            "Run log skipped because run_id is missing (status=%s, job=%s)",
+            status,
+            job_name,
+        )
         return
     run_id = str(run_id)
     start_dt, end_dt = _get_run_times_from_instance(context, run_id)
@@ -808,9 +827,7 @@ def _write_run_log(context, status: str, error_message: Optional[str] = None) ->
         end_dt,
     )
     end_dt = end_dt or datetime.now(timezone.utc)
-    duration_seconds = (
-        (end_dt - start_dt).total_seconds() if start_dt and end_dt else None
-    )
+    duration_seconds = (end_dt - start_dt).total_seconds() if start_dt and end_dt else None
     tags = run.tags or {} if run else {}
     partition_key = tags.get("dagster/partition")
     tags_json = json.dumps(tags) if tags else None
@@ -1015,4 +1032,3 @@ def dagster_run_log_failure_sensor(context) -> None:
     except Exception as exc:
         context.log.warning("Run log write failed: %s", exc)
         raise RuntimeError(f"Observability failure: run_log_write_failed: {exc}") from exc
-

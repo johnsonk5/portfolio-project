@@ -6,9 +6,8 @@ from pathlib import Path
 import pandas as pd
 from dagster import AssetExecutionContext, DailyPartitionsDefinition, asset
 
-from portfolio_project.defs.portfolio_db.silver.assets import silver_alpaca_assets
 from portfolio_project.defs.portfolio_db.bronze.news import bronze_yahoo_news
-
+from portfolio_project.defs.portfolio_db.silver.assets import silver_alpaca_assets
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
 SILVER_NEWS_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
@@ -234,7 +233,9 @@ def silver_ref_publishers(context: AssetExecutionContext) -> None:
         FROM silver.ref_publishers
         """
     ).fetch_df()
-    existing_norms = set(existing_df["publisher_name_norm"].astype(str)) if not existing_df.empty else set()
+    existing_norms = (
+        set(existing_df["publisher_name_norm"].astype(str)) if not existing_df.empty else set()
+    )
 
     domain_series = pd.Series(dtype="string")
     publisher_overrides = _load_publisher_domain_overrides()
@@ -252,7 +253,9 @@ def silver_ref_publishers(context: AssetExecutionContext) -> None:
         .drop_duplicates(subset=["publisher_norm"])
         .loc[:, ["publisher", "publisher_norm"]]
     )
-    unique_publishers["publisher_domain"] = unique_publishers["publisher_norm"].map(domain_series).fillna("")
+    unique_publishers["publisher_domain"] = (
+        unique_publishers["publisher_norm"].map(domain_series).fillna("")
+    )
 
     tranco_ranks = _load_tranco_ranks(partition_date)
     if not tranco_ranks:
@@ -262,9 +265,7 @@ def silver_ref_publishers(context: AssetExecutionContext) -> None:
         )
     weight_now = datetime.now(timezone.utc)
     refresh_cutoff = weight_now - timedelta(days=TRANCO_LOOKUP_DAYS)
-    new_publishers = unique_publishers[
-        ~unique_publishers["publisher_norm"].isin(existing_norms)
-    ]
+    new_publishers = unique_publishers[~unique_publishers["publisher_norm"].isin(existing_norms)]
     new_publishers = new_publishers.sort_values("publisher_norm", kind="stable")
     inserted_count = 0
     matched_count = 0
@@ -343,15 +344,23 @@ def silver_ref_publishers(context: AssetExecutionContext) -> None:
         refresh_targets = refresh_df[refresh_mask].copy()
         if not refresh_targets.empty:
             refresh_targets["publisher_domain"] = refresh_targets["publisher_domain"].fillna("")
-            refresh_targets["publisher_domain"] = refresh_targets["publisher_domain"].map(_base_domain)
-            refresh_targets["tranco_rank"] = refresh_targets["publisher_domain"].map(tranco_ranks)
-            refresh_targets[["publisher_weight", "weight_source"]] = refresh_targets["tranco_rank"].apply(
-                lambda rank: pd.Series(_rank_to_weight(rank, DEFAULT_PUBLISHER_WEIGHT))
+            refresh_targets["publisher_domain"] = refresh_targets["publisher_domain"].map(
+                _base_domain
             )
+            refresh_targets["tranco_rank"] = refresh_targets["publisher_domain"].map(tranco_ranks)
+            refresh_targets[["publisher_weight", "weight_source"]] = refresh_targets[
+                "tranco_rank"
+            ].apply(lambda rank: pd.Series(_rank_to_weight(rank, DEFAULT_PUBLISHER_WEIGHT)))
             refresh_targets["weight_updated_ts"] = weight_now
             refreshed_match_count = int((refresh_targets["weight_source"] == "tranco").sum())
             refresh_targets = refresh_targets[
-                ["publisher_id", "publisher_domain", "publisher_weight", "weight_source", "weight_updated_ts"]
+                [
+                    "publisher_id",
+                    "publisher_domain",
+                    "publisher_weight",
+                    "weight_source",
+                    "weight_updated_ts",
+                ]
             ]
             con.register("publisher_weight_updates_df", refresh_targets)
             con.execute(
@@ -367,9 +376,7 @@ def silver_ref_publishers(context: AssetExecutionContext) -> None:
                 """
             )
 
-    total_count = con.execute(
-        "SELECT count(*) FROM silver.ref_publishers"
-    ).fetchone()[0]
+    total_count = con.execute("SELECT count(*) FROM silver.ref_publishers").fetchone()[0]
     context.add_output_metadata(
         {
             "rows_inserted": inserted_count,
@@ -473,4 +480,3 @@ def silver_news(context: AssetExecutionContext) -> None:
             "missing_publisher_id_count": int(counts[2]) if counts[2] is not None else 0,
         }
     )
-

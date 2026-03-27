@@ -21,7 +21,9 @@ def silver_alpaca_corporate_actions(context: AssetExecutionContext) -> None:
     Build a research silver table of Alpaca split corporate actions keyed by effective date.
     """
     con = context.resources.research_duckdb
-    actions_glob = (DATA_ROOT / "bronze" / "alpaca_corporate_actions" / "actions.parquet").as_posix()
+    actions_glob = (
+        DATA_ROOT / "bronze" / "alpaca_corporate_actions" / "actions.parquet"
+    ).as_posix()
 
     con.execute("CREATE SCHEMA IF NOT EXISTS silver")
     con.execute(
