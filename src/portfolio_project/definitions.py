@@ -63,6 +63,12 @@ from portfolio_project.defs.research_db.bronze.research_prices import (
     bronze_alpaca_prices_daily,
     bronze_eodhd_prices_daily,
 )
+from portfolio_project.defs.research_db.gold.strategy import (
+    gold_strategy_holdings,
+    gold_strategy_performance,
+    gold_strategy_rankings,
+    gold_strategy_returns,
+)
 from portfolio_project.defs.research_db.silver.corporate_actions import (
     silver_alpaca_corporate_actions,
 )
@@ -374,6 +380,10 @@ defs = Definitions(
         silver_strategy_parameters,
         silver_universe_membership_events,
         silver_universe_membership_daily,
+        gold_strategy_rankings,
+        gold_strategy_holdings,
+        gold_strategy_returns,
+        gold_strategy_performance,
         gold_alpaca_prices,
         gold_activity,
         bronze_sp500_companies,
