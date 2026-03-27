@@ -211,3 +211,61 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | `ingested_ts` | `timestamp` | Bronze ingest timestamp carried forward. |
 | `bronze_snapshot_date` | `date` | Bronze snapshot date used to build the silver parquet files. |
 
+## `silver.strategy_definitions`
+
+*DuckDB Table in silver schema*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `strategy_id` | `object` | Unique strategy identifier. |
+| `strategy_name` | `object` | Human-readable strategy name. |
+| `strategy_version` | `object` | Version label. |
+| `description` | `object` | Optional description. |
+| `ranking_method` | `object` | Ranking metric or score logic. |
+| `rebalance_frequency` | `object` | Rebalance cadence such as monthly, weekly, or daily. |
+| `target_count` | `int` | Number of target holdings. |
+| `weighting_method` | `object` | Portfolio weighting rule. |
+| `benchmark_symbol` | `object` | Benchmark reference symbol. |
+| `long_short_flag` | `bool` | Whether the strategy is long-short. |
+| `start_date` | `date` | Effective start date. |
+| `end_date` | `date` | Effective end date. |
+| `is_active` | `bool` | Active strategy flag. |
+| `config_json` | `object` | Additional serialized configuration payload. |
+| `asof_ts` | `timestamp` | Load timestamp. |
+| `run_id` | `object` | Pipeline run identifier that loaded the row. |
+
+## `silver.strategy_runs`
+
+*DuckDB Table in silver schema*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `run_id` | `object` | Unique strategy run identifier. |
+| `strategy_id` | `object` | Parent strategy identifier. |
+| `run_status` | `object` | Run status such as `pending`, `running`, `success`, or `failed`. |
+| `dataset_version` | `object` | Research dataset snapshot identifier used for the run. |
+| `code_version` | `object` | Code version, commit, or release tag used for the run. |
+| `started_at` | `timestamp` | Execution start timestamp. |
+| `completed_at` | `timestamp` | Execution end timestamp. |
+| `error_message` | `object` | Failure details when the run does not succeed. |
+| `persist` | `bool` | Whether downstream strategy outputs should be retained. |
+| `asof_ts` | `timestamp` | Load timestamp. |
+
+## `silver.strategy_parameters`
+
+*DuckDB Table in silver schema*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `strategy_id` | `object` | Parent strategy identifier. |
+| `parameter_name` | `object` | Strategy parameter name. |
+| `parameter_value` | `object` | Parameter value stored as text. |
+| `parameter_type` | `object` | Declared parameter type such as `int`, `double`, `string`, or `bool`. |
+| `effective_start_date` | `date` | Date the parameter becomes active. |
+| `effective_end_date` | `date` | Date the parameter stops being active, if applicable. |
+| `is_active` | `bool` | Whether the parameter row is currently active. |
+| `description` | `object` | Optional parameter description. |
+| `ingest_ts` | `timestamp` | Ingestion timestamp. |
+| `asof_ts` | `timestamp` | Load timestamp. |
+| `run_id` | `object` | Pipeline run identifier that loaded the row. |
+
