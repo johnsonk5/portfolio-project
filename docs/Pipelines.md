@@ -38,6 +38,7 @@ Refresh the recent-window research price history from Alpaca and rebuild the dow
 - Compares the current partition row count against the recent median partition size and alerts on material drops.
 - Verifies `silver.universe_membership_daily` includes the expected latest trading date.
 - Tracks universe symbol counts by `member_date` and compares the latest count against the recent median.
+- Tracks recent missing-data rates for symbols in the latest research universe.
 
 ### Schedule
 - `research_daily_prices_schedule`: `35 9 * * *` America/New_York.

@@ -30,6 +30,7 @@ def _freshness_severity(check_name: str) -> str:
         "wikipedia_assets_with_views_min_count",
         "research_daily_prices_partition_row_count_vs_recent_median",
         "research_universe_membership_symbol_count_vs_recent_median",
+        "research_universe_membership_avg_symbol_missing_data_rate",
     }:
         return "YELLOW"
     return "RED"
@@ -873,6 +874,7 @@ def _check_research_universe_freshness(
     now = datetime.now(timezone.utc)
     latest_check_name = "research_universe_membership_latest_trading_date_present"
     count_check_name = "research_universe_membership_symbol_count_vs_recent_median"
+    missing_rate_check_name = "research_universe_membership_avg_symbol_missing_data_rate"
     if not partition_key:
         return [
             {
@@ -893,6 +895,18 @@ def _check_research_universe_freshness(
                 "partition_key": partition_key,
                 "check_name": count_check_name,
                 "severity": _freshness_severity(count_check_name),
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": json.dumps({"reason": "missing_partition_key"}),
+                "logged_ts": now,
+            },
+            {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": missing_rate_check_name,
+                "severity": _freshness_severity(missing_rate_check_name),
                 "status": "SKIPPED",
                 "measured_value": None,
                 "threshold_value": None,
@@ -928,6 +942,18 @@ def _check_research_universe_freshness(
                 "details_json": details,
                 "logged_ts": now,
             },
+            {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": missing_rate_check_name,
+                "severity": _freshness_severity(missing_rate_check_name),
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": details,
+                "logged_ts": now,
+            },
         ]
 
     universe_size = int(os.getenv("RESEARCH_UNIVERSE_SIZE", "500"))
@@ -936,6 +962,13 @@ def _check_research_universe_freshness(
     )
     min_history = int(os.getenv("RESEARCH_UNIVERSE_FRESHNESS_MIN_HISTORY", "3"))
     min_ratio = float(os.getenv("RESEARCH_UNIVERSE_FRESHNESS_MIN_SYMBOL_COUNT_RATIO", "0.95"))
+    missing_data_lookback_partitions = int(
+        os.getenv("RESEARCH_UNIVERSE_MISSING_DATA_LOOKBACK_PARTITIONS", "20")
+    )
+    missing_data_min_history = int(os.getenv("RESEARCH_UNIVERSE_MISSING_DATA_MIN_HISTORY", "3"))
+    max_avg_missing_data_rate = float(
+        os.getenv("RESEARCH_UNIVERSE_MISSING_DATA_MAX_AVG_RATE", "0.05")
+    )
 
     universe_table_present = _table_exists(con, "silver", "universe_membership_daily")
     counts_by_date: list[tuple[str, int]] = []
@@ -989,6 +1022,189 @@ def _check_research_universe_freshness(
         "logged_ts": now,
     }
 
+    missing_rate_check: dict[str, object]
+    if partition_key not in counts_lookup:
+        missing_rate_check = {
+            "run_id": run_id,
+            "job_name": job_name,
+            "partition_key": partition_key,
+            "check_name": missing_rate_check_name,
+            "severity": _freshness_severity(missing_rate_check_name),
+            "status": "SKIPPED",
+            "measured_value": None,
+            "threshold_value": None,
+            "details_json": json.dumps(
+                {
+                    "reason": "expected_member_date_missing",
+                    "expected_member_date": partition_key,
+                    "latest_available_member_date": latest_available_partition,
+                    "target_universe_size": universe_size,
+                }
+            ),
+            "logged_ts": now,
+        }
+    else:
+        recent_member_dates = [
+            member_date for member_date, _ in counts_by_date if member_date <= partition_key
+        ][-missing_data_lookback_partitions:]
+        if len(recent_member_dates) < missing_data_min_history:
+            missing_rate_check = {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": missing_rate_check_name,
+                "severity": _freshness_severity(missing_rate_check_name),
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": json.dumps(
+                    {
+                        "reason": "insufficient_history",
+                        "expected_member_date": partition_key,
+                        "minimum_history_required": missing_data_min_history,
+                        "history_partitions_available": len(recent_member_dates),
+                        "recent_member_dates": recent_member_dates,
+                    }
+                ),
+                "logged_ts": now,
+            }
+        else:
+            recent_window_start = recent_member_dates[0]
+            recent_window_end = recent_member_dates[-1]
+            existing_price_paths = []
+            missing_price_partitions = []
+            for member_date in recent_member_dates:
+                partition_path = _research_silver_price_partition_path(member_date)
+                if partition_path.exists():
+                    existing_price_paths.append(partition_path.as_posix())
+                else:
+                    missing_price_partitions.append(member_date)
+
+            if existing_price_paths:
+                present_prices_cte = """
+                present_prices AS (
+                    SELECT DISTINCT
+                        CAST(trade_date AS DATE) AS trade_date,
+                        upper(trim(symbol)) AS symbol
+                    FROM read_parquet(?)
+                    WHERE trade_date IS NOT NULL
+                      AND symbol IS NOT NULL
+                      AND trim(symbol) <> ''
+                )
+                """
+                present_prices_params = [existing_price_paths]
+            else:
+                present_prices_cte = """
+                present_prices AS (
+                    SELECT
+                        CAST(NULL AS DATE) AS trade_date,
+                        CAST(NULL AS VARCHAR) AS symbol
+                    WHERE FALSE
+                )
+                """
+                present_prices_params = []
+
+            symbol_missing_rows = con.execute(
+                f"""
+                WITH latest_universe AS (
+                    SELECT DISTINCT upper(trim(symbol)) AS symbol
+                    FROM silver.universe_membership_daily
+                    WHERE member_date = ?
+                      AND symbol IS NOT NULL
+                      AND trim(symbol) <> ''
+                ),
+                recent_membership AS (
+                    SELECT DISTINCT
+                        CAST(member_date AS DATE) AS member_date,
+                        upper(trim(symbol)) AS symbol
+                    FROM silver.universe_membership_daily
+                    WHERE member_date >= ?
+                      AND member_date <= ?
+                      AND symbol IS NOT NULL
+                      AND trim(symbol) <> ''
+                      AND upper(trim(symbol)) IN (SELECT symbol FROM latest_universe)
+                ),
+                {present_prices_cte}
+                SELECT
+                    rm.symbol,
+                    count(*) AS expected_dates,
+                    count(pp.symbol) AS present_dates,
+                    count(*) - count(pp.symbol) AS missing_dates
+                FROM recent_membership AS rm
+                LEFT JOIN present_prices AS pp
+                    ON pp.trade_date = rm.member_date
+                   AND pp.symbol = rm.symbol
+                GROUP BY rm.symbol
+                ORDER BY missing_dates DESC, expected_dates DESC, rm.symbol
+                """,
+                [partition_key, recent_window_start, recent_window_end, *present_prices_params],
+            ).fetchall()
+
+            symbol_missing_stats: list[dict[str, str | int | float]] = []
+            for symbol, expected_dates, present_dates, missing_dates in symbol_missing_rows:
+                expected_dates = int(expected_dates or 0)
+                present_dates = int(present_dates or 0)
+                missing_dates = int(missing_dates or 0)
+                missing_rate = (
+                    float(missing_dates) / float(expected_dates) if expected_dates > 0 else 0.0
+                )
+                symbol_missing_stats.append(
+                    {
+                        "symbol": str(symbol),
+                        "expected_dates": expected_dates,
+                        "present_dates": present_dates,
+                        "missing_dates": missing_dates,
+                        "missing_rate": missing_rate,
+                    }
+                )
+
+            missing_rates = [
+                float(row["missing_rate"]) for row in symbol_missing_stats if "missing_rate" in row
+            ]
+            average_missing_rate = (
+                float(statistics.mean(missing_rates)) if missing_rates else 0.0
+            )
+            symbols_with_missing_data = [
+                row
+                for row in symbol_missing_stats
+                if int(row["missing_dates"]) > 0
+            ]
+            max_missing_rate = max(missing_rates, default=0.0)
+            missing_rate_check = {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": missing_rate_check_name,
+                "severity": _freshness_severity(missing_rate_check_name),
+                "status": (
+                    "PASS"
+                    if average_missing_rate <= max_avg_missing_data_rate
+                    else "FAIL"
+                ),
+                "measured_value": average_missing_rate,
+                "threshold_value": max_avg_missing_data_rate,
+                "details_json": json.dumps(
+                    {
+                        "expected_member_date": partition_key,
+                        "window_start_member_date": recent_window_start,
+                        "window_end_member_date": recent_window_end,
+                        "lookback_partitions_considered": len(recent_member_dates),
+                        "latest_universe_symbol_count": current_symbol_count,
+                        "symbols_evaluated": len(symbol_missing_stats),
+                        "symbols_with_missing_data": len(symbols_with_missing_data),
+                        "symbols_with_missing_data_rate": (
+                            float(len(symbols_with_missing_data)) / float(len(symbol_missing_stats))
+                            if symbol_missing_stats
+                            else 0.0
+                        ),
+                        "max_symbol_missing_rate": float(max_missing_rate),
+                        "missing_price_partitions": missing_price_partitions,
+                        "top_missing_symbols": symbol_missing_stats[:10],
+                    }
+                ),
+                "logged_ts": now,
+            }
+
     prior_counts = [
         (member_date, symbol_count)
         for member_date, symbol_count in reversed(counts_by_date)
@@ -1020,7 +1236,7 @@ def _check_research_universe_freshness(
             ),
             "logged_ts": now,
         }
-        return [latest_check, count_check]
+        return [latest_check, count_check, missing_rate_check]
 
     historical_counts = [count for _, count in prior_counts]
     baseline_median = float(statistics.median(historical_counts))
@@ -1049,7 +1265,7 @@ def _check_research_universe_freshness(
         ),
         "logged_ts": now,
     }
-    return [latest_check, count_check]
+    return [latest_check, count_check, missing_rate_check]
 
 
 def _check_wikipedia_freshness(
