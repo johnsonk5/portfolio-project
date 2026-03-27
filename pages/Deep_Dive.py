@@ -261,9 +261,7 @@ selected_label = st.selectbox(
     index=selected_index,
 )
 
-selected_symbol = symbols_df.loc[
-    symbols_df["label"] == selected_label, "symbol"
-].iloc[0]
+selected_symbol = symbols_df.loc[symbols_df["label"] == selected_label, "symbol"].iloc[0]
 
 try:
     if st.query_params.get("symbol") != selected_symbol:
@@ -309,7 +307,7 @@ else:
     if "realized_vol_21d" in prices_df.columns and prices_df["realized_vol_21d"].notna().any():
         latest_vol = prices_df["realized_vol_21d"].dropna().iloc[-1]
     elif "returns_1d" in prices_df.columns:
-        vol_series = prices_df["returns_1d"].rolling(21).std() * (252 ** 0.5)
+        vol_series = prices_df["returns_1d"].rolling(21).std() * (252**0.5)
         if vol_series.notna().any():
             latest_vol = vol_series.dropna().iloc[-1]
 
@@ -370,14 +368,11 @@ else:
     title_block_height = 30
     between_side_charts_gap = 12
     side_chart_height = (
-        chart_height
-        + title_block_height
-        - (2 * title_block_height + between_side_charts_gap)
+        chart_height + title_block_height - (2 * title_block_height + between_side_charts_gap)
     ) / 2
     with main_col:
         st.markdown(
-            '<div class="section-title" style="margin: 0 0 8px 0; line-height: 1.1;">'
-            "Prices</div>",
+            '<div class="section-title" style="margin: 0 0 8px 0; line-height: 1.1;">Prices</div>',
             unsafe_allow_html=True,
         )
         wick = (
@@ -450,8 +445,7 @@ else:
 
     with side_col:
         st.markdown(
-            '<div class="section-title" style="margin: 0 0 8px 0; line-height: 1.1;">'
-            "Returns</div>",
+            '<div class="section-title" style="margin: 0 0 8px 0; line-height: 1.1;">Returns</div>',
             unsafe_allow_html=True,
         )
         returns_df = history_df[["trade_date", "returns_1d"]].copy()
@@ -462,9 +456,7 @@ else:
             returns_df.loc[valid_mask, "Daily"] = cumulative
 
         returns_df = returns_df.dropna(subset=["Daily"])
-        returns_long = returns_df.rename(
-            columns={"Daily": "ReturnPct"}
-        )
+        returns_long = returns_df.rename(columns={"Daily": "ReturnPct"})
         returns_long["Horizon"] = "1D"
         returns_long["ReturnPct"] = returns_long["ReturnPct"] * 100.0
 
@@ -545,9 +537,7 @@ else:
     if "realized_vol_21d" in vol_df.columns and vol_df["realized_vol_21d"].notna().any():
         vol_df["vol"] = vol_df["realized_vol_21d"]
     else:
-        vol_df["vol"] = (
-            vol_df["returns_1d"].rolling(21).std() * (252 ** 0.5)
-        )
+        vol_df["vol"] = vol_df["returns_1d"].rolling(21).std() * (252**0.5)
     vol_df = _filter_by_horizon(vol_df, horizon)
 
     vol_chart = (
@@ -621,8 +611,7 @@ else:
 
     with volume_col:
         st.markdown(
-            '<div class="section-title" style="margin: 0 0 8px 0; line-height: 1.1;">'
-            "Volume</div>",
+            '<div class="section-title" style="margin: 0 0 8px 0; line-height: 1.1;">Volume</div>',
             unsafe_allow_html=True,
         )
         if volume_df.empty:
@@ -681,4 +670,3 @@ else:
         },
     )
 st.markdown("</div>", unsafe_allow_html=True)
-

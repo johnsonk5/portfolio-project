@@ -47,9 +47,7 @@ def _normalize_bars_df(df: pd.DataFrame) -> pd.DataFrame:
 
 def _resolve_active_symbols(context: AssetExecutionContext) -> list[str]:
     # Pull fallback symbols
-    env_symbols = [
-        s.strip().upper() for s in os.getenv(TICKERS_ENV, "").split(",") if s.strip()
-    ]
+    env_symbols = [s.strip().upper() for s in os.getenv(TICKERS_ENV, "").split(",") if s.strip()]
     config_symbols_raw = (getattr(context, "op_config", None) or {}).get("symbols")
     config_symbols_set: set[str] = set()
     for symbol in config_symbols_raw or []:
@@ -249,7 +247,4 @@ def bronze_alpaca_assets(context: AssetExecutionContext) -> None:
     out_path = reference_dir / "alpaca_assets.parquet"
     df.to_parquet(out_path, index=False)
 
-    context.add_output_metadata(
-        {"path": str(out_path), "row_count": len(df)}
-    )
-
+    context.add_output_metadata({"path": str(out_path), "row_count": len(df)})

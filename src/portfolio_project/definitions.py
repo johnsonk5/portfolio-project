@@ -75,6 +75,11 @@ from portfolio_project.defs.research_db.silver.research_prices import (
 from portfolio_project.defs.research_db.silver.signals import (
     silver_signals_daily,
 )
+from portfolio_project.defs.research_db.silver.strategy import (
+    silver_strategy_definitions,
+    silver_strategy_parameters,
+    silver_strategy_runs,
+)
 from portfolio_project.defs.research_db.silver.universe import (
     silver_universe_membership_daily,
     silver_universe_membership_events,
@@ -364,6 +369,9 @@ defs = Definitions(
         silver_alpaca_corporate_actions,
         silver_research_daily_prices,
         silver_signals_daily,
+        silver_strategy_definitions,
+        silver_strategy_runs,
+        silver_strategy_parameters,
         silver_universe_membership_events,
         silver_universe_membership_daily,
         gold_alpaca_prices,
