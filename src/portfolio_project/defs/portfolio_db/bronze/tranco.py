@@ -5,7 +5,6 @@ from pathlib import Path
 import requests
 from dagster import AssetExecutionContext, asset
 
-
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 TRANCO_LIST_ID = os.getenv("TRANCO_LIST_ID", "GVL2K").strip()
 TRANCO_URL = os.getenv("TRANCO_URL", "https://tranco-list.eu/top-1m.csv")

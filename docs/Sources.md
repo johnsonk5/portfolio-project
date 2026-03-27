@@ -6,15 +6,33 @@ This document describes each source, what it powers, and important operational d
 
 ### What We Use
 - Assets metadata to build and maintain `silver.assets`.
-- Market bars to build bronze and silver prices, then `gold.prices`.
+- Intraday market bars for the live/app price pipeline.
+- Daily market bars for the recent-window research bronze dataset at `bronze.alpaca_prices_daily`.
 
 ### Why It Matters
 - Defines the active trading universe (`is_active`) used by prices and news ingestion.
+- Provides the preferred overlapping daily research source wherever Alpaca history exists.
 - Provides OHLCV inputs for core market metrics in the dashboard.
 
 ### Operational Notes
-- The prices pipeline runs for the previous US trading day.
+- The app-facing prices pipeline runs for the previous US trading day.
 - Silver prices are written as partitioned parquet under `data/silver/prices/date=YYYY-MM-DD/symbol=.../prices*.parquet`.
+- Research daily prices from Alpaca are written under `data/bronze/alpaca_prices_daily/date=YYYY-MM-DD/prices.parquet`.
+- Downstream research silver prices are merged into `data/silver/research_daily_prices/month=YYYY-MM/date=YYYY-MM-DD.parquet`, with Alpaca preferred on overlapping symbol-days.
+
+## EODHD API
+
+### What We Use
+- Bulk US end-of-day equity prices for the historical research bronze dataset at `bronze.eodhd_prices_daily`.
+
+### Why It Matters
+- Extends research price coverage back to 2000 without relying on Yahoo Finance scraping.
+- Provides broad US-symbol daily history that can be used wherever Alpaca does not have overlapping data.
+
+### Operational Notes
+- The current implementation hits EODHD's bulk end-of-day endpoint for the configured exchange, defaulting to `US`.
+- Research daily prices from EODHD are written under `data/bronze/eodhd_prices_daily/date=YYYY-MM-DD/prices.parquet`.
+- EODHD fills the historical gaps in the merged `silver.research_daily_prices` dataset wherever Alpaca does not have overlapping coverage.
 
 ## Yahoo Finance Search API
 
@@ -70,3 +88,10 @@ This document describes each source, what it powers, and important operational d
 ### Operational Notes
 - Refreshed weekly.
 - Joined to `silver.assets` where symbol matching is possible.
+
+## Kenneth R. French Data Library
+
+- Daily Fama-French 3 factors plus daily momentum factor.
+- Bronze ingestion stores snapshot parquet files under `data/bronze/fama_french_factors/date=YYYY-MM-DD/factors.parquet`.
+- Silver normalization rebuilds a single parquet file at `data/silver/factors/factors.parquet`.
+- Feeds `silver.factors`.

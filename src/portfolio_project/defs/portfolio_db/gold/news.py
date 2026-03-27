@@ -2,7 +2,6 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import pandas as pd
 from dagster import AssetExecutionContext, DailyPartitionsDefinition, asset
 
 from portfolio_project.defs.portfolio_db.silver.news import silver_news
@@ -63,11 +62,7 @@ def gold_headlines(context: AssetExecutionContext) -> None:
     cursor = window_start
     while cursor <= partition_date:
         parquet_path = (
-            DATA_ROOT
-            / "silver"
-            / "news"
-            / f"date={cursor.strftime('%Y-%m-%d')}"
-            / "news.parquet"
+            DATA_ROOT / "silver" / "news" / f"date={cursor.strftime('%Y-%m-%d')}" / "news.parquet"
         )
         if parquet_path.exists():
             parquet_paths.append(parquet_path.as_posix())
@@ -170,7 +165,7 @@ def gold_headlines(context: AssetExecutionContext) -> None:
             dedupe_key
         FROM deduped
         WHERE rn = 1
-    """.format(dedupe_expr=_headline_dedupe_expr('source_news'))
+    """.format(dedupe_expr=_headline_dedupe_expr("source_news"))
     con.execute(source_sql, [parquet_paths, window_start, window_end])
 
     deleted_window_refresh_count = con.execute(
@@ -182,7 +177,7 @@ def gold_headlines(context: AssetExecutionContext) -> None:
           AND {target_dedupe} NOT IN (
               SELECT dedupe_key FROM current_gold_headlines
           )
-        """.format(target_dedupe=_headline_dedupe_expr('g')),
+        """.format(target_dedupe=_headline_dedupe_expr("g")),
         [window_start, window_end],
     ).fetchone()[0]
 
@@ -230,7 +225,7 @@ def gold_headlines(context: AssetExecutionContext) -> None:
             source.ingested_ts,
             source.sentiment
         )
-    """.format(target_dedupe=_headline_dedupe_expr('target'))
+    """.format(target_dedupe=_headline_dedupe_expr("target"))
 
     try:
         con.execute("BEGIN TRANSACTION")
@@ -242,7 +237,7 @@ def gold_headlines(context: AssetExecutionContext) -> None:
               AND {target_dedupe} NOT IN (
                   SELECT dedupe_key FROM current_gold_headlines
               )
-            """.format(target_dedupe=_headline_dedupe_expr('g')),
+            """.format(target_dedupe=_headline_dedupe_expr("g")),
             [window_start, window_end],
         )
         con.execute(merge_sql)
@@ -296,9 +291,7 @@ def gold_headlines(context: AssetExecutionContext) -> None:
             batch_size=SENTIMENT_BATCH_SIZE,
         )
         pending_df = pending_df.copy()
-        pending_df["sentiment"] = [
-            (result.get("label") or "").lower() for result in results
-        ]
+        pending_df["sentiment"] = [(result.get("label") or "").lower() for result in results]
         updates_df = pending_df.loc[
             :,
             [

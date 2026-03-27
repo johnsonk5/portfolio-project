@@ -12,7 +12,6 @@ from portfolio_project.defs.portfolio_db.demo.seed_data import (
 )
 from portfolio_project.defs.portfolio_db.gold.prices import _ensure_gold_table
 
-
 DEMO_ASSETS = [
     (1, "AAPL", "Apple Inc."),
     (2, "MSFT", "Microsoft Corp."),

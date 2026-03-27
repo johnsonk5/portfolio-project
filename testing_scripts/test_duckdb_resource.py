@@ -1,5 +1,4 @@
 from dagster import build_resources
-
 from duckdb_resource import duckdb_resource
 
 with build_resources(

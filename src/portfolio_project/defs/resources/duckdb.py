@@ -36,7 +36,6 @@ def _acquire_duckdb_lock(
         if pid <= 0:
             return False
         try:
-            # signal 0 checks for process existence without sending a signal
             os.kill(pid, 0)
         except PermissionError:
             return True
@@ -52,14 +51,12 @@ def _acquire_duckdb_lock(
             return fd
         except FileExistsError:
             try:
-                # If the recorded PID is not running, treat the lock as stale.
                 pid_text = path.read_text(encoding="ascii").strip()
                 lock_pid = int(pid_text)
                 if lock_pid != os.getpid() and not _pid_is_running(lock_pid):
                     path.unlink()
                     continue
             except (FileNotFoundError, ValueError, OSError, SystemError):
-                # If we cannot read the PID, fall back to age-based staleness.
                 pass
             try:
                 age_seconds = time.time() - path.stat().st_mtime
@@ -89,13 +86,6 @@ def _release_duckdb_lock(path: Path, fd: int) -> None:
 
 
 class LockedDuckDBConnection:
-    """
-    Thin DuckDB proxy that acquires the file lock for each DB operation.
-
-    This prevents holding the lock during non-DB work (for example API calls),
-    while still serializing write/read statements across processes.
-    """
-
     def __init__(
         self,
         connection,
@@ -147,6 +137,11 @@ class LockedDuckDBConnection:
         return getattr(self._connection, name)
 
 
+def _is_file_in_use_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return "cannot open file" in message and "being used by another process" in message
+
+
 @resource(
     config_schema={
         "db_path": Field(String, is_required=False),
@@ -157,15 +152,6 @@ class LockedDuckDBConnection:
     }
 )
 def duckdb_resource(context):
-    """
-    Dagster resource for a DuckDB connection.
-
-    Configuration:
-    - db_path: Optional explicit path to the DuckDB file.
-    - env_var: Environment variable used when db_path is not set.
-    - default_db_name: Default filename under PORTFOLIO_DATA_DIR/duckdb when db_path and env_var are unset.
-    - PORTFOLIO_DATA_DIR: Base data directory fallback (defaults to "data").
-    """
     configured_path = context.resource_config.get("db_path")
     env_var = context.resource_config.get("env_var", "PORTFOLIO_DUCKDB_PATH")
     default_db_name = context.resource_config.get("default_db_name", "portfolio.duckdb")
@@ -181,7 +167,6 @@ def duckdb_resource(context):
     lock_timeout_seconds = context.resource_config.get("lock_timeout_seconds", 120)
     stale_lock_seconds = context.resource_config.get("stale_lock_seconds", 600)
 
-    # Serialize connection creation and guarantee lock release if connect fails.
     lock_fd = _acquire_duckdb_lock(
         lock_path,
         timeout_seconds=lock_timeout_seconds,
@@ -189,7 +174,15 @@ def duckdb_resource(context):
     )
     connection = None
     try:
-        connection = duckdb.connect(str(db_path))
+        try:
+            connection = duckdb.connect(str(db_path))
+        except duckdb.IOException as exc:
+            if _is_file_in_use_error(exc):
+                raise RuntimeError(
+                    "DuckDB database is already open in another process. "
+                    f"Close any external DuckDB sessions for {db_path} and retry."
+                ) from exc
+            raise
     finally:
         _release_duckdb_lock(lock_path, lock_fd)
 

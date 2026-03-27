@@ -183,9 +183,23 @@ def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -
                 sum(volume) AS volume,
                 sum(trade_count) AS trade_count,
                 CASE
-                    WHEN sum(CASE WHEN vwap IS NOT NULL AND volume IS NOT NULL THEN volume ELSE 0 END) > 0
-                        THEN sum(CASE WHEN vwap IS NOT NULL AND volume IS NOT NULL THEN vwap * volume ELSE 0 END)
-                            / sum(CASE WHEN vwap IS NOT NULL AND volume IS NOT NULL THEN volume ELSE 0 END)
+                    WHEN sum(
+                        CASE
+                            WHEN vwap IS NOT NULL AND volume IS NOT NULL THEN volume
+                            ELSE 0
+                        END
+                    ) > 0
+                        THEN sum(
+                            CASE
+                                WHEN vwap IS NOT NULL AND volume IS NOT NULL THEN vwap * volume
+                                ELSE 0
+                            END
+                        ) / sum(
+                            CASE
+                                WHEN vwap IS NOT NULL AND volume IS NOT NULL THEN volume
+                                ELSE 0
+                            END
+                        )
                     ELSE NULL
                 END AS vwap
             FROM prices
@@ -374,4 +388,3 @@ def gold_alpaca_prices(context: AssetExecutionContext) -> None:
             "rows_deleted": rows_deleted,
         }
     )
-

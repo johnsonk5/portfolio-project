@@ -63,6 +63,18 @@ Run lint:
 uv run ruff check .
 ```
 
+Run formatter:
+
+```powershell
+uv run ruff format tests
+```
+
+Check formatter without changing files:
+
+```powershell
+uv run ruff format --check tests
+```
+
 Run type checks for the currently configured scope:
 
 ```powershell
@@ -116,7 +128,19 @@ At minimum, run the narrowest relevant checks after changes:
 - Bootstrap/demo changes: `uv run pytest tests/test_bootstrap.py tests/test_demo_seed_assets.py`
 - DuckDB resource or locking changes: `uv run pytest tests/test_duckdb_resource_locking.py`
 - Silver/gold price pipeline changes: `uv run pytest tests/test_smoke_pipeline.py`
+- Test changes or test-adjacent edits: `uv run ruff format tests` and `uv run ruff check tests`
 - General code quality changes: `uv run ruff check .` and `uv run mypy` when touching typed files
+
+Before pushing, mirror the CI checks for tests:
+
+- `uv run ruff format tests`
+- `uv run ruff format --check tests`
+- `uv run ruff check tests`
+- `uv run mypy`
+
+Treat these as a completion bar, not a suggestion. If your changes touch tests or typed modules, do not stop at code edits; run the relevant checks and make the code pass before handing back the work.
+
+This repository already has a local git hook path at `.githooks/` and an installer at `scripts/install-git-hooks.ps1`. Use it so test-formatting failures are corrected before commit instead of being discovered in CI.
 
 If a change affects Dagster assets, also consider whether it impacts:
 
@@ -130,6 +154,8 @@ If a change affects Dagster assets, also consider whether it impacts:
 - Prefer small, local changes that match existing patterns over introducing new frameworks or abstractions.
 - Do not commit generated runtime data under `data/`, cache directories, or local lock files.
 - Be careful with module-level globals such as `DATA_ROOT`; tests sometimes monkeypatch these directly.
+- Do not rely on `ruff check` alone for tests; CI also runs `ruff format --check tests`, so format the `tests/` tree and verify `uv run ruff format --check tests` before pushing.
+- When wrappers or re-export modules are involved, verify that static tools still see the exported attributes. `mypy` will flag private helpers that disappear behind `import *`.
 - Use targeted pytest coverage to verify behavior before broadening to the full suite.
 - When changing schemas, also update docs, tests, and any dashboard/query code that depends on them.
 

@@ -6,7 +6,6 @@ import duckdb
 import pandas as pd
 import streamlit as st
 
-
 st.set_page_config(
     page_title="Observability",
     page_icon="OB",
@@ -273,7 +272,12 @@ def _load_observability_data() -> dict:
             data_quality_recent = pd.DataFrame()
 
         observed_jobs = con.execute(
-            "SELECT DISTINCT job_name FROM observability.run_log WHERE job_name IS NOT NULL ORDER BY job_name"
+            """
+            SELECT DISTINCT job_name
+            FROM observability.run_log
+            WHERE job_name IS NOT NULL
+            ORDER BY job_name
+            """
         ).fetch_df()
         observed_job_names = observed_jobs["job_name"].dropna().astype(str).tolist()
         job_options = sorted(set(KNOWN_JOBS) | set(observed_job_names))
@@ -391,7 +395,8 @@ if selected_job:
 
 if durations_df.empty:
     st.info(
-        f"No duration data found for `{selected_job}`. This usually means the job has not run recently "
+        f"No duration data found for `{selected_job}`. "
+        "This usually means the job has not run recently "
         "or observability rows are not available yet."
     )
 else:
@@ -401,9 +406,9 @@ else:
     )
     durations_df = durations_df.dropna(subset=["run_ts"])
     durations_df = durations_df.sort_values("run_ts", ascending=True).tail(100)
-    durations_df["duration_minutes"] = pd.to_numeric(
-        durations_df["duration_seconds"], errors="coerce"
-    ) / 60.0
+    durations_df["duration_minutes"] = (
+        pd.to_numeric(durations_df["duration_seconds"], errors="coerce") / 60.0
+    )
 
     if durations_df.empty:
         st.info(f"No plottable duration timestamps found for `{selected_job}`.")
@@ -438,8 +443,10 @@ else:
                 ],
             )
         )
-        chart = alt.layer(line, points).properties(height=320).configure_axis(
-            gridColor="rgba(148, 163, 184, 0.25)"
+        chart = (
+            alt.layer(line, points)
+            .properties(height=320)
+            .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
         )
         st.altair_chart(chart, use_container_width=True)
 

@@ -9,6 +9,8 @@ Reliability is handled with three layers:
 - Freshness checks (`data_freshness_checks`).
 - Data quality checks (`data_quality_checks`).
 
+All observability tables are written to the portfolio DuckDB (`portfolio.duckdb`), even for research workflows that read and write data in `research.duckdb`.
+
 ## Run Observability
 
 ### Tables
@@ -25,6 +27,13 @@ Freshness checks run on successful runs and write to `observability.data_freshne
 
 ### Current Coverage
 - `daily_prices_job`: `prices_active_symbol_coverage`.
+- `research_daily_prices_job`:
+  - `research_daily_prices_latest_trading_date_present`.
+  - `research_daily_prices_partition_row_count_vs_recent_median`.
+  - `research_universe_membership_latest_trading_date_present`.
+  - `research_universe_membership_symbol_count_vs_recent_median`.
+  - `research_universe_membership_day_over_day_drop_ratio`.
+  - `research_universe_membership_avg_symbol_missing_data_rate`.
 - `daily_news_job`: `daily_news_partition_row_count`.
 - `wikipedia_activity_job`: `wikipedia_assets_with_views_min_count`.
 
@@ -32,7 +41,7 @@ Freshness checks run on successful runs and write to `observability.data_freshne
 - Status: `PASS`, `FAIL`, `SKIPPED`.
 - Severity:
   - `RED`: `prices_active_symbol_coverage`.
-  - `YELLOW`: news and Wikipedia freshness checks.
+  - `YELLOW`: news, Wikipedia, research row-count, and research-universe coverage threshold freshness checks.
 
 ## Data Quality Checks
 
@@ -43,6 +52,10 @@ DQ checks run on successful runs and write to `observability.data_quality_checks
   - `silver.assets` active-symbol uniqueness precondition.
   - Silver prices schema, uniqueness, null thresholds, and numeric/range checks.
   - Gold prices schema, uniqueness, null thresholds, and numeric/range checks.
+- `research_daily_prices_job`:
+  - `silver.research_daily_prices` expected columns and DuckDB data types.
+  - `silver.research_daily_prices` uniqueness on `symbol` + `trade_date`.
+  - `silver.research_daily_prices` null checks plus invalid numeric and price-range validation.
 - `daily_news_job`:
   - Silver news schema, uniqueness, and null-threshold checks.
 - `wikipedia_activity_job`:
@@ -90,3 +103,16 @@ Environment variables for DQ thresholds:
 
 Freshness threshold config:
 - `WIKIPEDIA_MIN_ASSETS_WITH_VIEWS` (default `400`).
+- `RESEARCH_FRESHNESS_MIN_ROW_COUNT_RATIO` (default `0.7`).
+- `RESEARCH_FRESHNESS_ROW_COUNT_LOOKBACK_PARTITIONS` (default `20`).
+- `RESEARCH_FRESHNESS_ROW_COUNT_MIN_HISTORY` (default `3`).
+- `RESEARCH_UNIVERSE_FRESHNESS_MIN_SYMBOL_COUNT_RATIO` (default `0.95`).
+- `RESEARCH_UNIVERSE_FRESHNESS_LOOKBACK_PARTITIONS` (default `20`).
+- `RESEARCH_UNIVERSE_FRESHNESS_MIN_HISTORY` (default `3`).
+- `RESEARCH_UNIVERSE_DROP_LOOKBACK_PARTITIONS` (default `20`).
+- `RESEARCH_UNIVERSE_DROP_MIN_HISTORY` (default `3`).
+- `RESEARCH_UNIVERSE_DROP_RATIO_MULTIPLIER` (default `3.0`).
+- `RESEARCH_UNIVERSE_DROP_MIN_RATIO` (default `0.03`).
+- `RESEARCH_UNIVERSE_MISSING_DATA_LOOKBACK_PARTITIONS` (default `20`).
+- `RESEARCH_UNIVERSE_MISSING_DATA_MIN_HISTORY` (default `3`).
+- `RESEARCH_UNIVERSE_MISSING_DATA_MAX_AVG_RATE` (default `0.05`).

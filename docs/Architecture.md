@@ -34,11 +34,12 @@ This document describes the system architecture and storage layout.
 ### Observability
 - Reliability tables in DuckDB (`observability.*`).
 - Includes run logs, per-asset run metrics, freshness checks, and DQ checks.
+- Observability is centralized in the portfolio DuckDB, including checks emitted by research workflows.
 
 ## Storage Defaults
 
 - Data root: `PORTFOLIO_DATA_DIR` (default `data`).
-- DuckDB path defaults: `data/duckdb/portfolio.duckdb` for the live/app store and `data/duckdb/research.duckdb` for research workflows.
+- DuckDB path defaults: `data/duckdb/portfolio.duckdb` for the live/app store and observability, and `data/duckdb/research.duckdb` for research data workflows.
 - Optional overrides: `PORTFOLIO_DUCKDB_PATH` and `PORTFOLIO_RESEARCH_DUCKDB_PATH`.
 
 ## Concurrency and Safety

@@ -7,13 +7,15 @@ from typing import Optional
 
 import duckdb
 
-from portfolio_project.defs.portfolio_db.resources.duckdb import (
+from portfolio_project.defs.portfolio_db.observability.observability_modules import (
+    ensure_data_quality_table,
+)
+from portfolio_project.defs.resources.duckdb import (
     _acquire_duckdb_lock,
     _release_duckdb_lock,
     duckdb_lock_path_for,
     resolve_duckdb_path,
 )
-from portfolio_project.defs.portfolio_db.observability.observability_modules import ensure_data_quality_table
 
 
 def _severity_for_check(check_name: str, threshold_value: Optional[float]) -> str:
@@ -180,7 +182,9 @@ def _write_data_quality_rows(con, rows: list[dict]) -> None:
         )
 
 
-def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional[str]) -> list[dict]:
+def _check_daily_prices(
+    con, run_id: str, job_name: str, partition_key: Optional[str]
+) -> list[dict]:
     if job_name != "daily_prices_job":
         return []
 
@@ -261,7 +265,17 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
         )
         return rows
 
-    required_cols = {"asset_id", "symbol", "timestamp", "open", "high", "low", "close", "volume", "ingested_ts"}
+    required_cols = {
+        "asset_id",
+        "symbol",
+        "timestamp",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "ingested_ts",
+    }
     present_cols = {
         d[0]
         for d in con.execute("SELECT * FROM read_parquet(?) LIMIT 0", [silver_paths]).description
@@ -292,7 +306,10 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
             status="PASS" if not missing_range_cols else "FAIL",
             measured_value=float(len(missing_range_cols)),
             threshold_value=0.0,
-            details={"missing_columns": missing_range_cols, "required_columns": sorted(range_check_cols)},
+            details={
+                "missing_columns": missing_range_cols,
+                "required_columns": sorted(range_check_cols),
+            },
             logged_ts=now,
         )
     )
@@ -365,7 +382,11 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
             status="PASS" if max_null_pct <= null_threshold else "FAIL",
             measured_value=float(max_null_pct),
             threshold_value=float(null_threshold),
-            details={"row_count": row_count, "null_counts": null_counts, "null_pcts": null_pcts},
+            details={
+                "row_count": row_count,
+                "null_counts": null_counts,
+                "null_pcts": null_pcts,
+            },
             logged_ts=now,
         )
     )
@@ -380,7 +401,10 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
                 status="SKIPPED",
                 measured_value=None,
                 threshold_value=0.0,
-                details={"reason": "missing_range_columns", "missing_columns": missing_range_cols},
+                details={
+                    "reason": "missing_range_columns",
+                    "missing_columns": missing_range_cols,
+                },
                 logged_ts=now,
             )
         )
@@ -438,7 +462,17 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
         )
         return rows
 
-    gold_required = {"asset_id", "symbol", "trade_date", "open", "high", "low", "close", "volume", "dollar_volume"}
+    gold_required = {
+        "asset_id",
+        "symbol",
+        "trade_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "dollar_volume",
+    }
     gold_present = {
         row[0]
         for row in con.execute(
@@ -476,7 +510,10 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
             status="PASS" if not gold_missing_range_cols else "FAIL",
             measured_value=float(len(gold_missing_range_cols)),
             threshold_value=0.0,
-            details={"missing_columns": gold_missing_range_cols, "required_columns": sorted(gold_range_cols)},
+            details={
+                "missing_columns": gold_missing_range_cols,
+                "required_columns": sorted(gold_range_cols),
+            },
             logged_ts=now,
         )
     )
@@ -553,7 +590,11 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
             status="PASS" if max_core_pct <= gold_null_threshold else "FAIL",
             measured_value=float(max_core_pct),
             threshold_value=float(gold_null_threshold),
-            details={"row_count": gold_row_count, "null_counts": core_counts, "null_pcts": core_pcts},
+            details={
+                "row_count": gold_row_count,
+                "null_counts": core_counts,
+                "null_pcts": core_pcts,
+            },
             logged_ts=now,
         )
     )
@@ -568,7 +609,10 @@ def _check_daily_prices(con, run_id: str, job_name: str, partition_key: Optional
                 status="SKIPPED",
                 measured_value=None,
                 threshold_value=0.0,
-                details={"reason": "missing_range_columns", "missing_columns": gold_missing_range_cols},
+                details={
+                    "reason": "missing_range_columns",
+                    "missing_columns": gold_missing_range_cols,
+                },
                 logged_ts=now,
             )
         )
@@ -669,7 +713,10 @@ def _check_daily_news(con, run_id: str, job_name: str, partition_key: Optional[s
     }
     present_cols = {
         d[0]
-        for d in con.execute("SELECT * FROM read_parquet(?) LIMIT 0", [news_path.as_posix()]).description
+        for d in con.execute(
+            "SELECT * FROM read_parquet(?) LIMIT 0",
+            [news_path.as_posix()],
+        ).description
     }
     missing_cols = sorted(required_cols - present_cols)
     rows.append(
@@ -751,7 +798,9 @@ def _check_daily_news(con, run_id: str, job_name: str, partition_key: Optional[s
     return rows
 
 
-def _check_wikipedia_activity(con, run_id: str, job_name: str, partition_key: Optional[str]) -> list[dict]:
+def _check_wikipedia_activity(
+    con, run_id: str, job_name: str, partition_key: Optional[str]
+) -> list[dict]:
     if job_name != "wikipedia_activity_job":
         return []
 
@@ -773,7 +822,13 @@ def _check_wikipedia_activity(con, run_id: str, job_name: str, partition_key: Op
 
     rows = []
     data_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
-    wiki_path = data_root / "silver" / "wikipedia_pageviews" / f"view_date={partition_key}" / "data_0.parquet"
+    wiki_path = (
+        data_root
+        / "silver"
+        / "wikipedia_pageviews"
+        / f"view_date={partition_key}"
+        / "data_0.parquet"
+    )
     if not wiki_path.exists():
         rows.append(
             _dq_row(
@@ -793,7 +848,10 @@ def _check_wikipedia_activity(con, run_id: str, job_name: str, partition_key: Op
     required_cols = {"asset_id", "granularity", "view_date", "views", "ingested_ts"}
     present_cols = {
         d[0]
-        for d in con.execute("SELECT * FROM read_parquet(?) LIMIT 0", [wiki_path.as_posix()]).description
+        for d in con.execute(
+            "SELECT * FROM read_parquet(?) LIMIT 0",
+            [wiki_path.as_posix()],
+        ).description
     }
     missing_cols = sorted(required_cols - present_cols)
     rows.append(
@@ -982,7 +1040,10 @@ def _check_sp500(con, run_id: str, job_name: str, partition_key: Optional[str]) 
             check_name="dq_silver_ref_sp500_null_thresholds",
             status=(
                 "PASS"
-                if symbol_null_pct <= symbol_null_threshold and asset_id_null_pct <= asset_id_null_threshold
+                if (
+                    symbol_null_pct <= symbol_null_threshold
+                    and asset_id_null_pct <= asset_id_null_threshold
+                )
                 else "FAIL"
             ),
             measured_value=float(max(symbol_null_pct, asset_id_null_pct)),
@@ -1100,7 +1161,10 @@ def _check_tranco(con, run_id: str, job_name: str, partition_key: Optional[str])
             status="PASS" if int(dup_rank or 0) == 0 and int(dup_domain or 0) == 0 else "FAIL",
             measured_value=float((dup_rank or 0) + (dup_domain or 0)),
             threshold_value=0.0,
-            details={"duplicate_rank_count": int(dup_rank or 0), "duplicate_domain_count": int(dup_domain or 0)},
+            details={
+                "duplicate_rank_count": int(dup_rank or 0),
+                "duplicate_domain_count": int(dup_domain or 0),
+            },
             logged_ts=now,
         )
     )
@@ -1134,7 +1198,9 @@ def _check_tranco(con, run_id: str, job_name: str, partition_key: Optional[str])
     return rows
 
 
-def _check_asset_status_updates(con, run_id: str, job_name: str, partition_key: Optional[str]) -> list[dict]:
+def _check_asset_status_updates(
+    con, run_id: str, job_name: str, partition_key: Optional[str]
+) -> list[dict]:
     if job_name != "asset_status_updates_job":
         return []
 
@@ -1214,7 +1280,10 @@ def _check_asset_status_updates(con, run_id: str, job_name: str, partition_key: 
             status="PASS" if int(dup_asset_id or 0) == 0 and int(dup_symbol or 0) == 0 else "FAIL",
             measured_value=float((dup_asset_id or 0) + (dup_symbol or 0)),
             threshold_value=0.0,
-            details={"duplicate_asset_id_count": int(dup_asset_id or 0), "duplicate_symbol_count": int(dup_symbol or 0)},
+            details={
+                "duplicate_asset_id_count": int(dup_asset_id or 0),
+                "duplicate_symbol_count": int(dup_symbol or 0),
+            },
             logged_ts=now,
         )
     )
@@ -1307,4 +1376,3 @@ def write_data_quality_checks(context) -> None:
     for con in _with_duckdb_connection():
         rows = _run_checks(con)
         _write_data_quality_rows(con, rows)
-

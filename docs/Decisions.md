@@ -34,6 +34,9 @@ This document records important architecture, tech stack, and operating decision
   - Default database paths: `data/duckdb/portfolio.duckdb` and `data/duckdb/research.duckdb`
   - Overrides supported through `PORTFOLIO_DUCKDB_PATH` and `PORTFOLIO_RESEARCH_DUCKDB_PATH`
   - Base data directory override supported through `PORTFOLIO_DATA_DIR`
+- Current policy:
+  - Observability tables are centralized in `portfolio.duckdb`.
+  - `research.duckdb` is reserved for research data assets and derived research tables.
 
 ### 5. Streamlit is the application layer
 - Status: Accepted
@@ -41,14 +44,21 @@ This document records important architecture, tech stack, and operating decision
 - Current entrypoint:
   - `streamlit_app.py`
 
-### 6. Alpaca is the primary market data provider for equities
+### 6. Alpaca is the primary live and recent-window equities provider
 - Status: Accepted
-- Why: Alpaca is already the active source for equities reference data and price ingestion, and Phase 2 planning continues to use it for research prices where coverage is sufficient.
+- Why: Alpaca remains the active source for equities reference data, intraday app-facing price ingestion, and the overlapping recent window of research daily prices.
 - Notes:
   - API credentials are provided via environment variables.
   - The current client supports historical market data plus trading/asset metadata access.
 
-### 7. Reliability is treated as a first-class platform concern
+### 7. EODHD is the historical research daily price provider
+- Status: Accepted for implementation
+- Why: The research layer needs broad daily US equity history back to 2000, and EODHD provides bulk historical end-of-day coverage without relying on Yahoo Finance scraping.
+- Notes:
+  - API credentials are provided via environment variables.
+  - Bronze research daily prices are stored separately from the Alpaca recent-window dataset.
+
+### 8. Reliability is treated as a first-class platform concern
 - Status: Accepted
 - Why: The project already persists run metadata, freshness results, and data quality results in an `observability` schema and surfaces them in the app.
 - Current reliability model:
@@ -57,7 +67,7 @@ This document records important architecture, tech stack, and operating decision
   - `observability.data_freshness_checks`
   - `observability.data_quality_checks`
 
-### 8. DuckDB access is serialized with a filesystem lock
+### 9. DuckDB access is serialized with a filesystem lock
 - Status: Accepted
 - Why: The current platform uses a lock file to avoid concurrent access issues against DuckDB from overlapping Dagster activity.
 - Current behavior:
@@ -65,7 +75,7 @@ This document records important architecture, tech stack, and operating decision
   - Locking is operation-scoped rather than held for the full run
   - Timeout and stale-lock behavior are configurable
 
-### 9. Schedules run in America/New_York and align with trading-day logic
+### 10. Schedules run in America/New_York and align with trading-day logic
 - Status: Accepted
 - Why: The pipelines are market-oriented and the current schedules explicitly use New York time, with price and Wikipedia jobs keyed off the prior US trading day where appropriate.
 - Current examples:
@@ -76,19 +86,19 @@ This document records important architecture, tech stack, and operating decision
 
 ## Phase 2 Decisions
 
-### 10. Research workloads will live in a separate DuckDB database
+### 11. Research workloads will live in a separate DuckDB database
 - Status: Accepted for implementation
 - Why: Phase 2 introduces research ingestion, factor data, backtesting, and strategy outputs that should not share the same database lifecycle as the live/app-serving store.
 - Intent:
   - Keep research assets distinct from the current live/app database
-  - Add a separate observability schema for research workflows
+  - Keep observability centralized in the portfolio/app database instead of adding a separate research observability schema
   - Reduce coupling between experimental strategy work and the existing app data model
 
-### 11. Research data will extend the historical window back to 2000
+### 12. Research data will extend the historical window back to 2000
 - Status: Accepted for implementation
 - Why: The strategy framework needs a materially longer daily history for historical testing and factor analysis than the current app-focused daily pipelines provide.
 
-### 12. The initial factor model is Carhart 4-factor
+### 13. The initial factor model is Carhart 4-factor
 - Status: Accepted for implementation
 - Why: Phase 2 strategy evaluation is planned around market, size, value, and momentum exposures, which supports alpha estimation and factor-based comparison.
 - Included factors:
@@ -97,11 +107,11 @@ This document records important architecture, tech stack, and operating decision
   - `HML`
   - `MOM`
 
-### 13. Fama-French factor data will come from the Kenneth R. French Data Library
+### 14. Fama-French factor data will come from the Kenneth R. French Data Library
 - Status: Accepted for implementation
 - Why: The Phase 2 strategy plan explicitly standardizes factor ingestion on this source for the research layer.
 
-### 14. Strategy definitions and strategy runs are separate concerns
+### 15. Strategy definitions and strategy runs are separate concerns
 - Status: Accepted for implementation
 - Why: Strategy configuration should remain independent from execution outputs so runs can be repeated, compared, and audited without overwriting definitions.
 - Intended tables:
@@ -113,12 +123,30 @@ This document records important architecture, tech stack, and operating decision
   - `gold.strategy_returns`
   - `gold.strategy_performance`
 
-### 15. Strategy runs should be historical and reproducible
+### 16. Strategy runs should be historical and reproducible
 - Status: Accepted for implementation
 - Why: Phase 2 requires backtests and reruns that can be compared over time.
 - Expected implication:
   - Use run-level identifiers
   - Preserve prior strategy outputs instead of overwriting them in place
+
+### 17. Research pricing will be sourced from separate bronze datasets by provider
+- Status: Accepted for implementation
+- Why: Historical coverage and recent overlap differ by provider, so the bronze layer keeps EODHD and Alpaca daily prices separate and leaves provider-priority logic to downstream consumers.
+- Current implementation:
+  - `2000-01-01` onward: ingest bulk EODHD daily prices into `bronze.eodhd_prices_daily`.
+  - `2016-01-01` onward: ingest Alpaca daily prices into `bronze.alpaca_prices_daily`.
+  - Where both providers overlap, downstream research logic should prefer Alpaca and fall back to EODHD elsewhere.
+- Tradeoff:
+  - Provider-specific bronze storage preserves auditability, while the silver layer owns precedence and liquidity-universe logic.
+
+### 18. Research universe membership is derived from price liquidity, not a static constituent file
+- Status: Accepted for implementation
+- Why: The research workflows need a broad, reproducible investable universe that can evolve with market liquidity instead of inheriting a hand-maintained historical index file.
+- Current implementation:
+  - `silver.research_daily_prices` merges daily research prices and prefers Alpaca over EODHD on overlapping symbol-days.
+  - `silver.universe_membership_daily` selects the top 500 symbols by trailing average dollar volume.
+  - `silver.universe_membership_events` records adds and removals versus the prior trading day.
 
 ## Open Items
 
@@ -126,5 +154,5 @@ These are not decided yet and should remain out of scope for this file until exp
 
 - Final layout for the `src/portfolio_project` reorganization
 - Whether multiple DuckDB resources should be registered explicitly in `Definitions` or composed from environment-specific config
-- Whether the initial research universe should remain S&P 500-only or expand after coverage/cost review
+- How the research universe should be derived from the historical price coverage once the pricing layer is stabilized
 - Final alert severity policy once Phase 2 research pipelines are live

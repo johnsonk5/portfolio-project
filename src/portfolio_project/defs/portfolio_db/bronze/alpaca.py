@@ -74,7 +74,9 @@ def _resolve_active_symbols(context: AssetExecutionContext) -> list[str]:
         ]
         if not active_symbols:
             silver_assets_issue_reason = "silver_assets_empty"
-            context.log.warning("silver.assets returned no active symbols; using fallback resolution.")
+            context.log.warning(
+                "silver.assets returned no active symbols; using fallback resolution."
+            )
     except Exception as exc:
         silver_assets_issue_reason = "silver_assets_read_failed"
         silver_assets_error = str(exc)

@@ -10,7 +10,6 @@ from portfolio_project.defs.portfolio_db.silver.prices import (
     silver_alpaca_prices_parquet,
 )
 
-
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 SILVER_COMPACT_PARTITIONS = MonthlyPartitionsDefinition(
     start_date=PARTITIONS_START_DATE,
