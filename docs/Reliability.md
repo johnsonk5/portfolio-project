@@ -27,6 +27,9 @@ Freshness checks run on successful runs and write to `observability.data_freshne
 
 ### Current Coverage
 - `daily_prices_job`: `prices_active_symbol_coverage`.
+- `research_daily_prices_job`:
+  - `research_daily_prices_latest_trading_date_present`.
+  - `research_daily_prices_partition_row_count_vs_recent_median`.
 - `daily_news_job`: `daily_news_partition_row_count`.
 - `wikipedia_activity_job`: `wikipedia_assets_with_views_min_count`.
 
@@ -34,7 +37,7 @@ Freshness checks run on successful runs and write to `observability.data_freshne
 - Status: `PASS`, `FAIL`, `SKIPPED`.
 - Severity:
   - `RED`: `prices_active_symbol_coverage`.
-  - `YELLOW`: news and Wikipedia freshness checks.
+  - `YELLOW`: news, Wikipedia, and research row-count threshold freshness checks.
 
 ## Data Quality Checks
 
@@ -96,3 +99,6 @@ Environment variables for DQ thresholds:
 
 Freshness threshold config:
 - `WIKIPEDIA_MIN_ASSETS_WITH_VIEWS` (default `400`).
+- `RESEARCH_FRESHNESS_MIN_ROW_COUNT_RATIO` (default `0.7`).
+- `RESEARCH_FRESHNESS_ROW_COUNT_LOOKBACK_PARTITIONS` (default `20`).
+- `RESEARCH_FRESHNESS_ROW_COUNT_MIN_HISTORY` (default `3`).
