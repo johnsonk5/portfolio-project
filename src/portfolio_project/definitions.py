@@ -59,14 +59,21 @@ from portfolio_project.defs.research_db.bronze.fama_french import (
 )
 from portfolio_project.defs.research_db.bronze.research_prices import (
     ALPACA_PRICES_PARTITIONS,
+    bronze_alpaca_corporate_actions_daily,
     bronze_alpaca_prices_daily,
     bronze_eodhd_prices_daily,
 )
 from portfolio_project.defs.research_db.silver.factors import (
     silver_fama_french_factors_parquet,
 )
+from portfolio_project.defs.research_db.silver.corporate_actions import (
+    silver_alpaca_corporate_actions,
+)
 from portfolio_project.defs.research_db.silver.research_prices import (
     silver_research_daily_prices,
+)
+from portfolio_project.defs.research_db.silver.signals import (
+    silver_signals_daily,
 )
 from portfolio_project.defs.research_db.silver.universe import (
     silver_universe_membership_daily,
@@ -84,7 +91,10 @@ prices_selection = AssetSelection.assets(
 
 research_prices_selection = AssetSelection.assets(
     bronze_alpaca_prices_daily,
+    bronze_alpaca_corporate_actions_daily,
+    silver_alpaca_corporate_actions,
     silver_research_daily_prices,
+    silver_signals_daily,
     silver_universe_membership_daily,
     silver_universe_membership_events,
 )
@@ -335,6 +345,7 @@ defs = Definitions(
         bronze_alpaca_assets,
         bronze_eodhd_prices_daily,
         bronze_alpaca_prices_daily,
+        bronze_alpaca_corporate_actions_daily,
         bronze_yahoo_news,
         bronze_fama_french_factors,
         bronze_tranco_snapshot,
@@ -350,7 +361,9 @@ defs = Definitions(
         silver_alpaca_assets_status_updates,
         silver_alpaca_prices_parquet,
         silver_alpaca_prices_compact,
+        silver_alpaca_corporate_actions,
         silver_research_daily_prices,
+        silver_signals_daily,
         silver_universe_membership_events,
         silver_universe_membership_daily,
         gold_alpaca_prices,

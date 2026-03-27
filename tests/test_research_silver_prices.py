@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
+import duckdb
 import pandas as pd
 from dagster import build_asset_context
 
@@ -80,7 +81,11 @@ def test_research_daily_prices_prefers_alpaca_on_overlap(tmp_path: Path) -> None
         ),
     )
 
-    context = build_asset_context(partition_key=partition_key)
+    con = duckdb.connect(":memory:")
+    context = build_asset_context(
+        partition_key=partition_key,
+        resources={"research_duckdb": con},
+    )
     research_silver_prices_module.silver_research_daily_prices(context)
 
     out_path = (
@@ -127,7 +132,11 @@ def test_research_daily_prices_rerun_replaces_stale_partition(tmp_path: Path) ->
     second_frame = first_frame[first_frame["symbol"] == "AAPL"].copy()
 
     _write_bronze_prices(data_root, "alpaca_prices_daily", partition_key, first_frame)
-    context = build_asset_context(partition_key=partition_key)
+    con = duckdb.connect(":memory:")
+    context = build_asset_context(
+        partition_key=partition_key,
+        resources={"research_duckdb": con},
+    )
     research_silver_prices_module.silver_research_daily_prices(context)
 
     _write_bronze_prices(data_root, "alpaca_prices_daily", partition_key, second_frame)
@@ -142,3 +151,63 @@ def test_research_daily_prices_rerun_replaces_stale_partition(tmp_path: Path) ->
     )
     out_df = pd.read_parquet(out_path)
     assert out_df["symbol"].tolist() == ["AAPL"]
+
+
+def test_research_daily_prices_applies_split_adjustments_for_alpaca_rows(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    research_silver_prices_module.DATA_ROOT = data_root
+    partition_key = "2026-02-13"
+
+    _write_bronze_prices(
+        data_root,
+        "alpaca_prices_daily",
+        partition_key,
+        pd.DataFrame(
+            {
+                "symbol": ["AAPL"],
+                "timestamp": [datetime(2026, 2, 13, 21, 0, tzinfo=timezone.utc)],
+                "trade_date": ["2026-02-13"],
+                "open": [100.0],
+                "high": [101.0],
+                "low": [99.0],
+                "close": [100.5],
+                "adjusted_close": [pd.NA],
+                "volume": [1000],
+                "trade_count": [10],
+                "vwap": [100.2],
+                "source": ["alpaca"],
+                "ingested_ts": [datetime.now(timezone.utc)],
+            }
+        ),
+    )
+
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        CREATE SCHEMA silver;
+        CREATE TABLE silver.alpaca_corporate_actions (
+            symbol VARCHAR,
+            effective_date DATE,
+            old_rate DOUBLE,
+            new_rate DOUBLE
+        );
+        INSERT INTO silver.alpaca_corporate_actions VALUES
+            ('AAPL', DATE '2026-02-17', 1.0, 2.0)
+        """
+    )
+    context = build_asset_context(
+        partition_key=partition_key,
+        resources={"research_duckdb": con},
+    )
+    research_silver_prices_module.silver_research_daily_prices(context)
+
+    out_path = (
+        data_root
+        / "silver"
+        / "research_daily_prices"
+        / "month=2026-02"
+        / f"date={partition_key}.parquet"
+    )
+    out_df = pd.read_parquet(out_path)
+    row = out_df.iloc[0]
+    assert float(row["adjusted_close"]) == 50.25

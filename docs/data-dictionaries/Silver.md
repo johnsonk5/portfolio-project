@@ -76,13 +76,31 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | `high` | `float` | High price for the day. |
 | `low` | `float` | Low price for the day. |
 | `close` | `float` | Close price for the day. |
-| `adjusted_close` | `float` | Adjusted close when provided by the source. |
+| `adjusted_close` | `float` | Split-adjusted close for Alpaca-backed rows when split corporate actions are available, or source-provided adjusted close when available. |
 | `volume` | `int` | Daily share volume. |
 | `trade_count` | `int` | Daily trade count when provided. |
 | `vwap` | `float` | Daily VWAP when provided. |
 | `dollar_volume` | `float` | `close * volume`. |
 | `source` | `object` | Winning upstream provider for the day (`alpaca` preferred over `eodhd`). |
 | `ingested_ts` | `timestamp` | Upstream ingest timestamp carried into silver. |
+
+## `silver.alpaca_corporate_actions`
+
+*DuckDB Table in silver schema*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `action_id` | `object` | Alpaca corporate action identifier when provided. |
+| `symbol` | `object` | Canonical ticker symbol. |
+| `action_type` | `object` | Corporate action type (`forward_splits`, `reverse_splits`). |
+| `effective_date` | `date` | Effective or ex-date used for split adjustment. |
+| `process_date` | `date` | Process date reported by Alpaca. |
+| `old_rate` | `float` | Old share rate in the split action. |
+| `new_rate` | `float` | New share rate in the split action. |
+| `cash_rate` | `float` | Cash dividend rate when the action type is `cash_dividends`. |
+| `split_ratio` | `float` | `new_rate / old_rate`. |
+| `source` | `object` | Source label (`alpaca`). |
+| `ingested_ts` | `timestamp` | Ingest timestamp. |
 
 ## `silver.universe_membership_events`
 

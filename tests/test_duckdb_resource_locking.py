@@ -1,6 +1,7 @@
 import os
 import time
 
+import duckdb
 import pytest
 from dagster import DagsterResourceFunctionError, build_resources
 
@@ -74,6 +75,38 @@ def test_duckdb_resource_releases_lock_when_connect_fails(tmp_path, monkeypatch)
 
     assert exc_info.value.__cause__ is not None
     assert "connect failed" in str(exc_info.value.__cause__)
+    assert not lock_path.exists()
+
+
+def test_duckdb_resource_surfaces_file_in_use_error_clearly(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "duckdb" / "research.duckdb"
+    lock_path = duckdb_lock_path_for(db_path)
+
+    def _file_in_use(_):
+        raise duckdb.IOException(
+            f'IO Error: Cannot open file "{db_path}": '
+            "The process cannot access the file because it is being used by another process."
+        )
+
+    monkeypatch.setattr(duckdb_resource_module.duckdb, "connect", _file_in_use)
+
+    with pytest.raises(DagsterResourceFunctionError) as exc_info:
+        with build_resources(
+            {
+                "duckdb": duckdb_resource.configured(
+                    {
+                        "db_path": str(db_path),
+                        "lock_timeout_seconds": 1,
+                        "stale_lock_seconds": 600,
+                    }
+                )
+            }
+        ):
+            pass
+
+    assert exc_info.value.__cause__ is not None
+    assert "already open in another process" in str(exc_info.value.__cause__)
+    assert str(db_path) in str(exc_info.value.__cause__)
     assert not lock_path.exists()
 
 

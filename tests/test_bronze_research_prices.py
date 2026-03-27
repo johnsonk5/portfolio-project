@@ -10,9 +10,19 @@ import portfolio_project.defs.research_db.bronze.research_prices as research_pri
 class _FakeAlpacaResource:
     def __init__(self, assets_df: pd.DataFrame | None = None) -> None:
         self._assets_df = assets_df if assets_df is not None else pd.DataFrame()
+        self._corporate_actions_df = pd.DataFrame()
 
     def get_assets_df(self) -> pd.DataFrame:
         return self._assets_df.copy()
+
+    def get_corporate_actions_df(
+        self,
+        symbols=None,
+        start_date=None,
+        end_date=None,
+        types=None,
+    ) -> pd.DataFrame:
+        return self._corporate_actions_df.copy()
 
 
 class _FakeEODHDResource:
@@ -160,3 +170,54 @@ def test_bronze_eodhd_prices_daily_writes_partition(tmp_path: Path) -> None:
     assert set(out_df["symbol"]) == {"AAPL", "BF.B", "SPY"}
     assert set(out_df["source"]) == {"eodhd"}
     assert float(out_df.loc[out_df["symbol"] == "AAPL", "adjusted_close"].iloc[0]) == 35.4
+
+
+def test_bronze_alpaca_corporate_actions_daily_writes_split_partition(
+    tmp_path: Path, monkeypatch
+) -> None:
+    data_root = tmp_path / "data"
+    research_prices_module.DATA_ROOT = data_root
+
+    def fake_resolve_symbols(context, configured_symbols=None, max_symbols=None):
+        return ["AAPL", "MSFT"]
+
+    def fake_fetch_actions(context, partition_date, symbols, batch_size, request_sleep_seconds):
+        assert partition_date == date(2026, 2, 17)
+        assert symbols == ["AAPL", "MSFT"]
+        return pd.DataFrame(
+            {
+                "action_id": ["act-1", "act-2"],
+                "symbol": ["AAPL", "MSFT"],
+                "action_type": ["forward_splits", "cash_dividends"],
+                "effective_date": [date(2026, 2, 17), date(2026, 2, 17)],
+                "process_date": [date(2026, 2, 17), date(2026, 2, 17)],
+                "old_rate": [1.0, pd.NA],
+                "new_rate": [2.0, pd.NA],
+                "cash_rate": [pd.NA, 0.25],
+                "split_ratio": [2.0, pd.NA],
+                "source": ["alpaca", "alpaca"],
+                "ingested_ts": [datetime.now(timezone.utc), datetime.now(timezone.utc)],
+            }
+        )
+
+    monkeypatch.setattr(research_prices_module, "_resolve_alpaca_symbols", fake_resolve_symbols)
+    monkeypatch.setattr(
+        research_prices_module,
+        "_fetch_alpaca_corporate_actions_for_day",
+        fake_fetch_actions,
+    )
+
+    context = build_asset_context(
+        resources={"alpaca": _FakeAlpacaResource()},
+        partition_key="2026-02-17",
+    )
+    research_prices_module.bronze_alpaca_corporate_actions_daily(context)
+
+    out_path = data_root / "bronze" / "alpaca_corporate_actions" / "actions.parquet"
+    assert out_path.exists()
+
+    out_df = pd.read_parquet(out_path)
+    assert len(out_df) == 2
+    assert out_df["symbol"].tolist() == ["AAPL", "MSFT"]
+    assert float(out_df["split_ratio"].iloc[0]) == 2.0
+    assert float(out_df["cash_rate"].iloc[1]) == 0.25
