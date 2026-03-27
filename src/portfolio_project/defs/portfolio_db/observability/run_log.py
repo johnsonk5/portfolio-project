@@ -30,6 +30,7 @@ def _freshness_severity(check_name: str) -> str:
         "wikipedia_assets_with_views_min_count",
         "research_daily_prices_partition_row_count_vs_recent_median",
         "research_universe_membership_symbol_count_vs_recent_median",
+        "research_universe_membership_day_over_day_drop_ratio",
         "research_universe_membership_avg_symbol_missing_data_rate",
     }:
         return "YELLOW"
@@ -874,6 +875,7 @@ def _check_research_universe_freshness(
     now = datetime.now(timezone.utc)
     latest_check_name = "research_universe_membership_latest_trading_date_present"
     count_check_name = "research_universe_membership_symbol_count_vs_recent_median"
+    drop_check_name = "research_universe_membership_day_over_day_drop_ratio"
     missing_rate_check_name = "research_universe_membership_avg_symbol_missing_data_rate"
     if not partition_key:
         return [
@@ -895,6 +897,18 @@ def _check_research_universe_freshness(
                 "partition_key": partition_key,
                 "check_name": count_check_name,
                 "severity": _freshness_severity(count_check_name),
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": json.dumps({"reason": "missing_partition_key"}),
+                "logged_ts": now,
+            },
+            {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": drop_check_name,
+                "severity": _freshness_severity(drop_check_name),
                 "status": "SKIPPED",
                 "measured_value": None,
                 "threshold_value": None,
@@ -946,6 +960,18 @@ def _check_research_universe_freshness(
                 "run_id": run_id,
                 "job_name": job_name,
                 "partition_key": partition_key,
+                "check_name": drop_check_name,
+                "severity": _freshness_severity(drop_check_name),
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": details,
+                "logged_ts": now,
+            },
+            {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
                 "check_name": missing_rate_check_name,
                 "severity": _freshness_severity(missing_rate_check_name),
                 "status": "SKIPPED",
@@ -962,6 +988,12 @@ def _check_research_universe_freshness(
     )
     min_history = int(os.getenv("RESEARCH_UNIVERSE_FRESHNESS_MIN_HISTORY", "3"))
     min_ratio = float(os.getenv("RESEARCH_UNIVERSE_FRESHNESS_MIN_SYMBOL_COUNT_RATIO", "0.95"))
+    drop_lookback_partitions = int(
+        os.getenv("RESEARCH_UNIVERSE_DROP_LOOKBACK_PARTITIONS", "20")
+    )
+    drop_min_history = int(os.getenv("RESEARCH_UNIVERSE_DROP_MIN_HISTORY", "3"))
+    drop_ratio_multiplier = float(os.getenv("RESEARCH_UNIVERSE_DROP_RATIO_MULTIPLIER", "3.0"))
+    drop_min_ratio = float(os.getenv("RESEARCH_UNIVERSE_DROP_MIN_RATIO", "0.03"))
     missing_data_lookback_partitions = int(
         os.getenv("RESEARCH_UNIVERSE_MISSING_DATA_LOOKBACK_PARTITIONS", "20")
     )
@@ -1021,6 +1053,112 @@ def _check_research_universe_freshness(
         ),
         "logged_ts": now,
     }
+
+    drop_check: dict[str, object]
+    if partition_key not in counts_lookup:
+        drop_check = {
+            "run_id": run_id,
+            "job_name": job_name,
+            "partition_key": partition_key,
+            "check_name": drop_check_name,
+            "severity": _freshness_severity(drop_check_name),
+            "status": "SKIPPED",
+            "measured_value": None,
+            "threshold_value": None,
+            "details_json": json.dumps(
+                {
+                    "reason": "expected_member_date_missing",
+                    "expected_member_date": partition_key,
+                    "latest_available_member_date": latest_available_partition,
+                    "target_universe_size": universe_size,
+                }
+            ),
+            "logged_ts": now,
+        }
+    else:
+        recent_counts_for_drop = [
+            (member_date, symbol_count)
+            for member_date, symbol_count in counts_by_date
+            if member_date <= partition_key
+        ][-(drop_lookback_partitions + 1) :]
+        prior_counts_for_drop = recent_counts_for_drop[:-1]
+        if len(prior_counts_for_drop) < drop_min_history:
+            drop_check = {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": drop_check_name,
+                "severity": _freshness_severity(drop_check_name),
+                "status": "SKIPPED",
+                "measured_value": None,
+                "threshold_value": None,
+                "details_json": json.dumps(
+                    {
+                        "reason": "insufficient_history",
+                        "expected_member_date": partition_key,
+                        "minimum_history_required": drop_min_history,
+                        "history_partitions_available": len(prior_counts_for_drop),
+                        "recent_symbol_counts": dict(prior_counts_for_drop),
+                    }
+                ),
+                "logged_ts": now,
+            }
+        else:
+            previous_member_date, previous_symbol_count = prior_counts_for_drop[-1]
+            current_drop_ratio = (
+                max(float(previous_symbol_count) - float(current_symbol_count), 0.0)
+                / float(previous_symbol_count)
+                if previous_symbol_count > 0
+                else 0.0
+            )
+            historical_drop_ratios = []
+            for (_, earlier_count), (_, later_count) in zip(
+                prior_counts_for_drop,
+                prior_counts_for_drop[1:],
+            ):
+                if earlier_count <= 0:
+                    continue
+                historical_drop_ratios.append(
+                    max(float(earlier_count) - float(later_count), 0.0) / float(earlier_count)
+                )
+            baseline_drop_ratio = (
+                float(statistics.median(historical_drop_ratios))
+                if historical_drop_ratios
+                else 0.0
+            )
+            threshold_drop_ratio = max(
+                baseline_drop_ratio * drop_ratio_multiplier,
+                drop_min_ratio,
+            )
+            drop_check = {
+                "run_id": run_id,
+                "job_name": job_name,
+                "partition_key": partition_key,
+                "check_name": drop_check_name,
+                "severity": _freshness_severity(drop_check_name),
+                "status": "PASS" if current_drop_ratio <= threshold_drop_ratio else "FAIL",
+                "measured_value": float(current_drop_ratio),
+                "threshold_value": float(threshold_drop_ratio),
+                "details_json": json.dumps(
+                    {
+                        "expected_member_date": partition_key,
+                        "current_symbol_count": current_symbol_count,
+                        "previous_member_date": previous_member_date,
+                        "previous_symbol_count": previous_symbol_count,
+                        "current_drop_count": max(
+                            int(previous_symbol_count) - int(current_symbol_count),
+                            0,
+                        ),
+                        "baseline_median_drop_ratio": baseline_drop_ratio,
+                        "drop_ratio_multiplier": drop_ratio_multiplier,
+                        "minimum_drop_ratio_threshold": drop_min_ratio,
+                        "history_partitions_considered": len(prior_counts_for_drop),
+                        "recent_symbol_counts": dict(prior_counts_for_drop),
+                        "historical_drop_ratios": historical_drop_ratios,
+                    }
+                ),
+                "logged_ts": now,
+            }
 
     missing_rate_check: dict[str, object]
     if partition_key not in counts_lookup:
@@ -1236,7 +1374,7 @@ def _check_research_universe_freshness(
             ),
             "logged_ts": now,
         }
-        return [latest_check, count_check, missing_rate_check]
+        return [latest_check, count_check, drop_check, missing_rate_check]
 
     historical_counts = [count for _, count in prior_counts]
     baseline_median = float(statistics.median(historical_counts))
@@ -1265,7 +1403,7 @@ def _check_research_universe_freshness(
         ),
         "logged_ts": now,
     }
-    return [latest_check, count_check, missing_rate_check]
+    return [latest_check, count_check, drop_check, missing_rate_check]
 
 
 def _check_wikipedia_freshness(

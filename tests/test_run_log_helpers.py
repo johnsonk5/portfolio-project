@@ -353,12 +353,16 @@ def test_research_universe_freshness_fails_when_symbol_count_drops_below_recent_
     by_name = {row["check_name"]: row for row in rows}
     latest_row = by_name["research_universe_membership_latest_trading_date_present"]
     count_row = by_name["research_universe_membership_symbol_count_vs_recent_median"]
+    drop_row = by_name["research_universe_membership_day_over_day_drop_ratio"]
 
     assert latest_row["status"] == "PASS"
     assert latest_row["measured_value"] == 1.0
     assert count_row["status"] == "FAIL"
     assert count_row["measured_value"] == 300.0
     assert count_row["threshold_value"] == 475.0
+    assert drop_row["status"] == "FAIL"
+    assert drop_row["measured_value"] == 0.375
+    assert drop_row["threshold_value"] == 0.06
 
     count_details = json.loads(count_row["details_json"])
     assert count_details["baseline_median_symbol_count"] == 500.0
@@ -368,6 +372,54 @@ def test_research_universe_freshness_fails_when_symbol_count_drops_below_recent_
         "2026-02-11": 500,
         "2026-02-10": 500,
     }
+
+    drop_details = json.loads(drop_row["details_json"])
+    assert drop_details["previous_member_date"] == "2026-02-12"
+    assert drop_details["previous_symbol_count"] == 480
+    assert drop_details["current_drop_count"] == 180
+    assert drop_details["baseline_median_drop_ratio"] == 0.02
+    assert drop_details["drop_ratio_multiplier"] == 3.0
+    assert drop_details["minimum_drop_ratio_threshold"] == 0.03
+    assert drop_details["historical_drop_ratios"] == [0.0, 0.04]
+
+
+def test_research_universe_freshness_flags_unusual_day_over_day_drop() -> None:
+    con = duckdb.connect(":memory:")
+    _write_universe_counts(
+        con,
+        {
+            "2026-02-10": 500,
+            "2026-02-11": 500,
+            "2026-02-12": 500,
+            "2026-02-13": 480,
+        },
+    )
+
+    rows = _check_research_universe_freshness(
+        con,
+        "run-4b",
+        "research_daily_prices_job",
+        "2026-02-13",
+    )
+
+    by_name = {row["check_name"]: row for row in rows}
+    count_row = by_name["research_universe_membership_symbol_count_vs_recent_median"]
+    drop_row = by_name["research_universe_membership_day_over_day_drop_ratio"]
+
+    assert count_row["status"] == "PASS"
+    assert count_row["measured_value"] == 480.0
+    assert count_row["threshold_value"] == 475.0
+
+    assert drop_row["status"] == "FAIL"
+    assert drop_row["measured_value"] == 0.04
+    assert drop_row["threshold_value"] == 0.03
+
+    drop_details = json.loads(drop_row["details_json"])
+    assert drop_details["previous_member_date"] == "2026-02-12"
+    assert drop_details["previous_symbol_count"] == 500
+    assert drop_details["current_drop_count"] == 20
+    assert drop_details["baseline_median_drop_ratio"] == 0.0
+    assert drop_details["historical_drop_ratios"] == [0.0, 0.0]
 
 
 def test_research_universe_missing_data_rate_fails_when_recent_member_symbols_have_gaps(

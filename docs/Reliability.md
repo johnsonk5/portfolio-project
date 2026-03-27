@@ -32,6 +32,7 @@ Freshness checks run on successful runs and write to `observability.data_freshne
   - `research_daily_prices_partition_row_count_vs_recent_median`.
   - `research_universe_membership_latest_trading_date_present`.
   - `research_universe_membership_symbol_count_vs_recent_median`.
+  - `research_universe_membership_day_over_day_drop_ratio`.
   - `research_universe_membership_avg_symbol_missing_data_rate`.
 - `daily_news_job`: `daily_news_partition_row_count`.
 - `wikipedia_activity_job`: `wikipedia_assets_with_views_min_count`.
@@ -108,6 +109,10 @@ Freshness threshold config:
 - `RESEARCH_UNIVERSE_FRESHNESS_MIN_SYMBOL_COUNT_RATIO` (default `0.95`).
 - `RESEARCH_UNIVERSE_FRESHNESS_LOOKBACK_PARTITIONS` (default `20`).
 - `RESEARCH_UNIVERSE_FRESHNESS_MIN_HISTORY` (default `3`).
+- `RESEARCH_UNIVERSE_DROP_LOOKBACK_PARTITIONS` (default `20`).
+- `RESEARCH_UNIVERSE_DROP_MIN_HISTORY` (default `3`).
+- `RESEARCH_UNIVERSE_DROP_RATIO_MULTIPLIER` (default `3.0`).
+- `RESEARCH_UNIVERSE_DROP_MIN_RATIO` (default `0.03`).
 - `RESEARCH_UNIVERSE_MISSING_DATA_LOOKBACK_PARTITIONS` (default `20`).
 - `RESEARCH_UNIVERSE_MISSING_DATA_MIN_HISTORY` (default `3`).
 - `RESEARCH_UNIVERSE_MISSING_DATA_MAX_AVG_RATE` (default `0.05`).
