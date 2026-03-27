@@ -48,6 +48,7 @@ DQ checks run on successful runs and write to `observability.data_quality_checks
 - `research_daily_prices_job`:
   - `silver.research_daily_prices` expected columns and DuckDB data types.
   - `silver.research_daily_prices` uniqueness on `symbol` + `trade_date`.
+  - `silver.research_daily_prices` null checks plus invalid numeric and price-range validation.
 - `daily_news_job`:
   - Silver news schema, uniqueness, and null-threshold checks.
 - `wikipedia_activity_job`:

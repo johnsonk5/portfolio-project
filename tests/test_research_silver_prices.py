@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -405,6 +406,118 @@ def test_research_daily_prices_writes_duplicate_symbol_trade_date_dq_check_to_ob
         0.0,
         partition_key,
     )
+
+
+def test_research_daily_prices_writes_invalid_values_dq_check_to_observability(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "data"
+    research_silver_prices_module.DATA_ROOT = data_root
+    partition_key = "2026-02-13"
+
+    _write_bronze_prices(
+        data_root,
+        "alpaca_prices_daily",
+        partition_key,
+        pd.DataFrame(
+            {
+                "symbol": ["AAPL"],
+                "timestamp": [datetime(2026, 2, 13, 21, 0, tzinfo=timezone.utc)],
+                "trade_date": ["2026-02-13"],
+                "open": [100.0],
+                "high": [101.0],
+                "low": [99.0],
+                "close": [100.5],
+                "adjusted_close": [100.5],
+                "volume": [1000],
+                "trade_count": [10],
+                "vwap": [100.2],
+                "source": ["alpaca"],
+                "ingested_ts": [datetime.now(timezone.utc)],
+            }
+        ),
+    )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(
+        partition_key=partition_key,
+        resources={"research_duckdb": con, "duckdb": obs_con},
+    )
+    research_silver_prices_module.silver_research_daily_prices(context)
+
+    row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value, partition_key
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_research_daily_prices_invalid_values'
+        """
+    ).fetchone()
+
+    assert row == (
+        "dq_research_daily_prices_invalid_values",
+        "PASS",
+        0.0,
+        partition_key,
+    )
+
+
+def test_research_daily_prices_invalid_values_check_fails_for_logically_impossible_rows(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "data"
+    research_silver_prices_module.DATA_ROOT = data_root
+    partition_key = "2026-02-13"
+
+    _write_bronze_prices(
+        data_root,
+        "alpaca_prices_daily",
+        partition_key,
+        pd.DataFrame(
+            {
+                "symbol": ["AAPL"],
+                "timestamp": [datetime(2026, 2, 13, 21, 0, tzinfo=timezone.utc)],
+                "trade_date": ["2026-02-13"],
+                "open": [110.0],
+                "high": [101.0],
+                "low": [99.0],
+                "close": [100.5],
+                "adjusted_close": [0.0],
+                "volume": [-1000],
+                "trade_count": [10],
+                "vwap": [120.0],
+                "source": ["alpaca"],
+                "ingested_ts": [datetime.now(timezone.utc)],
+            }
+        ),
+    )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(
+        partition_key=partition_key,
+        resources={"research_duckdb": con, "duckdb": obs_con},
+    )
+    research_silver_prices_module.silver_research_daily_prices(context)
+
+    row = obs_con.execute(
+        """
+        SELECT status, measured_value, threshold_value, details_json
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_research_daily_prices_invalid_values'
+        """
+    ).fetchone()
+
+    assert row is not None
+    assert row[0] == "FAIL"
+    assert row[1] == 4.0
+    assert row[2] == 0.0
+    assert json.loads(row[3])["violation_counts"] == {
+        "negative_value_rows": 1,
+        "ohlc_range_violation_rows": 1,
+        "vwap_outside_range_rows": 1,
+        "adjusted_close_non_positive_rows": 1,
+    }
 
 
 def test_log_duplicate_row_check_detects_duplicate_symbol_trade_date_rows() -> None:

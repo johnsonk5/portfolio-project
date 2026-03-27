@@ -15,6 +15,13 @@ DUCKDB_SIGNALS_THREADS = int(os.getenv("RESEARCH_SIGNALS_DUCKDB_THREADS", "2"))
 SIGNALS_SYMBOL_BUCKETS = int(os.getenv("RESEARCH_SIGNALS_SYMBOL_BUCKETS", "32"))
 
 
+def _safe_partition_key(context: AssetExecutionContext) -> str | None:
+    try:
+        return context.partition_key
+    except Exception:
+        return None
+
+
 def _signals_select_sql() -> str:
     return """
         WITH prices AS (
@@ -234,6 +241,7 @@ def silver_signals_daily(context: AssetExecutionContext) -> None:
         job_name = getattr(context, "job_name", None)
     except DagsterInvalidPropertyError:
         job_name = None
+    partition_key = _safe_partition_key(context)
 
     log_required_field_null_check(
         measured_con=con,
@@ -256,7 +264,7 @@ def silver_signals_daily(context: AssetExecutionContext) -> None:
         details={"table": "silver.signals_daily"},
         run_id=str(run_id) if run_id else None,
         job_name=job_name,
-        partition_key=getattr(context, "partition_key", None),
+        partition_key=partition_key,
     )
 
     context.add_output_metadata(

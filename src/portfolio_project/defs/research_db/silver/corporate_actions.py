@@ -12,6 +12,13 @@ from portfolio_project.defs.research_db.dq_checks import log_required_field_null
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 
 
+def _safe_partition_key(context: AssetExecutionContext) -> str | None:
+    try:
+        return context.partition_key
+    except Exception:
+        return None
+
+
 @asset(
     name="alpaca_corporate_actions",
     key_prefix=["silver"],
@@ -74,6 +81,7 @@ def silver_alpaca_corporate_actions(context: AssetExecutionContext) -> None:
         job_name = getattr(context, "job_name", None)
     except DagsterInvalidPropertyError:
         job_name = None
+    partition_key = _safe_partition_key(context)
 
     log_required_field_null_check(
         measured_con=con,
@@ -85,7 +93,7 @@ def silver_alpaca_corporate_actions(context: AssetExecutionContext) -> None:
         details={"table": "silver.alpaca_corporate_actions"},
         run_id=str(run_id) if run_id else None,
         job_name=job_name,
-        partition_key=getattr(context, "partition_key", None),
+        partition_key=partition_key,
     )
     log_required_field_null_check(
         measured_con=con,
@@ -107,7 +115,7 @@ def silver_alpaca_corporate_actions(context: AssetExecutionContext) -> None:
         },
         run_id=str(run_id) if run_id else None,
         job_name=job_name,
-        partition_key=getattr(context, "partition_key", None),
+        partition_key=partition_key,
     )
     log_required_field_null_check(
         measured_con=con,
@@ -126,7 +134,7 @@ def silver_alpaca_corporate_actions(context: AssetExecutionContext) -> None:
         },
         run_id=str(run_id) if run_id else None,
         job_name=job_name,
-        partition_key=getattr(context, "partition_key", None),
+        partition_key=partition_key,
     )
 
     row_count = con.execute("SELECT count(*) FROM silver.alpaca_corporate_actions").fetchone()[0]

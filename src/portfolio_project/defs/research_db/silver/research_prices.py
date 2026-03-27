@@ -56,6 +56,19 @@ EXPECTED_DUCKDB_TYPES = {
     "source": {"VARCHAR"},
     "ingested_ts": {"TIMESTAMP WITH TIME ZONE"},
 }
+NON_NEGATIVE_PRICE_COLUMNS = [
+    "open",
+    "high",
+    "low",
+    "close",
+    "adjusted_close",
+    "vwap",
+    "dollar_volume",
+]
+NON_NEGATIVE_COUNT_COLUMNS = [
+    "volume",
+    "trade_count",
+]
 
 
 def _table_exists(con, schema: str, table: str) -> bool:
@@ -272,6 +285,101 @@ def _log_research_daily_prices_duplicate_symbol_date_check(
         measured_con.close()
 
 
+def _log_research_daily_prices_invalid_values_check(
+    context: AssetExecutionContext,
+    parquet_path: Path,
+) -> None:
+    try:
+        run = getattr(context, "run", None)
+    except DagsterInvalidPropertyError:
+        run = None
+    run_id = getattr(run, "run_id", None)
+    partition_key = getattr(context, "partition_key", None)
+    try:
+        job_name = getattr(context, "job_name", None)
+    except DagsterInvalidPropertyError:
+        job_name = None
+
+    measured_con = duckdb.connect(":memory:")
+    try:
+        row = measured_con.execute(
+            """
+            WITH scoped_rows AS (
+                SELECT * FROM read_parquet(?, hive_partitioning = false)
+            )
+            SELECT
+                count(*) FILTER (
+                    WHERE open < 0
+                       OR high < 0
+                       OR low < 0
+                       OR close < 0
+                       OR adjusted_close < 0
+                       OR volume < 0
+                       OR trade_count < 0
+                       OR vwap < 0
+                       OR dollar_volume < 0
+                ) AS negative_value_rows,
+                count(*) FILTER (
+                    WHERE high < low
+                       OR open > high
+                       OR open < low
+                       OR close > high
+                       OR close < low
+                ) AS ohlc_range_violation_rows,
+                count(*) FILTER (
+                    WHERE vwap IS NOT NULL
+                      AND low IS NOT NULL
+                      AND high IS NOT NULL
+                      AND (vwap < low OR vwap > high)
+                ) AS vwap_outside_range_rows,
+                count(*) FILTER (
+                    WHERE adjusted_close IS NOT NULL
+                      AND adjusted_close <= 0
+                ) AS adjusted_close_non_positive_rows
+            FROM scoped_rows
+            """,
+            [parquet_path.as_posix()],
+        ).fetchone()
+
+        check_counts = {
+            "negative_value_rows": int(row[0] or 0),
+            "ohlc_range_violation_rows": int(row[1] or 0),
+            "vwap_outside_range_rows": int(row[2] or 0),
+            "adjusted_close_non_positive_rows": int(row[3] or 0),
+        }
+        measured_value = float(sum(check_counts.values()))
+        details = {
+            "path": parquet_path.as_posix(),
+            "table": "silver.research_daily_prices",
+            "non_negative_columns": [
+                *NON_NEGATIVE_PRICE_COLUMNS,
+                *NON_NEGATIVE_COUNT_COLUMNS,
+            ],
+            "checks": {
+                "negative_values": "All numeric market value/count fields must be non-negative.",
+                "ohlc_ranges": "high >= low and both open/close must stay within [low, high].",
+                "vwap_range": "vwap must stay within [low, high] when present.",
+                "adjusted_close_positive": "adjusted_close must be > 0 when present.",
+            },
+            "violation_counts": check_counts,
+        }
+        write_dq_log(
+            con=context.resources.duckdb,
+            check_name="dq_research_daily_prices_invalid_values",
+            severity="RED",
+            status="PASS" if measured_value == 0 else "FAIL",
+            measured_value=measured_value,
+            threshold_value=0.0,
+            details=details,
+            run_id=str(run_id) if run_id else None,
+            job_name=job_name,
+            partition_key=partition_key,
+            dedupe_by_run_check=True,
+        )
+    finally:
+        measured_con.close()
+
+
 def _normalize_daily_prices_df(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
@@ -442,6 +550,7 @@ def silver_research_daily_prices(context: AssetExecutionContext) -> None:
     )
     _log_research_daily_prices_required_field_check(context, output_path)
     _log_research_daily_prices_duplicate_symbol_date_check(context, output_path)
+    _log_research_daily_prices_invalid_values_check(context, output_path)
     source_counts = {
         str(source): int(count)
         for source, count in day_df["source"].value_counts().sort_index().items()

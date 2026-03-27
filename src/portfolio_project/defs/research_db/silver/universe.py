@@ -17,6 +17,13 @@ UNIVERSE_SIZE = int(os.getenv("RESEARCH_UNIVERSE_SIZE", "500"))
 UNIVERSE_SOURCE = "rolling_avg_dollar_volume_top_500"
 
 
+def _safe_partition_key(context: AssetExecutionContext) -> str | None:
+    try:
+        return context.partition_key
+    except Exception:
+        return None
+
+
 def _silver_prices_glob() -> str:
     return (
         DATA_ROOT
@@ -150,6 +157,7 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
         job_name = getattr(context, "job_name", None)
     except DagsterInvalidPropertyError:
         job_name = None
+    partition_key = _safe_partition_key(context)
 
     log_required_field_null_check(
         measured_con=con,
@@ -168,7 +176,7 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
         details={"table": "silver.universe_membership_daily"},
         run_id=str(run_id) if run_id else None,
         job_name=job_name,
-        partition_key=getattr(context, "partition_key", None),
+        partition_key=partition_key,
     )
 
     context.add_output_metadata(
@@ -315,6 +323,7 @@ def silver_universe_membership_events(context: AssetExecutionContext) -> None:
         job_name = getattr(context, "job_name", None)
     except DagsterInvalidPropertyError:
         job_name = None
+    partition_key = _safe_partition_key(context)
 
     log_required_field_null_check(
         measured_con=con,
@@ -326,7 +335,7 @@ def silver_universe_membership_events(context: AssetExecutionContext) -> None:
         details={"table": "silver.universe_membership_events"},
         run_id=str(run_id) if run_id else None,
         job_name=job_name,
-        partition_key=getattr(context, "partition_key", None),
+        partition_key=partition_key,
     )
     log_required_field_null_check(
         measured_con=con,
@@ -345,7 +354,7 @@ def silver_universe_membership_events(context: AssetExecutionContext) -> None:
         },
         run_id=str(run_id) if run_id else None,
         job_name=job_name,
-        partition_key=getattr(context, "partition_key", None),
+        partition_key=partition_key,
     )
     log_required_field_null_check(
         measured_con=con,
@@ -364,7 +373,7 @@ def silver_universe_membership_events(context: AssetExecutionContext) -> None:
         },
         run_id=str(run_id) if run_id else None,
         job_name=job_name,
-        partition_key=getattr(context, "partition_key", None),
+        partition_key=partition_key,
     )
 
     context.add_output_metadata(

@@ -13,6 +13,13 @@ from portfolio_project.defs.research_db.dq_checks import log_required_field_null
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 
 
+def _safe_partition_key(context: AssetExecutionContext) -> str | None:
+    try:
+        return context.partition_key
+    except Exception:
+        return None
+
+
 def _silver_factors_root() -> Path:
     return DATA_ROOT / "silver" / "factors"
 
@@ -119,6 +126,7 @@ def silver_fama_french_factors_parquet(context: AssetExecutionContext) -> None:
         job_name = getattr(context, "job_name", None)
     except DagsterInvalidPropertyError:
         job_name = None
+    partition_key = _safe_partition_key(context)
 
     parquet_path = _silver_factors_path().as_posix()
     log_required_field_null_check(
@@ -141,7 +149,7 @@ def silver_fama_french_factors_parquet(context: AssetExecutionContext) -> None:
         details={"path": parquet_path, "table": "silver.factors"},
         run_id=str(run_id) if run_id else None,
         job_name=job_name,
-        partition_key=getattr(context, "partition_key", None),
+        partition_key=partition_key,
     )
     log_required_field_null_check(
         measured_con=context.resources.research_duckdb,
@@ -168,7 +176,7 @@ def silver_fama_french_factors_parquet(context: AssetExecutionContext) -> None:
         },
         run_id=str(run_id) if run_id else None,
         job_name=job_name,
-        partition_key=getattr(context, "partition_key", None),
+        partition_key=partition_key,
     )
 
     context.add_output_metadata(
