@@ -4,14 +4,6 @@ import duckdb
 from dagster import build_asset_context
 
 import portfolio_project.defs.research_db.silver.strategy as strategy_module
-from portfolio_project.defs.research_db.silver.strategy import (
-    STRATEGY_DEFINITIONS_COLUMNS,
-    STRATEGY_PARAMETERS_COLUMNS,
-    STRATEGY_RUNS_COLUMNS,
-    silver_strategy_definitions,
-    silver_strategy_parameters,
-    silver_strategy_runs,
-)
 
 
 TEST_STRATEGY_YAML = """
@@ -87,13 +79,17 @@ def test_strategy_assets_seed_definitions_and_parameters_from_yaml(
     con = duckdb.connect(":memory:")
     context = build_asset_context(resources={"research_duckdb": con})
 
-    silver_strategy_definitions(context)
-    silver_strategy_parameters(context)
-    silver_strategy_runs(context)
+    strategy_module.silver_strategy_definitions(context)
+    strategy_module.silver_strategy_parameters(context)
+    strategy_module.silver_strategy_runs(context)
 
-    assert _describe_columns(con, "strategy_definitions") == STRATEGY_DEFINITIONS_COLUMNS
-    assert _describe_columns(con, "strategy_parameters") == STRATEGY_PARAMETERS_COLUMNS
-    assert _describe_columns(con, "strategy_runs") == STRATEGY_RUNS_COLUMNS
+    assert _describe_columns(con, "strategy_definitions") == (
+        strategy_module.STRATEGY_DEFINITIONS_COLUMNS
+    )
+    assert _describe_columns(con, "strategy_parameters") == (
+        strategy_module.STRATEGY_PARAMETERS_COLUMNS
+    )
+    assert _describe_columns(con, "strategy_runs") == strategy_module.STRATEGY_RUNS_COLUMNS
 
     definition_rows = con.execute(
         """
@@ -135,8 +131,8 @@ def test_strategy_runs_asset_preserves_existing_run_rows(tmp_path: Path, monkeyp
     con = duckdb.connect(":memory:")
     context = build_asset_context(resources={"research_duckdb": con})
 
-    silver_strategy_definitions(context)
-    silver_strategy_runs(context)
+    strategy_module.silver_strategy_definitions(context)
+    strategy_module.silver_strategy_runs(context)
     con.execute(
         """
         INSERT INTO silver.strategy_runs (
@@ -150,7 +146,7 @@ def test_strategy_runs_asset_preserves_existing_run_rows(tmp_path: Path, monkeyp
         """
     )
 
-    silver_strategy_runs(context)
+    strategy_module.silver_strategy_runs(context)
 
     run_rows = con.execute(
         """
