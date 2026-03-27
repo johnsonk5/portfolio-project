@@ -23,6 +23,60 @@ def _null_count_expressions(columns: Sequence[str]) -> str:
     )
 
 
+def log_duplicate_row_check(
+    *,
+    measured_con,
+    observability_con,
+    check_name: str,
+    relation_sql: str,
+    relation_params: Sequence[object] | None,
+    key_columns: Sequence[str],
+    details: dict | None = None,
+    run_id: str | None = None,
+    job_name: str | None = None,
+    partition_key: str | None = None,
+) -> None:
+    quoted_key_columns = [_quote_identifier(column) for column in key_columns]
+    group_by_sql = ", ".join(quoted_key_columns)
+    select_keys_sql = ", ".join(quoted_key_columns)
+
+    duplicate_count = measured_con.execute(
+        f"""
+        WITH scoped_rows AS (
+            {relation_sql}
+        )
+        SELECT coalesce(sum(cnt - 1), 0)
+        FROM (
+            SELECT
+                {select_keys_sql},
+                count(*) AS cnt
+            FROM scoped_rows
+            GROUP BY {group_by_sql}
+            HAVING count(*) > 1
+        )
+        """,
+        list(relation_params or []),
+    ).fetchone()[0]
+
+    payload = {"key_columns": list(key_columns)}
+    if details:
+        payload.update(details)
+
+    write_dq_log(
+        con=observability_con,
+        check_name=check_name,
+        severity="RED",
+        status="PASS" if int(duplicate_count or 0) == 0 else "FAIL",
+        measured_value=float(duplicate_count or 0),
+        threshold_value=0.0,
+        details=payload,
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
+
+
 def log_required_field_null_check(
     *,
     measured_con,

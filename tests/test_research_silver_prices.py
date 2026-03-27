@@ -351,3 +351,105 @@ def test_research_daily_prices_writes_required_fields_dq_check_to_portfolio_obse
         0.0,
         partition_key,
     )
+
+
+def test_research_daily_prices_writes_duplicate_symbol_trade_date_dq_check_to_observability(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "data"
+    research_silver_prices_module.DATA_ROOT = data_root
+    partition_key = "2026-02-13"
+
+    _write_bronze_prices(
+        data_root,
+        "alpaca_prices_daily",
+        partition_key,
+        pd.DataFrame(
+            {
+                "symbol": ["AAPL"],
+                "timestamp": [datetime(2026, 2, 13, 21, 0, tzinfo=timezone.utc)],
+                "trade_date": ["2026-02-13"],
+                "open": [100.0],
+                "high": [101.0],
+                "low": [99.0],
+                "close": [100.5],
+                "adjusted_close": [pd.NA],
+                "volume": [1000],
+                "trade_count": [10],
+                "vwap": [100.2],
+                "source": ["alpaca"],
+                "ingested_ts": [datetime.now(timezone.utc)],
+            }
+        ),
+    )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(
+        partition_key=partition_key,
+        resources={"research_duckdb": con, "duckdb": obs_con},
+    )
+    research_silver_prices_module.silver_research_daily_prices(context)
+
+    row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value, partition_key
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_research_daily_prices_uniqueness_symbol_trade_date'
+        """
+    ).fetchone()
+
+    assert row == (
+        "dq_research_daily_prices_uniqueness_symbol_trade_date",
+        "PASS",
+        0.0,
+        partition_key,
+    )
+
+
+def test_log_duplicate_row_check_detects_duplicate_symbol_trade_date_rows() -> None:
+    measured_con = duckdb.connect(":memory:")
+    observability_con = duckdb.connect(":memory:")
+
+    measured_con.execute(
+        """
+        CREATE TABLE duplicate_prices (
+            symbol VARCHAR,
+            trade_date DATE
+        )
+        """
+    )
+    measured_con.execute(
+        """
+        INSERT INTO duplicate_prices VALUES
+            ('AAPL', DATE '2026-02-13'),
+            ('AAPL', DATE '2026-02-13'),
+            ('MSFT', DATE '2026-02-13')
+        """
+    )
+
+    research_silver_prices_module.log_duplicate_row_check(
+        measured_con=measured_con,
+        observability_con=observability_con,
+        check_name="dq_test_duplicate_symbol_trade_date",
+        relation_sql="SELECT * FROM duplicate_prices",
+        relation_params=[],
+        key_columns=["symbol", "trade_date"],
+        details={"table": "duplicate_prices"},
+        partition_key="2026-02-13",
+    )
+
+    row = observability_con.execute(
+        """
+        SELECT check_name, status, measured_value, threshold_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_test_duplicate_symbol_trade_date'
+        """
+    ).fetchone()
+
+    assert row == (
+        "dq_test_duplicate_symbol_trade_date",
+        "FAIL",
+        1.0,
+        0.0,
+    )

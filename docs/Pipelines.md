@@ -30,6 +30,7 @@ Refresh the recent-window research price history from Alpaca and rebuild the dow
 
 ### Data Quality
 - Validates expected columns and DuckDB data types for each emitted `silver.research_daily_prices` partition and writes the result to `observability.data_quality_checks` in the portfolio DuckDB.
+- Checks each emitted `silver.research_daily_prices` partition for duplicate `symbol` + `trade_date` rows.
 
 ### Schedule
 - `research_daily_prices_schedule`: `35 9 * * *` America/New_York.

@@ -10,7 +10,10 @@ from dagster._core.errors import DagsterInvalidPropertyError
 from portfolio_project.defs.portfolio_db.observability.observability_modules import (
     write_dq_log,
 )
-from portfolio_project.defs.research_db.dq_checks import log_required_field_null_check
+from portfolio_project.defs.research_db.dq_checks import (
+    log_duplicate_row_check,
+    log_required_field_null_check,
+)
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 RESEARCH_PRICES_PARTITIONS_START_DATE = os.getenv(
@@ -207,29 +210,66 @@ def _log_research_daily_prices_required_field_check(
     except DagsterInvalidPropertyError:
         job_name = None
 
-    log_required_field_null_check(
-        measured_con=context.resources.research_duckdb,
-        observability_con=context.resources.duckdb,
-        check_name="dq_research_daily_prices_required_fields_nulls",
-        relation_sql="SELECT * FROM read_parquet(?, hive_partitioning = false)",
-        relation_params=[parquet_path.as_posix()],
-        required_columns=[
-            "symbol",
-            "timestamp",
-            "trade_date",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-            "source",
-            "ingested_ts",
-        ],
-        details={"path": parquet_path.as_posix(), "table": "silver.research_daily_prices"},
-        run_id=str(run_id) if run_id else None,
-        job_name=job_name,
-        partition_key=partition_key,
-    )
+    measured_con = duckdb.connect(":memory:")
+    try:
+        log_required_field_null_check(
+            measured_con=measured_con,
+            observability_con=context.resources.duckdb,
+            check_name="dq_research_daily_prices_required_fields_nulls",
+            relation_sql="SELECT * FROM read_parquet(?, hive_partitioning = false)",
+            relation_params=[parquet_path.as_posix()],
+            required_columns=[
+                "symbol",
+                "timestamp",
+                "trade_date",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "source",
+                "ingested_ts",
+            ],
+            details={"path": parquet_path.as_posix(), "table": "silver.research_daily_prices"},
+            run_id=str(run_id) if run_id else None,
+            job_name=job_name,
+            partition_key=partition_key,
+        )
+    finally:
+        measured_con.close()
+
+
+def _log_research_daily_prices_duplicate_symbol_date_check(
+    context: AssetExecutionContext,
+    parquet_path: Path,
+) -> None:
+    try:
+        run = getattr(context, "run", None)
+    except DagsterInvalidPropertyError:
+        run = None
+    run_id = getattr(run, "run_id", None)
+    partition_key = getattr(context, "partition_key", None)
+    try:
+        job_name = getattr(context, "job_name", None)
+    except DagsterInvalidPropertyError:
+        job_name = None
+
+    measured_con = duckdb.connect(":memory:")
+    try:
+        log_duplicate_row_check(
+            measured_con=measured_con,
+            observability_con=context.resources.duckdb,
+            check_name="dq_research_daily_prices_uniqueness_symbol_trade_date",
+            relation_sql="SELECT * FROM read_parquet(?, hive_partitioning = false)",
+            relation_params=[parquet_path.as_posix()],
+            key_columns=["symbol", "trade_date"],
+            details={"path": parquet_path.as_posix(), "table": "silver.research_daily_prices"},
+            run_id=str(run_id) if run_id else None,
+            job_name=job_name,
+            partition_key=partition_key,
+        )
+    finally:
+        measured_con.close()
 
 
 def _normalize_daily_prices_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -311,7 +351,7 @@ def write_research_daily_prices_partition(
         return 0, 0
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = out_path.with_suffix(f"{out_path.suffix}.tmp")
+    temp_path = out_path.with_name(f"{out_path.stem}.tmp{out_path.suffix}")
     day_df.to_parquet(temp_path, index=False)
     temp_path.replace(out_path)
     return 1, len(day_df)
@@ -401,6 +441,7 @@ def silver_research_daily_prices(context: AssetExecutionContext) -> None:
         output_path,
     )
     _log_research_daily_prices_required_field_check(context, output_path)
+    _log_research_daily_prices_duplicate_symbol_date_check(context, output_path)
     source_counts = {
         str(source): int(count)
         for source, count in day_df["source"].value_counts().sort_index().items()
