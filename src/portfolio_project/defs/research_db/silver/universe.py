@@ -26,11 +26,7 @@ def _safe_partition_key(context: AssetExecutionContext) -> str | None:
 
 def _silver_prices_glob() -> str:
     return (
-        DATA_ROOT
-        / "silver"
-        / RESEARCH_DAILY_PRICES_DATASET
-        / "month=*"
-        / "date=*.parquet"
+        DATA_ROOT / "silver" / RESEARCH_DAILY_PRICES_DATASET / "month=*" / "date=*.parquet"
     ).as_posix()
 
 
@@ -138,9 +134,7 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
         )
         return
 
-    row_count = con.execute(
-        "SELECT count(*) FROM silver.universe_membership_daily"
-    ).fetchone()[0]
+    row_count = con.execute("SELECT count(*) FROM silver.universe_membership_daily").fetchone()[0]
     symbol_count = con.execute(
         "SELECT count(DISTINCT symbol) FROM silver.universe_membership_daily"
     ).fetchone()[0]
@@ -307,9 +301,7 @@ def silver_universe_membership_events(context: AssetExecutionContext) -> None:
         """
     )
 
-    row_count = con.execute(
-        "SELECT count(*) FROM silver.universe_membership_events"
-    ).fetchone()[0]
+    row_count = con.execute("SELECT count(*) FROM silver.universe_membership_events").fetchone()[0]
     symbol_count = con.execute(
         "SELECT count(DISTINCT symbol) FROM silver.universe_membership_events"
     ).fetchone()[0]

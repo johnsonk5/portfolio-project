@@ -8,7 +8,6 @@ import yaml
 from dagster import AssetExecutionContext, asset
 from dagster._core.errors import DagsterInvalidPropertyError
 
-
 STRATEGY_CATALOG_PATH = (
     Path(__file__).resolve().parents[3] / "config" / "investment_strategies.yaml"
 )
@@ -102,22 +101,14 @@ def _load_catalog(catalog_path: Path) -> list[dict[str, Any]]:
     raw = yaml.safe_load(catalog_path.read_text(encoding="utf-8")) or {}
     strategies = raw.get("strategies", [])
     if not isinstance(strategies, list):
-        raise ValueError(
-            "investment_strategies.yaml must define a top-level 'strategies' list."
-        )
+        raise ValueError("investment_strategies.yaml must define a top-level 'strategies' list.")
     return strategies
 
 
-def _require_fields(
-    record: dict[str, Any], required_fields: list[str], record_label: str
-) -> None:
-    missing_fields = [
-        field for field in required_fields if record.get(field) in (None, "")
-    ]
+def _require_fields(record: dict[str, Any], required_fields: list[str], record_label: str) -> None:
+    missing_fields = [field for field in required_fields if record.get(field) in (None, "")]
     if missing_fields:
-        raise ValueError(
-            f"{record_label} is missing required fields: {', '.join(missing_fields)}"
-        )
+        raise ValueError(f"{record_label} is missing required fields: {', '.join(missing_fields)}")
 
 
 def _parse_optional_date(raw_value: Any) -> date | None:
@@ -192,18 +183,14 @@ def _parameter_records(
 
         for parameter in parameters:
             if not isinstance(parameter, dict):
-                raise ValueError(
-                    f"Strategy {strategy_id} contains a non-dict parameter entry."
-                )
+                raise ValueError(f"Strategy {strategy_id} contains a non-dict parameter entry.")
             _require_fields(
                 parameter,
                 REQUIRED_PARAMETER_FIELDS,
                 f"Strategy parameter for {strategy_id}",
             )
 
-            effective_start_date = _parse_optional_date(
-                parameter.get("effective_start_date")
-            )
+            effective_start_date = _parse_optional_date(parameter.get("effective_start_date"))
             if effective_start_date is None:
                 raise ValueError(
                     f"Strategy parameter for {strategy_id} is missing effective_start_date."
@@ -225,9 +212,7 @@ def _parameter_records(
                     "parameter_value": str(parameter["parameter_value"]),
                     "parameter_type": str(parameter["parameter_type"]).strip(),
                     "effective_start_date": effective_start_date,
-                    "effective_end_date": _parse_optional_date(
-                        parameter.get("effective_end_date")
-                    ),
+                    "effective_end_date": _parse_optional_date(parameter.get("effective_end_date")),
                     "is_active": bool(parameter["is_active"]),
                     "description": parameter.get("description"),
                     "ingest_ts": ingest_ts,
@@ -372,9 +357,7 @@ def silver_strategy_runs(context: AssetExecutionContext) -> None:
         columns=STRATEGY_RUNS_COLUMNS,
     )
     table_metadata = _table_metadata(con, schema="silver", table="strategy_runs")
-    context.add_output_metadata(
-        {"table": "silver.strategy_runs", **table_metadata}
-    )
+    context.add_output_metadata({"table": "silver.strategy_runs", **table_metadata})
 
 
 @asset(

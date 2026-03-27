@@ -2,8 +2,8 @@ from pathlib import Path
 
 import duckdb
 from dagster import build_asset_context
-import portfolio_project.defs.research_db.silver.strategy as strategy_module
 
+import portfolio_project.defs.research_db.silver.strategy as strategy_module
 
 TEST_STRATEGY_YAML = """
 strategies:

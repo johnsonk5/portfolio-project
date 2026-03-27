@@ -983,14 +983,10 @@ def _check_research_universe_freshness(
         ]
 
     universe_size = int(os.getenv("RESEARCH_UNIVERSE_SIZE", "500"))
-    lookback_partitions = int(
-        os.getenv("RESEARCH_UNIVERSE_FRESHNESS_LOOKBACK_PARTITIONS", "20")
-    )
+    lookback_partitions = int(os.getenv("RESEARCH_UNIVERSE_FRESHNESS_LOOKBACK_PARTITIONS", "20"))
     min_history = int(os.getenv("RESEARCH_UNIVERSE_FRESHNESS_MIN_HISTORY", "3"))
     min_ratio = float(os.getenv("RESEARCH_UNIVERSE_FRESHNESS_MIN_SYMBOL_COUNT_RATIO", "0.95"))
-    drop_lookback_partitions = int(
-        os.getenv("RESEARCH_UNIVERSE_DROP_LOOKBACK_PARTITIONS", "20")
-    )
+    drop_lookback_partitions = int(os.getenv("RESEARCH_UNIVERSE_DROP_LOOKBACK_PARTITIONS", "20"))
     drop_min_history = int(os.getenv("RESEARCH_UNIVERSE_DROP_MIN_HISTORY", "3"))
     drop_ratio_multiplier = float(os.getenv("RESEARCH_UNIVERSE_DROP_RATIO_MULTIPLIER", "3.0"))
     drop_min_ratio = float(os.getenv("RESEARCH_UNIVERSE_DROP_MIN_RATIO", "0.03"))
@@ -1122,9 +1118,7 @@ def _check_research_universe_freshness(
                     max(float(earlier_count) - float(later_count), 0.0) / float(earlier_count)
                 )
             baseline_drop_ratio = (
-                float(statistics.median(historical_drop_ratios))
-                if historical_drop_ratios
-                else 0.0
+                float(statistics.median(historical_drop_ratios)) if historical_drop_ratios else 0.0
             )
             threshold_drop_ratio = max(
                 baseline_drop_ratio * drop_ratio_multiplier,
@@ -1299,13 +1293,9 @@ def _check_research_universe_freshness(
             missing_rates = [
                 float(row["missing_rate"]) for row in symbol_missing_stats if "missing_rate" in row
             ]
-            average_missing_rate = (
-                float(statistics.mean(missing_rates)) if missing_rates else 0.0
-            )
+            average_missing_rate = float(statistics.mean(missing_rates)) if missing_rates else 0.0
             symbols_with_missing_data = [
-                row
-                for row in symbol_missing_stats
-                if int(row["missing_dates"]) > 0
+                row for row in symbol_missing_stats if int(row["missing_dates"]) > 0
             ]
             max_missing_rate = max(missing_rates, default=0.0)
             missing_rate_check = {
@@ -1314,11 +1304,7 @@ def _check_research_universe_freshness(
                 "partition_key": partition_key,
                 "check_name": missing_rate_check_name,
                 "severity": _freshness_severity(missing_rate_check_name),
-                "status": (
-                    "PASS"
-                    if average_missing_rate <= max_avg_missing_data_rate
-                    else "FAIL"
-                ),
+                "status": ("PASS" if average_missing_rate <= max_avg_missing_data_rate else "FAIL"),
                 "measured_value": average_missing_rate,
                 "threshold_value": max_avg_missing_data_rate,
                 "details_json": json.dumps(
