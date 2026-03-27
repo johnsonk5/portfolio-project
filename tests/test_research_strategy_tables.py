@@ -2,6 +2,7 @@ from pathlib import Path
 
 import duckdb
 from dagster import build_asset_context
+
 import portfolio_project.defs.research_db.silver.strategy as strategy_module
 from portfolio_project.defs.research_db.silver.strategy import (
     STRATEGY_DEFINITIONS_COLUMNS,
