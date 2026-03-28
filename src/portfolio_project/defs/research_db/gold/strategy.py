@@ -8,6 +8,7 @@ from typing import Any
 
 import pandas as pd
 from dagster import AssetExecutionContext, asset
+from dagster._core.errors import DagsterInvalidPropertyError
 
 from portfolio_project.defs.research_db.silver.research_prices import (
     RESEARCH_DAILY_PRICES_DATASET,
@@ -31,6 +32,7 @@ PRICE_GLOB = (
 MAX_ABS_DAILY_SECURITY_RETURN = float(
     os.getenv("RESEARCH_STRATEGY_MAX_ABS_DAILY_SECURITY_RETURN", "5.0")
 )
+MISSING_STRATEGIES_JOB_NAME = "strategy_missing_backfill_job"
 
 STRATEGY_RANKINGS_COLUMNS: list[tuple[str, str]] = [
     ("run_id", "VARCHAR"),
@@ -100,6 +102,13 @@ class StrategyConfig:
 
 def _now_utc_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _safe_job_name(context: AssetExecutionContext) -> str | None:
+    try:
+        return getattr(context, "job_name", None)
+    except DagsterInvalidPropertyError:
+        return None
 
 
 def _table_exists(con, schema: str, table: str) -> bool:
@@ -224,6 +233,44 @@ def _strategies_with_latest_run_ids(
             )
         )
     return resolved
+
+
+def _filter_missing_strategies(
+    con,
+    strategies: list[StrategyConfig],
+) -> list[StrategyConfig]:
+    if not strategies or not _table_exists(con, "gold", "strategy_performance"):
+        return strategies
+
+    completed_strategy_ids = {
+        str(row[0])
+        for row in con.execute(
+            """
+            SELECT DISTINCT strategy_id
+            FROM gold.strategy_performance
+            WHERE strategy_id IS NOT NULL
+            """
+        ).fetchall()
+    }
+    return [
+        strategy for strategy in strategies if strategy.strategy_id not in completed_strategy_ids
+    ]
+
+
+def _strategies_for_context(
+    con,
+    context: AssetExecutionContext,
+    *,
+    source_table: str | None,
+) -> list[StrategyConfig]:
+    strategies = (
+        _strategies_with_latest_run_ids(con, context, source_table=source_table)
+        if source_table
+        else _active_strategies(con, context)
+    )
+    if _safe_job_name(context) == MISSING_STRATEGIES_JOB_NAME:
+        return _filter_missing_strategies(con, strategies)
+    return strategies
 
 
 def _active_parameters_by_date(con, strategy_id: str, rebalance_date: date) -> dict[str, Any]:
@@ -981,7 +1028,7 @@ def gold_strategy_rankings(context: AssetExecutionContext) -> None:
     Materialize monthly strategy rankings for all active research strategies.
     """
     con = context.resources.research_duckdb
-    strategies = _active_strategies(con, context)
+    strategies = _strategies_for_context(con, context, source_table=None)
     asof_ts = _now_utc_naive()
     _ensure_strategy_run_rows(con, strategies, asof_ts=asof_ts, run_status="running")
     row_count = _materialize_rankings(con, strategies, asof_ts=asof_ts)
@@ -1005,7 +1052,7 @@ def gold_strategy_holdings(context: AssetExecutionContext) -> None:
     Materialize rebalance holdings from strategy rankings.
     """
     con = context.resources.research_duckdb
-    strategies = _strategies_with_latest_run_ids(
+    strategies = _strategies_for_context(
         con,
         context,
         source_table="strategy_rankings",
@@ -1031,7 +1078,7 @@ def gold_strategy_returns(context: AssetExecutionContext) -> None:
     Materialize daily return paths from rebalance holdings.
     """
     con = context.resources.research_duckdb
-    strategies = _strategies_with_latest_run_ids(
+    strategies = _strategies_for_context(
         con,
         context,
         source_table="strategy_holdings",
@@ -1057,7 +1104,7 @@ def gold_strategy_performance(context: AssetExecutionContext) -> None:
     Materialize one-row strategy performance summaries for the current strategy runs.
     """
     con = context.resources.research_duckdb
-    strategies = _strategies_with_latest_run_ids(
+    strategies = _strategies_for_context(
         con,
         context,
         source_table="strategy_returns",

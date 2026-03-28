@@ -407,3 +407,52 @@ def test_daily_symbol_returns_drops_non_positive_and_extreme_price_jumps() -> No
     assert pd.isna(rows[("IVL", "2011-04-07")])
     assert pd.isna(rows[("ISA", "2003-08-05")])
     assert rows[("AAA", "2024-01-03")] == pytest.approx(0.1)
+
+
+def test_strategies_for_missing_backfill_job_filters_completed_strategies(
+    tmp_path: Path, monkeypatch
+) -> None:
+    catalog_path = tmp_path / "investment_strategies.yaml"
+    catalog_path.write_text(TEST_GOLD_STRATEGY_YAML, encoding="utf-8")
+    monkeypatch.setattr(silver_strategy_module, "STRATEGY_CATALOG_PATH", catalog_path)
+
+    con = duckdb.connect(":memory:")
+    silver_context = build_asset_context(resources={"research_duckdb": con})
+    silver_strategy_module.silver_strategy_definitions(silver_context)
+
+    con.execute("CREATE SCHEMA IF NOT EXISTS gold")
+    con.execute(
+        """
+        CREATE TABLE gold.strategy_performance (
+            run_id VARCHAR,
+            strategy_id VARCHAR,
+            cagr DOUBLE,
+            sharpe_ratio DOUBLE,
+            sortino_ratio DOUBLE,
+            max_drawdown DOUBLE,
+            annualized_volatility DOUBLE,
+            hit_rate DOUBLE,
+            turnover_avg DOUBLE,
+            benchmark_return DOUBLE,
+            alpha DOUBLE,
+            asof_ts TIMESTAMP
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO gold.strategy_performance (run_id, strategy_id, asof_ts)
+        VALUES ('existing-run', 'benchmark_spy_buy_and_hold', current_timestamp)
+        """
+    )
+
+    class DummyContext:
+        job_name = gold_strategy_module.MISSING_STRATEGIES_JOB_NAME
+
+    strategies = gold_strategy_module._strategies_for_context(
+        con,
+        DummyContext(),
+        source_table=None,
+    )
+
+    assert [strategy.strategy_id for strategy in strategies] == ["momentum_top_1"]

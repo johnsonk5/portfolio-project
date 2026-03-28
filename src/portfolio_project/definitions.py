@@ -110,6 +110,16 @@ research_prices_selection = AssetSelection.assets(
     silver_universe_membership_events,
 )
 
+strategy_backfill_selection = AssetSelection.assets(
+    silver_strategy_definitions,
+    silver_strategy_runs,
+    silver_strategy_parameters,
+    gold_strategy_rankings,
+    gold_strategy_holdings,
+    gold_strategy_returns,
+    gold_strategy_performance,
+)
+
 daily_prices_job = define_asset_job(
     name="daily_prices_job",
     selection=prices_selection,
@@ -180,6 +190,13 @@ research_daily_prices_job = define_asset_job(
     name="research_daily_prices_job",
     selection=research_prices_selection,
     partitions_def=ALPACA_PRICES_PARTITIONS,
+    executor_def=in_process_executor,
+    hooks={dagster_run_log_success, dagster_run_log_failure},
+)
+
+strategy_missing_backfill_job = define_asset_job(
+    name="strategy_missing_backfill_job",
+    selection=strategy_backfill_selection,
     executor_def=in_process_executor,
     hooks={dagster_run_log_success, dagster_run_log_failure},
 )
@@ -392,6 +409,7 @@ defs = Definitions(
     jobs=[
         daily_prices_job,
         research_daily_prices_job,
+        strategy_missing_backfill_job,
         prices_compaction_job,
         daily_news_job,
         monthly_factors_job,
