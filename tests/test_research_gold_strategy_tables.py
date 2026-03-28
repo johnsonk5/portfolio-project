@@ -1,10 +1,12 @@
 from datetime import date
 from pathlib import Path
+from typing import cast
 
 import duckdb
 import pandas as pd
 import pytest
 from dagster import build_asset_context
+from dagster import AssetExecutionContext
 
 import portfolio_project.defs.research_db.gold.strategy as gold_strategy_module
 import portfolio_project.defs.research_db.silver.strategy as silver_strategy_module
@@ -451,7 +453,7 @@ def test_strategies_for_missing_backfill_job_filters_completed_strategies(
 
     strategies = gold_strategy_module._strategies_for_context(
         con,
-        DummyContext(),
+        cast(AssetExecutionContext, DummyContext()),
         source_table=None,
     )
 
