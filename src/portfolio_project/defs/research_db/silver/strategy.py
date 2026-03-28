@@ -80,6 +80,20 @@ REQUIRED_PARAMETER_FIELDS = [
     "is_active",
 ]
 
+REQUIRED_PARAMETERS_BY_RANKING_METHOD: dict[str, set[str]] = {
+    "single_asset_hold": {"symbol"},
+    "momentum_12_1_desc": {"signal_column", "ranking_direction"},
+    "realized_vol_21d_asc": {"signal_column", "ranking_direction"},
+    "returns_5d_asc": {"signal_column", "ranking_direction"},
+    "composite_momentum_below_52w_high_desc": {
+        "signal_column",
+        "secondary_signal_column",
+        "score_method",
+        "ranking_direction",
+        "min_momentum_12_1",
+    },
+}
+
 
 def _quote_identifier(identifier: str) -> str:
     return f'"{identifier.replace(chr(34), chr(34) * 2)}"'
@@ -121,6 +135,30 @@ def _now_utc_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def _validate_required_strategy_parameters(strategy: dict[str, Any]) -> None:
+    strategy_id = str(strategy["strategy_id"]).strip()
+    ranking_method = str(strategy["ranking_method"]).strip()
+    required_parameters = REQUIRED_PARAMETERS_BY_RANKING_METHOD.get(ranking_method)
+    if not required_parameters:
+        return
+
+    parameters = strategy.get("parameters") or []
+    if not isinstance(parameters, list):
+        raise ValueError(f"Strategy {strategy_id} parameters must be a list.")
+
+    parameter_names = {
+        str(parameter.get("parameter_name") or "").strip()
+        for parameter in parameters
+        if isinstance(parameter, dict)
+    }
+    missing_parameters = sorted(required_parameters - parameter_names)
+    if missing_parameters:
+        raise ValueError(
+            f"Strategy {strategy_id} is missing required parameters for "
+            f"{ranking_method}: {', '.join(missing_parameters)}"
+        )
+
+
 def _definition_records(
     strategies: list[dict[str, Any]],
     *,
@@ -136,6 +174,7 @@ def _definition_records(
         if strategy_id in seen_strategy_ids:
             raise ValueError(f"Duplicate strategy_id in strategy catalog: {strategy_id}")
         seen_strategy_ids.add(strategy_id)
+        _validate_required_strategy_parameters(strategy)
 
         config = strategy.get("config") or {}
         if not isinstance(config, dict):
@@ -177,6 +216,7 @@ def _parameter_records(
 
     for strategy in strategies:
         strategy_id = str(strategy["strategy_id"]).strip()
+        _validate_required_strategy_parameters(strategy)
         parameters = strategy.get("parameters") or []
         if not isinstance(parameters, list):
             raise ValueError(f"Strategy {strategy_id} parameters must be a list.")
