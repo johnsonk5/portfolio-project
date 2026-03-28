@@ -171,6 +171,10 @@ def _signals_select_sql() -> str:
                 WHEN close IS NULL OR rolling_252d_high IS NULL OR rolling_252d_high = 0 THEN NULL
                 ELSE (close / rolling_252d_high) - 1
             END AS drawdown_from_252d_high,
+            CASE
+                WHEN close IS NULL OR rolling_252d_high IS NULL OR rolling_252d_high = 0 THEN NULL
+                ELSE (rolling_252d_high - close) / rolling_252d_high
+            END AS pct_below_52w_high,
             rolling_252d_high,
             rolling_252d_low,
             avg_dollar_volume_21d,

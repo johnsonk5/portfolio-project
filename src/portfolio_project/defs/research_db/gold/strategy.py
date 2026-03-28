@@ -283,8 +283,11 @@ def _active_parameters_by_date(con, strategy_id: str, rebalance_date: date) -> d
         FROM silver.strategy_parameters
         WHERE strategy_id = ?
           AND is_active = TRUE
-          AND effective_start_date <= ?
-          AND (effective_end_date IS NULL OR effective_end_date >= ?)
+          AND CAST(effective_start_date AS DATE) <= ?
+          AND (
+                effective_end_date IS NULL
+                OR CAST(effective_end_date AS DATE) >= ?
+          )
         ORDER BY parameter_name
         """,
         [strategy_id, rebalance_date, rebalance_date],
@@ -330,7 +333,9 @@ def _build_rankings_for_strategy(
     for rebalance_date in rebalance_dates:
         parameters = _active_parameters_by_date(con, strategy.strategy_id, rebalance_date)
         signal_column = str(parameters.get("signal_column") or "momentum_12_1").strip()
+        secondary_signal_column = str(parameters.get("secondary_signal_column") or "").strip()
         ranking_direction = str(parameters.get("ranking_direction") or "desc").strip().lower()
+        score_method = str(parameters.get("score_method") or "").strip().lower()
         universe_name = str(strategy.config.get("universe") or "").strip().lower()
         selection_mode = str(strategy.config.get("selection_mode") or "").strip().lower()
         fixed_symbol = str(parameters.get("symbol") or strategy.benchmark_symbol).strip().upper()
@@ -349,16 +354,28 @@ def _build_rankings_for_strategy(
                 [rebalance_date, fixed_symbol],
             ).fetchall()
         else:
+            secondary_select_sql = ""
+            secondary_not_null_sql = ""
+            if secondary_signal_column:
+                secondary_identifier = _quote_identifier(secondary_signal_column)
+                secondary_select_sql = (
+                    f", CAST(s.{secondary_identifier} AS DOUBLE) AS secondary_score"
+                )
+                secondary_not_null_sql = (
+                    f" AND CAST(s.{secondary_identifier} AS DOUBLE) IS NOT NULL"
+                )
             sql = f"""
                 SELECT
                     upper(trim(s.symbol)) AS symbol,
-                    CAST(s.{_quote_identifier(signal_column)} AS DOUBLE) AS score
+                    CAST(s.{_quote_identifier(signal_column)} AS DOUBLE) AS primary_score
+                    {secondary_select_sql}
                 FROM silver.signals_daily AS s
                 INNER JOIN silver.universe_membership_daily AS u
                     ON CAST(u.member_date AS DATE) = CAST(s.date AS DATE)
                    AND upper(trim(u.symbol)) = upper(trim(s.symbol))
                 WHERE CAST(s.date AS DATE) = ?
                   AND CAST(s.{_quote_identifier(signal_column)} AS DOUBLE) IS NOT NULL
+                  {secondary_not_null_sql}
             """
             params: list[Any] = [rebalance_date]
             min_avg_dollar_volume_21d = parameters.get("min_avg_dollar_volume_21d")
@@ -369,11 +386,33 @@ def _build_rankings_for_strategy(
             if min_price_to_sma_200 is not None:
                 sql += " AND CAST(s.price_to_sma_200 AS DOUBLE) >= ?"
                 params.append(float(min_price_to_sma_200))
+            min_momentum_12_1 = parameters.get("min_momentum_12_1")
+            if min_momentum_12_1 is not None:
+                sql += " AND CAST(s.momentum_12_1 AS DOUBLE) > ?"
+                params.append(float(min_momentum_12_1))
             candidate_rows = con.execute(sql, params).fetchall()
 
-        candidate_df = pd.DataFrame(candidate_rows, columns=["symbol", "score"])
+        candidate_columns = (
+            ["symbol", "primary_score", "secondary_score"]
+            if secondary_signal_column
+            else ["symbol", "primary_score"]
+        )
+        candidate_df = pd.DataFrame(candidate_rows, columns=candidate_columns)
         if candidate_df.empty:
             continue
+
+        if secondary_signal_column and score_method == "zscore_sum":
+            def _zscore(series: pd.Series) -> pd.Series:
+                std = series.std(ddof=0)
+                if pd.isna(std) or std == 0:
+                    return pd.Series(0.0, index=series.index)
+                return (series - series.mean()) / std
+
+            candidate_df["score"] = _zscore(candidate_df["primary_score"]) + _zscore(
+                candidate_df["secondary_score"]
+            )
+        else:
+            candidate_df["score"] = candidate_df["primary_score"]
 
         ascending = ranking_direction == "asc"
         candidate_df = candidate_df.sort_values(

@@ -456,3 +456,138 @@ def test_strategies_for_missing_backfill_job_filters_completed_strategies(
     )
 
     assert [strategy.strategy_id for strategy in strategies] == ["momentum_top_1"]
+
+
+def test_composite_underrated_momentum_ranking_requires_positive_momentum() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA IF NOT EXISTS silver")
+    con.execute(
+        """
+        CREATE TABLE silver.signals_daily AS
+        SELECT *
+        FROM (
+            VALUES
+                ('2024-01-31', 'AAA', 0.9, 0.40, 5000000.0),
+                ('2024-01-31', 'BBB', 0.4, 0.10, 5000000.0),
+                ('2024-01-31', 'CCC', -0.2, 0.80, 5000000.0)
+        ) AS t(date, symbol, momentum_12_1, pct_below_52w_high, avg_dollar_volume_21d)
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE silver.universe_membership_daily AS
+        SELECT *
+        FROM (
+            VALUES
+                ('2024-01-31', 'AAA', 1, 5000000.0, 'test', current_timestamp),
+                ('2024-01-31', 'BBB', 2, 5000000.0, 'test', current_timestamp),
+                ('2024-01-31', 'CCC', 3, 5000000.0, 'test', current_timestamp)
+        ) AS t(member_date, symbol, liquidity_rank, rolling_avg_dollar_volume, source, ingested_ts)
+        """
+    )
+    strategy_parameters_df = pd.DataFrame(
+        [
+            {
+                "strategy_id": "underrated_momentum_top_10",
+                "parameter_name": "signal_column",
+                "parameter_value": "momentum_12_1",
+                "parameter_type": "string",
+                "effective_start_date": "2000-01-01",
+                "effective_end_date": None,
+                "is_active": True,
+                "description": "",
+                "ingest_ts": pd.Timestamp("2024-01-01"),
+                "asof_ts": pd.Timestamp("2024-01-01"),
+                "run_id": "run-001",
+            },
+            {
+                "strategy_id": "underrated_momentum_top_10",
+                "parameter_name": "secondary_signal_column",
+                "parameter_value": "pct_below_52w_high",
+                "parameter_type": "string",
+                "effective_start_date": "2000-01-01",
+                "effective_end_date": None,
+                "is_active": True,
+                "description": "",
+                "ingest_ts": pd.Timestamp("2024-01-01"),
+                "asof_ts": pd.Timestamp("2024-01-01"),
+                "run_id": "run-001",
+            },
+            {
+                "strategy_id": "underrated_momentum_top_10",
+                "parameter_name": "score_method",
+                "parameter_value": "zscore_sum",
+                "parameter_type": "string",
+                "effective_start_date": "2000-01-01",
+                "effective_end_date": None,
+                "is_active": True,
+                "description": "",
+                "ingest_ts": pd.Timestamp("2024-01-01"),
+                "asof_ts": pd.Timestamp("2024-01-01"),
+                "run_id": "run-001",
+            },
+            {
+                "strategy_id": "underrated_momentum_top_10",
+                "parameter_name": "ranking_direction",
+                "parameter_value": "desc",
+                "parameter_type": "string",
+                "effective_start_date": "2000-01-01",
+                "effective_end_date": None,
+                "is_active": True,
+                "description": "",
+                "ingest_ts": pd.Timestamp("2024-01-01"),
+                "asof_ts": pd.Timestamp("2024-01-01"),
+                "run_id": "run-001",
+            },
+            {
+                "strategy_id": "underrated_momentum_top_10",
+                "parameter_name": "min_momentum_12_1",
+                "parameter_value": "0",
+                "parameter_type": "double",
+                "effective_start_date": "2000-01-01",
+                "effective_end_date": None,
+                "is_active": True,
+                "description": "",
+                "ingest_ts": pd.Timestamp("2024-01-01"),
+                "asof_ts": pd.Timestamp("2024-01-01"),
+                "run_id": "run-001",
+            },
+            {
+                "strategy_id": "underrated_momentum_top_10",
+                "parameter_name": "min_avg_dollar_volume_21d",
+                "parameter_value": "1000000",
+                "parameter_type": "int",
+                "effective_start_date": "2000-01-01",
+                "effective_end_date": None,
+                "is_active": True,
+                "description": "",
+                "ingest_ts": pd.Timestamp("2024-01-01"),
+                "asof_ts": pd.Timestamp("2024-01-01"),
+                "run_id": "run-001",
+            },
+        ]
+    )
+    con.register("strategy_parameters_df", strategy_parameters_df)
+    con.execute("CREATE TABLE silver.strategy_parameters AS SELECT * FROM strategy_parameters_df")
+
+    strategy = gold_strategy_module.StrategyConfig(
+        strategy_id="underrated_momentum_top_10",
+        benchmark_symbol="SPY",
+        target_count=10,
+        weighting_method="equal",
+        long_short_flag=False,
+        start_date=date(2024, 1, 1),
+        end_date=None,
+        config={"universe": "universe_membership_daily", "selection_mode": "top_n"},
+        run_id="run-001",
+    )
+
+    ranking_rows = gold_strategy_module._build_rankings_for_strategy(
+        con,
+        strategy,
+        gold_strategy_module._now_utc_naive(),
+    )
+
+    ranked_symbols = [row["symbol"] for row in ranking_rows]
+    assert ranked_symbols == ["AAA", "BBB"]
+    assert all(row["score"] is not None for row in ranking_rows)
