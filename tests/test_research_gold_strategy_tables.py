@@ -5,8 +5,7 @@ from typing import cast
 import duckdb
 import pandas as pd
 import pytest
-from dagster import build_asset_context
-from dagster import AssetExecutionContext
+from dagster import AssetExecutionContext, build_asset_context
 
 import portfolio_project.defs.research_db.gold.strategy as gold_strategy_module
 import portfolio_project.defs.research_db.silver.strategy as silver_strategy_module
