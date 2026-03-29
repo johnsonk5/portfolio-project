@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import duckdb
+import pytest
 from dagster import build_asset_context
 
 import portfolio_project.defs.research_db.silver.strategy as strategy_module
@@ -162,3 +163,241 @@ def test_strategy_runs_asset_preserves_existing_run_rows(tmp_path: Path, monkeyp
             True,
         )
     ]
+
+
+@pytest.mark.parametrize(
+    ("catalog_yaml", "error_message"),
+    [
+        (
+            """
+strategies:
+  - strategy_id: benchmark_spy_buy_and_hold
+    strategy_name: Buy And Hold SPY
+    strategy_version: v1
+    description: Benchmark strategy.
+    ranking_method: single_asset_hold
+    rebalance_frequency: Monthly
+    target_count: 1
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: benchmark_only
+    parameters:
+      - parameter_name: rebalance_buffer_bps
+        parameter_value: "0"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+""",
+            "missing required parameters for single_asset_hold: symbol",
+        ),
+        (
+            """
+strategies:
+  - strategy_id: momentum_top_10
+    strategy_name: Momentum Top 10
+    strategy_version: v1
+    description: Momentum strategy.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 10
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+""",
+            "missing required parameters for momentum_12_1_desc: ranking_direction",
+        ),
+    ],
+)
+def test_strategy_definitions_require_expected_parameter_names(
+    tmp_path: Path, monkeypatch, catalog_yaml: str, error_message: str
+) -> None:
+    catalog_path = tmp_path / "investment_strategies.yaml"
+    catalog_path.write_text(catalog_yaml, encoding="utf-8")
+    monkeypatch.setattr(strategy_module, "STRATEGY_CATALOG_PATH", catalog_path)
+
+    con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con})
+
+    with pytest.raises(ValueError, match=error_message):
+        strategy_module.silver_strategy_definitions(context)
+
+
+@pytest.mark.parametrize(
+    ("catalog_yaml", "error_message"),
+    [
+        (
+            """
+strategies:
+  - strategy_id: momentum_top_10
+    strategy_name: Momentum Top 10
+    strategy_version: v1
+    description: Momentum strategy.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 0
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+""",
+            "target_count must be greater than 0",
+        ),
+        (
+            """
+strategies:
+  - strategy_id: low_volatility_top_10
+    strategy_name: Low Volatility Top 10
+    strategy_version: v1
+    description: Low volatility strategy.
+    ranking_method: realized_vol_21d_asc
+    rebalance_frequency: Monthly
+    target_count: 10
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: realized_vol_21d
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+      - parameter_name: ranking_direction
+        parameter_value: sideways
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+""",
+            "parameter ranking_direction must be one of: asc, desc",
+        ),
+    ],
+)
+def test_strategy_definitions_validate_value_ranges(
+    tmp_path: Path, monkeypatch, catalog_yaml: str, error_message: str
+) -> None:
+    catalog_path = tmp_path / "investment_strategies.yaml"
+    catalog_path.write_text(catalog_yaml, encoding="utf-8")
+    monkeypatch.setattr(strategy_module, "STRATEGY_CATALOG_PATH", catalog_path)
+
+    con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con})
+
+    with pytest.raises(ValueError, match=error_message):
+        strategy_module.silver_strategy_definitions(context)
+
+
+def test_strategy_definitions_reject_conflicting_name_version_pairs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    catalog_yaml = """
+strategies:
+  - strategy_id: momentum_top_10
+    strategy_name: Momentum Top 10
+    strategy_version: v1
+    description: Momentum strategy.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 10
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+  - strategy_id: momentum_top_10_clone
+    strategy_name: Momentum Top 10
+    strategy_version: v1
+    description: Duplicate strategy identity.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 20
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+"""
+    catalog_path = tmp_path / "investment_strategies.yaml"
+    catalog_path.write_text(catalog_yaml, encoding="utf-8")
+    monkeypatch.setattr(strategy_module, "STRATEGY_CATALOG_PATH", catalog_path)
+
+    con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con})
+
+    with pytest.raises(
+        ValueError,
+        match="Conflicting strategy definitions in strategy catalog",
+    ):
+        strategy_module.silver_strategy_definitions(context)

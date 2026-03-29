@@ -80,6 +80,25 @@ REQUIRED_PARAMETER_FIELDS = [
     "is_active",
 ]
 
+REQUIRED_PARAMETERS_BY_RANKING_METHOD: dict[str, set[str]] = {
+    "single_asset_hold": {"symbol"},
+    "momentum_12_1_desc": {"signal_column", "ranking_direction"},
+    "realized_vol_21d_asc": {"signal_column", "ranking_direction"},
+    "returns_5d_asc": {"signal_column", "ranking_direction"},
+    "composite_momentum_below_52w_high_desc": {
+        "signal_column",
+        "secondary_signal_column",
+        "score_method",
+        "ranking_direction",
+        "min_momentum_12_1",
+    },
+}
+
+SUPPORTED_REBALANCE_FREQUENCIES = {"daily", "weekly", "monthly"}
+SUPPORTED_WEIGHTING_METHODS = {"equal", "rank", "volatility"}
+SUPPORTED_RANKING_DIRECTIONS = {"asc", "desc"}
+SUPPORTED_SCORE_METHODS = {"zscore_sum"}
+
 
 def _quote_identifier(identifier: str) -> str:
     return f'"{identifier.replace(chr(34), chr(34) * 2)}"'
@@ -121,6 +140,202 @@ def _now_utc_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def _parameter_name_to_rows(strategy: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    parameters = strategy.get("parameters") or []
+    if not isinstance(parameters, list):
+        strategy_id = str(strategy["strategy_id"]).strip()
+        raise ValueError(f"Strategy {strategy_id} parameters must be a list.")
+
+    rows: dict[str, list[dict[str, Any]]] = {}
+    for parameter in parameters:
+        if not isinstance(parameter, dict):
+            continue
+        parameter_name = str(parameter.get("parameter_name") or "").strip()
+        if not parameter_name:
+            continue
+        rows.setdefault(parameter_name, []).append(parameter)
+    return rows
+
+
+def _validate_required_strategy_parameters(strategy: dict[str, Any]) -> None:
+    strategy_id = str(strategy["strategy_id"]).strip()
+    ranking_method = str(strategy["ranking_method"]).strip()
+    required_parameters = REQUIRED_PARAMETERS_BY_RANKING_METHOD.get(ranking_method)
+    if not required_parameters:
+        return
+
+    parameter_names = set(_parameter_name_to_rows(strategy))
+    missing_parameters = sorted(required_parameters - parameter_names)
+    if missing_parameters:
+        raise ValueError(
+            f"Strategy {strategy_id} is missing required parameters for "
+            f"{ranking_method}: {', '.join(missing_parameters)}"
+        )
+
+
+def _coerce_catalog_parameter_value(
+    strategy_id: str, parameter_name: str, raw_value: Any, parameter_type: str
+) -> Any:
+    normalized_type = str(parameter_type or "").strip().lower()
+    if normalized_type in {"int", "integer"}:
+        return int(float(str(raw_value).strip()))
+    if normalized_type in {"double", "float", "number"}:
+        return float(str(raw_value).strip())
+    if normalized_type in {"bool", "boolean"}:
+        normalized_value = str(raw_value).strip().lower()
+        if normalized_value in {"1", "true", "t", "yes", "y"}:
+            return True
+        if normalized_value in {"0", "false", "f", "no", "n"}:
+            return False
+        raise ValueError(
+            f"Strategy {strategy_id} parameter {parameter_name} has invalid boolean value: "
+            f"{raw_value}"
+        )
+    return str(raw_value).strip()
+
+
+def _validate_strategy_value_ranges(strategy: dict[str, Any]) -> None:
+    strategy_id = str(strategy["strategy_id"]).strip()
+
+    rebalance_frequency = str(strategy["rebalance_frequency"]).strip().lower()
+    if rebalance_frequency not in SUPPORTED_REBALANCE_FREQUENCIES:
+        raise ValueError(
+            f"Strategy {strategy_id} has unsupported rebalance_frequency: "
+            f"{strategy['rebalance_frequency']}"
+        )
+
+    weighting_method = str(strategy["weighting_method"]).strip().lower()
+    if weighting_method not in SUPPORTED_WEIGHTING_METHODS:
+        raise ValueError(
+            f"Strategy {strategy_id} has unsupported weighting_method: "
+            f"{strategy['weighting_method']}"
+        )
+
+    target_count = int(strategy["target_count"])
+    if target_count <= 0:
+        raise ValueError(f"Strategy {strategy_id} target_count must be greater than 0.")
+
+    start_date = _parse_optional_date(strategy.get("start_date"))
+    end_date = _parse_optional_date(strategy.get("end_date"))
+    if start_date and end_date and end_date < start_date:
+        raise ValueError(f"Strategy {strategy_id} end_date cannot be earlier than start_date.")
+
+
+def _validate_parameter_value_ranges(strategy: dict[str, Any]) -> None:
+    strategy_id = str(strategy["strategy_id"]).strip()
+    ranking_method = str(strategy["ranking_method"]).strip()
+    parameter_rows = _parameter_name_to_rows(strategy)
+
+    for parameter_name, rows in parameter_rows.items():
+        for parameter in rows:
+            parameter_type = str(parameter.get("parameter_type") or "").strip()
+            raw_value = parameter.get("parameter_value")
+            if raw_value in (None, ""):
+                raise ValueError(
+                    f"Strategy parameter for {strategy_id} is missing required fields: "
+                    "parameter_value"
+                )
+
+            value = _coerce_catalog_parameter_value(
+                strategy_id,
+                parameter_name,
+                raw_value,
+                parameter_type,
+            )
+
+            if parameter_name == "symbol" and str(value).strip() == "":
+                raise ValueError(f"Strategy {strategy_id} parameter symbol cannot be blank.")
+            if parameter_name == "ranking_direction" and value not in SUPPORTED_RANKING_DIRECTIONS:
+                raise ValueError(
+                    f"Strategy {strategy_id} parameter ranking_direction must be one of: "
+                    f"{', '.join(sorted(SUPPORTED_RANKING_DIRECTIONS))}"
+                )
+            if parameter_name == "score_method" and value not in SUPPORTED_SCORE_METHODS:
+                raise ValueError(
+                    f"Strategy {strategy_id} parameter score_method must be one of: "
+                    f"{', '.join(sorted(SUPPORTED_SCORE_METHODS))}"
+                )
+            if parameter_name == "min_avg_dollar_volume_21d" and float(value) < 0:
+                raise ValueError(
+                    f"Strategy {strategy_id} parameter min_avg_dollar_volume_21d must be >= 0."
+                )
+            if parameter_name == "min_price_to_sma_200" and float(value) < 0:
+                raise ValueError(
+                    f"Strategy {strategy_id} parameter min_price_to_sma_200 must be >= 0."
+                )
+            if parameter_name == "min_momentum_12_1" and float(value) < 0:
+                raise ValueError(
+                    f"Strategy {strategy_id} parameter min_momentum_12_1 must be >= 0."
+                )
+            if parameter_name == "rebalance_buffer_bps" and not 0 <= int(value) <= 10000:
+                raise ValueError(
+                    f"Strategy {strategy_id} parameter rebalance_buffer_bps must be between "
+                    "0 and 10000."
+                )
+
+    expected_values_by_method: dict[str, dict[str, Any]] = {
+        "single_asset_hold": {},
+        "momentum_12_1_desc": {
+            "signal_column": "momentum_12_1",
+            "ranking_direction": "desc",
+        },
+        "realized_vol_21d_asc": {
+            "signal_column": "realized_vol_21d",
+            "ranking_direction": "asc",
+        },
+        "returns_5d_asc": {
+            "signal_column": "returns_5d",
+            "ranking_direction": "asc",
+        },
+        "composite_momentum_below_52w_high_desc": {
+            "signal_column": "momentum_12_1",
+            "secondary_signal_column": "pct_below_52w_high",
+            "score_method": "zscore_sum",
+            "ranking_direction": "desc",
+        },
+    }
+    for parameter_name, expected_value in expected_values_by_method.get(ranking_method, {}).items():
+        for parameter in parameter_rows.get(parameter_name, []):
+            actual_value = _coerce_catalog_parameter_value(
+                strategy_id,
+                parameter_name,
+                parameter.get("parameter_value"),
+                str(parameter.get("parameter_type") or "").strip(),
+            )
+            if actual_value != expected_value:
+                raise ValueError(
+                    f"Strategy {strategy_id} parameter {parameter_name} must be "
+                    f"{expected_value!r} for {ranking_method}."
+                )
+
+
+def _validate_strategy_definition_conflicts(strategies: list[dict[str, Any]]) -> None:
+    seen_name_versions: dict[tuple[str, str], str] = {}
+
+    for strategy in strategies:
+        strategy_id = str(strategy["strategy_id"]).strip()
+        strategy_name = str(strategy["strategy_name"]).strip().casefold()
+        strategy_version = str(strategy["strategy_version"]).strip().casefold()
+        key = (strategy_name, strategy_version)
+        existing_strategy_id = seen_name_versions.get(key)
+        if existing_strategy_id and existing_strategy_id != strategy_id:
+            raise ValueError(
+                "Conflicting strategy definitions in strategy catalog: "
+                f"{strategy_id} and {existing_strategy_id} share the same strategy_name/"
+                "strategy_version."
+            )
+        seen_name_versions[key] = strategy_id
+
+
+def _validate_strategy_catalog(strategies: list[dict[str, Any]]) -> None:
+    _validate_strategy_definition_conflicts(strategies)
+    for strategy in strategies:
+        _require_fields(strategy, REQUIRED_DEFINITION_FIELDS, "Strategy definition")
+        _validate_required_strategy_parameters(strategy)
+        _validate_strategy_value_ranges(strategy)
+        _validate_parameter_value_ranges(strategy)
+
+
 def _definition_records(
     strategies: list[dict[str, Any]],
     *,
@@ -129,9 +344,9 @@ def _definition_records(
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     seen_strategy_ids: set[str] = set()
+    _validate_strategy_catalog(strategies)
 
     for strategy in strategies:
-        _require_fields(strategy, REQUIRED_DEFINITION_FIELDS, "Strategy definition")
         strategy_id = str(strategy["strategy_id"]).strip()
         if strategy_id in seen_strategy_ids:
             raise ValueError(f"Duplicate strategy_id in strategy catalog: {strategy_id}")
@@ -174,6 +389,7 @@ def _parameter_records(
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     seen_parameter_keys: set[tuple[str, str, date]] = set()
+    _validate_strategy_catalog(strategies)
 
     for strategy in strategies:
         strategy_id = str(strategy["strategy_id"]).strip()
