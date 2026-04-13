@@ -248,6 +248,10 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | `started_at` | `timestamp` | Execution start timestamp. |
 | `completed_at` | `timestamp` | Execution end timestamp. |
 | `error_message` | `object` | Failure details when the run does not succeed. |
+| `rankings_row_count` | `int64` | Number of rows written for this run into `gold.strategy_rankings`. |
+| `holdings_row_count` | `int64` | Number of rows written for this run into `gold.strategy_holdings`. |
+| `returns_row_count` | `int64` | Number of rows written for this run into `gold.strategy_returns`. |
+| `performance_row_count` | `int64` | Number of rows written for this run into `gold.strategy_performance`. |
 | `persist` | `bool` | Whether downstream strategy outputs should be retained. |
 | `asof_ts` | `timestamp` | Load timestamp. |
 

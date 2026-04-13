@@ -563,6 +563,10 @@ def _ensure_strategy_run_rows(
                 "started_at": asof_ts,
                 "completed_at": None,
                 "error_message": None,
+                "rankings_row_count": None,
+                "holdings_row_count": None,
+                "returns_row_count": None,
+                "performance_row_count": None,
                 "persist": True,
                 "asof_ts": asof_ts,
             }
@@ -598,6 +602,51 @@ def _ensure_strategy_run_rows(
     )
 
 
+def _update_strategy_run_row_counts(
+    con,
+    strategies: list[StrategyConfig],
+    *,
+    source_table: str,
+    target_column: str,
+    asof_ts: datetime,
+) -> None:
+    run_ids = _current_run_ids(strategies)
+    if not run_ids:
+        return
+
+    rows = con.execute(
+        f"""
+        SELECT run_id, count(*) AS row_count
+        FROM gold.{_quote_identifier(source_table)}
+        WHERE run_id = ANY(?)
+        GROUP BY run_id
+        """,
+        [run_ids],
+    ).fetchall()
+    row_counts_by_run_id = {str(run_id): int(row_count or 0) for run_id, row_count in rows}
+    count_rows = pd.DataFrame(
+        [
+            {
+                "run_id": run_id,
+                "row_count": row_counts_by_run_id.get(run_id, 0),
+                "asof_ts": asof_ts,
+            }
+            for run_id in run_ids
+        ]
+    )
+    _register_temp_df(con, "strategy_run_count_df", count_rows)
+    con.execute(
+        f"""
+        UPDATE silver.strategy_runs AS target
+        SET
+            {_quote_identifier(target_column)} = seed.row_count,
+            asof_ts = seed.asof_ts
+        FROM strategy_run_count_df AS seed
+        WHERE target.run_id = seed.run_id
+        """
+    )
+
+
 def _update_strategy_runs_success(
     con,
     strategies: list[StrategyConfig],
@@ -618,6 +667,30 @@ def _update_strategy_runs_success(
         WHERE run_id = ANY(?)
         """,
         [asof_ts, asof_ts, run_ids],
+    )
+
+
+def _update_strategy_runs_failure(
+    con,
+    strategies: list[StrategyConfig],
+    *,
+    asof_ts: datetime,
+    error_message: str,
+) -> None:
+    run_ids = _current_run_ids(strategies)
+    if not run_ids:
+        return
+    con.execute(
+        """
+        UPDATE silver.strategy_runs
+        SET
+            run_status = 'failed',
+            completed_at = ?,
+            error_message = ?,
+            asof_ts = ?
+        WHERE run_id = ANY(?)
+        """,
+        [asof_ts, error_message, asof_ts, run_ids],
     )
 
 
@@ -1147,10 +1220,10 @@ def _build_returns_for_strategy(
                     weight * (0.0 if pd.isna(symbol_return) else float(symbol_return))
                 )
             portfolio_return = float(sum(weighted_returns))
-            benchmark_return = 0.0
+            benchmark_return = None
             if not benchmark_returns.empty and trade_date in benchmark_returns.index:
                 bench_value = benchmark_returns.loc[trade_date]
-                benchmark_return = 0.0 if pd.isna(bench_value) else float(bench_value)
+                benchmark_return = None if pd.isna(bench_value) else float(bench_value)
             cumulative_wealth *= 1.0 + portfolio_return
             peak_wealth = max(peak_wealth, cumulative_wealth)
             drawdown = (cumulative_wealth / peak_wealth) - 1.0 if peak_wealth else None
@@ -1161,7 +1234,9 @@ def _build_returns_for_strategy(
                     "date": trade_day,
                     "portfolio_return": portfolio_return,
                     "benchmark_return": benchmark_return,
-                    "excess_return": portfolio_return - benchmark_return,
+                    "excess_return": (
+                        None if benchmark_return is None else portfolio_return - benchmark_return
+                    ),
                     "cumulative_return": cumulative_wealth - 1.0,
                     "drawdown": drawdown,
                     "turnover": (
@@ -1293,6 +1368,83 @@ def _log_strategy_return_continuity_check(
         partition_key=partition_key,
         dedupe_by_run_check=True,
     )
+
+
+def _log_strategy_benchmark_series_check(
+    *,
+    measured_con,
+    observability_con,
+    strategies: list[StrategyConfig],
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> bool:
+    run_ids = _current_run_ids(strategies)
+    if not run_ids:
+        return True
+
+    benchmark_rows = measured_con.execute(
+        """
+        SELECT strategy_id, date, benchmark_return
+        FROM gold.strategy_returns
+        WHERE run_id = ANY(?)
+        ORDER BY strategy_id, date
+        """,
+        [run_ids],
+    ).fetchall()
+    benchmark_dates_by_strategy: dict[str, set[date]] = {}
+    null_benchmark_dates_by_strategy: dict[str, set[date]] = {}
+    for strategy_id, return_date, benchmark_return in benchmark_rows:
+        if return_date is None:
+            continue
+        parsed_date = pd.Timestamp(return_date).date()
+        strategy_key = str(strategy_id)
+        benchmark_dates_by_strategy.setdefault(strategy_key, set()).add(parsed_date)
+        if benchmark_return is None:
+            null_benchmark_dates_by_strategy.setdefault(strategy_key, set()).add(parsed_date)
+
+    failing_strategies: list[dict[str, Any]] = []
+    measured_value = 0.0
+    for strategy in strategies:
+        expected_dates = set(_expected_return_dates_for_strategy(measured_con, strategy))
+        actual_dates = benchmark_dates_by_strategy.get(strategy.strategy_id, set())
+        null_dates = null_benchmark_dates_by_strategy.get(strategy.strategy_id, set())
+        missing_dates = sorted(expected_dates - actual_dates)
+        missing_value_dates = sorted(expected_dates & null_dates)
+        measured_value += float(len(missing_dates) + len(missing_value_dates))
+        if not missing_dates and not missing_value_dates:
+            continue
+        failing_strategies.append(
+            {
+                "run_id": strategy.run_id,
+                "strategy_id": strategy.strategy_id,
+                "benchmark_symbol": strategy.benchmark_symbol,
+                "expected_benchmark_dates": [str(value) for value in sorted(expected_dates)],
+                "available_benchmark_dates": [str(value) for value in sorted(actual_dates)],
+                "missing_benchmark_dates": [str(value) for value in missing_dates],
+                "null_benchmark_value_dates": [str(value) for value in missing_value_dates],
+            }
+        )
+
+    write_dq_log(
+        con=observability_con,
+        check_name="dq_gold_strategy_returns_benchmark_series_present",
+        severity="RED",
+        status="PASS" if measured_value == 0.0 else "FAIL",
+        measured_value=measured_value,
+        threshold_value=0.0,
+        details={
+            "table": "gold.strategy_returns",
+            "run_ids": run_ids,
+            "evaluated_strategy_count": len(strategies),
+            "failing_strategies": failing_strategies,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
+    return measured_value == 0.0
 
 
 def _annualized_return(total_return: float, periods: int) -> float | None:
@@ -1439,7 +1591,18 @@ def gold_strategy_rankings(context: AssetExecutionContext) -> None:
     strategies = _strategies_for_context(con, context, source_table=None)
     asof_ts = _now_utc_naive()
     _ensure_strategy_run_rows(con, strategies, asof_ts=asof_ts, run_status="running")
-    row_count = _materialize_rankings(con, strategies, asof_ts=asof_ts)
+    try:
+        row_count = _materialize_rankings(con, strategies, asof_ts=asof_ts)
+        _update_strategy_run_row_counts(
+            con,
+            strategies,
+            source_table="strategy_rankings",
+            target_column="rankings_row_count",
+            asof_ts=asof_ts,
+        )
+    except Exception as exc:
+        _update_strategy_runs_failure(con, strategies, asof_ts=asof_ts, error_message=str(exc))
+        raise
     context.add_output_metadata(
         {
             "table": "gold.strategy_rankings",
@@ -1466,43 +1629,54 @@ def gold_strategy_holdings(context: AssetExecutionContext) -> None:
         source_table="strategy_rankings",
     )
     asof_ts = _now_utc_naive()
-    row_count = _materialize_holdings(con, strategies, asof_ts=asof_ts)
-    _log_holdings_duplicate_symbol_check(
-        measured_con=con,
-        observability_con=context.resources.duckdb,
-        strategies=strategies,
-        run_id=_safe_run_id(context),
-        job_name=_safe_job_name(context),
-        partition_key=_safe_partition_key(context),
-    )
-    _log_holdings_weight_sum_check(
-        measured_con=con,
-        observability_con=context.resources.duckdb,
-        strategies=strategies,
-        run_id=_safe_run_id(context),
-        job_name=_safe_job_name(context),
-        partition_key=_safe_partition_key(context),
-    )
-    _log_rebalance_dates_present_check(
-        measured_con=con,
-        observability_con=context.resources.duckdb,
-        strategies=strategies,
-        table_name="strategy_rankings",
-        check_name="dq_gold_strategy_rankings_expected_rebalance_dates",
-        run_id=_safe_run_id(context),
-        job_name=_safe_job_name(context),
-        partition_key=_safe_partition_key(context),
-    )
-    _log_rebalance_dates_present_check(
-        measured_con=con,
-        observability_con=context.resources.duckdb,
-        strategies=strategies,
-        table_name="strategy_holdings",
-        check_name="dq_gold_strategy_holdings_expected_rebalance_dates",
-        run_id=_safe_run_id(context),
-        job_name=_safe_job_name(context),
-        partition_key=_safe_partition_key(context),
-    )
+    try:
+        row_count = _materialize_holdings(con, strategies, asof_ts=asof_ts)
+        _update_strategy_run_row_counts(
+            con,
+            strategies,
+            source_table="strategy_holdings",
+            target_column="holdings_row_count",
+            asof_ts=asof_ts,
+        )
+        _log_holdings_duplicate_symbol_check(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            strategies=strategies,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
+        _log_holdings_weight_sum_check(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            strategies=strategies,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
+        _log_rebalance_dates_present_check(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            strategies=strategies,
+            table_name="strategy_rankings",
+            check_name="dq_gold_strategy_rankings_expected_rebalance_dates",
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
+        _log_rebalance_dates_present_check(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            strategies=strategies,
+            table_name="strategy_holdings",
+            check_name="dq_gold_strategy_holdings_expected_rebalance_dates",
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
+    except Exception as exc:
+        _update_strategy_runs_failure(con, strategies, asof_ts=asof_ts, error_message=str(exc))
+        raise
     context.add_output_metadata(
         {
             "table": "gold.strategy_holdings",
@@ -1529,15 +1703,26 @@ def gold_strategy_returns(context: AssetExecutionContext) -> None:
         source_table="strategy_holdings",
     )
     asof_ts = _now_utc_naive()
-    row_count = _materialize_returns(con, strategies, asof_ts=asof_ts)
-    _log_strategy_return_continuity_check(
-        measured_con=con,
-        observability_con=context.resources.duckdb,
-        strategies=strategies,
-        run_id=_safe_run_id(context),
-        job_name=_safe_job_name(context),
-        partition_key=_safe_partition_key(context),
-    )
+    try:
+        row_count = _materialize_returns(con, strategies, asof_ts=asof_ts)
+        _update_strategy_run_row_counts(
+            con,
+            strategies,
+            source_table="strategy_returns",
+            target_column="returns_row_count",
+            asof_ts=asof_ts,
+        )
+        _log_strategy_return_continuity_check(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            strategies=strategies,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
+    except Exception as exc:
+        _update_strategy_runs_failure(con, strategies, asof_ts=asof_ts, error_message=str(exc))
+        raise
     context.add_output_metadata(
         {
             "table": "gold.strategy_returns",
@@ -1551,7 +1736,7 @@ def gold_strategy_returns(context: AssetExecutionContext) -> None:
     name="strategy_performance",
     key_prefix=["gold"],
     deps=[gold_strategy_returns],
-    required_resource_keys={"research_duckdb"},
+    required_resource_keys={"research_duckdb", "duckdb"},
 )
 def gold_strategy_performance(context: AssetExecutionContext) -> None:
     """
@@ -1564,8 +1749,32 @@ def gold_strategy_performance(context: AssetExecutionContext) -> None:
         source_table="strategy_returns",
     )
     asof_ts = _now_utc_naive()
-    row_count = _materialize_performance(con, strategies, asof_ts=asof_ts)
-    _update_strategy_runs_success(con, strategies, asof_ts=asof_ts)
+    try:
+        benchmark_series_ready = _log_strategy_benchmark_series_check(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            strategies=strategies,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
+        if not benchmark_series_ready:
+            raise ValueError(
+                "Missing benchmark series values for one or more strategy return dates; "
+                "strategy comparison outputs were not materialized."
+            )
+        row_count = _materialize_performance(con, strategies, asof_ts=asof_ts)
+        _update_strategy_run_row_counts(
+            con,
+            strategies,
+            source_table="strategy_performance",
+            target_column="performance_row_count",
+            asof_ts=asof_ts,
+        )
+        _update_strategy_runs_success(con, strategies, asof_ts=asof_ts)
+    except Exception as exc:
+        _update_strategy_runs_failure(con, strategies, asof_ts=asof_ts, error_message=str(exc))
+        raise
     context.add_output_metadata(
         {
             "table": "gold.strategy_performance",
