@@ -40,6 +40,10 @@ STRATEGY_RUNS_COLUMNS: list[tuple[str, str]] = [
     ("started_at", "TIMESTAMP"),
     ("completed_at", "TIMESTAMP"),
     ("error_message", "VARCHAR"),
+    ("rankings_row_count", "BIGINT"),
+    ("holdings_row_count", "BIGINT"),
+    ("returns_row_count", "BIGINT"),
+    ("performance_row_count", "BIGINT"),
     ("persist", "BOOLEAN"),
     ("asof_ts", "TIMESTAMP"),
 ]

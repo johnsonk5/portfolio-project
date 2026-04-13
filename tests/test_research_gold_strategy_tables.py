@@ -322,15 +322,23 @@ def test_strategy_gold_assets_build_rankings_holdings_returns_and_performance(
 
     run_rows = con.execute(
         """
-        SELECT strategy_id, run_status, completed_at IS NOT NULL
+        SELECT
+            strategy_id,
+            run_status,
+            rankings_row_count,
+            holdings_row_count,
+            returns_row_count,
+            performance_row_count,
+            completed_at IS NOT NULL,
+            error_message
         FROM silver.strategy_runs
         WHERE strategy_id IN ('benchmark_spy_buy_and_hold', 'momentum_top_1')
         ORDER BY strategy_id
         """
     ).fetchall()
     assert run_rows == [
-        ("benchmark_spy_buy_and_hold", "success", True),
-        ("momentum_top_1", "success", True),
+        ("benchmark_spy_buy_and_hold", "success", 2, 2, 2, 1, True, None),
+        ("momentum_top_1", "success", 4, 2, 2, 1, True, None),
     ]
 
     dq_row = obs_con.execute(
@@ -373,10 +381,84 @@ def test_strategy_gold_assets_build_rankings_holdings_returns_and_performance(
         """
         SELECT check_name, status, measured_value
         FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_returns_benchmark_series_present'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_returns_benchmark_series_present", "PASS", 0.0)
+
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
         WHERE check_name = 'dq_gold_strategy_returns_expected_return_dates'
         """
     ).fetchone()
     assert dq_row == ("dq_gold_strategy_returns_expected_return_dates", "PASS", 0.0)
+
+
+def test_strategy_rankings_failure_updates_strategy_run_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    catalog_path = tmp_path / "investment_strategies.yaml"
+    catalog_path.write_text(TEST_GOLD_STRATEGY_YAML, encoding="utf-8")
+    monkeypatch.setattr(silver_strategy_module, "STRATEGY_CATALOG_PATH", catalog_path)
+
+    con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con})
+
+    silver_strategy_module.silver_strategy_definitions(context)
+    silver_strategy_module.silver_strategy_runs(context)
+    _seed_research_inputs(con, tmp_path)
+
+    def _raise_materialization_error(*args, **kwargs):
+        raise RuntimeError("ranking pipeline exploded")
+
+    monkeypatch.setattr(
+        gold_strategy_module,
+        "_materialize_rankings",
+        _raise_materialization_error,
+    )
+
+    with pytest.raises(RuntimeError, match="ranking pipeline exploded"):
+        gold_strategy_module.gold_strategy_rankings(context)
+
+    run_rows = con.execute(
+        """
+        SELECT
+            strategy_id,
+            run_status,
+            completed_at IS NOT NULL,
+            error_message,
+            rankings_row_count,
+            holdings_row_count,
+            returns_row_count,
+            performance_row_count
+        FROM silver.strategy_runs
+        ORDER BY strategy_id
+        """
+    ).fetchall()
+    assert run_rows == [
+        (
+            "benchmark_spy_buy_and_hold",
+            "failed",
+            True,
+            "ranking pipeline exploded",
+            None,
+            None,
+            None,
+            None,
+        ),
+        (
+            "momentum_top_1",
+            "failed",
+            True,
+            "ranking pipeline exploded",
+            None,
+            None,
+            None,
+            None,
+        ),
+    ]
 
 
 def test_strategy_gold_assets_use_existing_upstream_run_ids_across_separate_runs(
@@ -473,10 +555,108 @@ def test_strategy_gold_assets_use_existing_upstream_run_ids_across_separate_runs
         """
         SELECT check_name, status, measured_value
         FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_returns_benchmark_series_present'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_returns_benchmark_series_present", "PASS", 0.0)
+
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
         WHERE check_name = 'dq_gold_strategy_returns_expected_return_dates'
         """
     ).fetchone()
     assert dq_row == ("dq_gold_strategy_returns_expected_return_dates", "PASS", 0.0)
+
+
+def test_strategy_performance_blocks_when_benchmark_series_is_missing_for_expected_dates(
+    tmp_path: Path, monkeypatch
+) -> None:
+    catalog_path = tmp_path / "investment_strategies.yaml"
+    catalog_path.write_text(TEST_GOLD_STRATEGY_YAML, encoding="utf-8")
+    monkeypatch.setattr(silver_strategy_module, "STRATEGY_CATALOG_PATH", catalog_path)
+    monkeypatch.setattr(gold_strategy_module, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(
+        gold_strategy_module,
+        "PRICE_GLOB",
+        (tmp_path / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet").as_posix(),
+    )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con, "duckdb": obs_con})
+
+    silver_strategy_module.silver_strategy_definitions(context)
+    silver_strategy_module.silver_strategy_parameters(context)
+    silver_strategy_module.silver_strategy_runs(context)
+    _seed_research_inputs(con, tmp_path)
+
+    month_dir_mar = tmp_path / "silver" / "research_daily_prices" / "month=2024-03"
+    month_dir_mar.mkdir(parents=True, exist_ok=True)
+    prices_df = pd.DataFrame(
+        [
+            {"trade_date": "2024-03-01", "symbol": "AAA", "close": 112.2, "adjusted_close": 112.2},
+            {"trade_date": "2024-03-01", "symbol": "BBB", "close": 110.0, "adjusted_close": 110.0},
+        ]
+    )
+    prices_df.to_parquet(month_dir_mar / "date=2024-03-01.parquet", index=False)
+
+    gold_strategy_module.gold_strategy_rankings(context)
+    gold_strategy_module.gold_strategy_holdings(context)
+    gold_strategy_module.gold_strategy_returns(context)
+
+    with pytest.raises(
+        ValueError,
+        match="Missing benchmark series values for one or more strategy return dates",
+    ):
+        gold_strategy_module.gold_strategy_performance(context)
+
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_returns_benchmark_series_present'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_returns_benchmark_series_present", "FAIL", 2.0)
+
+    details_row = obs_con.execute(
+        """
+        SELECT details_json
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_returns_benchmark_series_present'
+        """
+    ).fetchone()
+    assert details_row is not None
+    details_json = str(details_row[0])
+    assert '"benchmark_symbol": "SPY"' in details_json
+    assert '"null_benchmark_value_dates": ["2024-03-01"]' in details_json
+
+    assert gold_strategy_module._table_exists(con, "gold", "strategy_performance") is False
+
+    run_rows = con.execute(
+        """
+        SELECT strategy_id, run_status, error_message
+        FROM silver.strategy_runs
+        WHERE strategy_id IN ('benchmark_spy_buy_and_hold', 'momentum_top_1')
+        ORDER BY strategy_id
+        """
+    ).fetchall()
+    assert run_rows == [
+        (
+            "benchmark_spy_buy_and_hold",
+            "failed",
+            "Missing benchmark series values for one or more strategy return dates; "
+            "strategy comparison outputs were not materialized.",
+        ),
+        (
+            "momentum_top_1",
+            "failed",
+            "Missing benchmark series values for one or more strategy return dates; "
+            "strategy comparison outputs were not materialized.",
+        ),
+    ]
 
 
 def test_strategy_holdings_weight_sum_dq_check_fails_when_rebalance_weights_do_not_sum_to_one() -> (

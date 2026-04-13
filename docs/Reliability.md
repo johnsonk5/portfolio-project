@@ -72,6 +72,7 @@ DQ checks run on successful runs and write to `observability.data_quality_checks
   - `gold.strategy_holdings` uniqueness on `strategy_id` + `rebalance_date` + `symbol`.
   - `gold.strategy_holdings` rebalance weight-sum validation.
   - `gold.strategy_returns` continuous expected return-date coverage.
+  - `gold.strategy_returns` benchmark series presence for all expected strategy return dates before `gold.strategy_performance` is built.
 
 ### Status and Severity
 - Status: `PASS`, `FAIL`, `SKIPPED`, `WARN` (surfaced in dashboard issue views).
