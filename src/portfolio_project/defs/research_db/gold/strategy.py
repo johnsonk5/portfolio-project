@@ -10,6 +10,9 @@ import pandas as pd
 from dagster import AssetExecutionContext, asset
 from dagster._core.errors import DagsterInvalidPropertyError
 
+from portfolio_project.defs.portfolio_db.observability.observability_modules import (
+    write_dq_log,
+)
 from portfolio_project.defs.research_db.silver.research_prices import (
     RESEARCH_DAILY_PRICES_DATASET,
     silver_research_daily_prices,
@@ -31,6 +34,9 @@ PRICE_GLOB = (
 ).as_posix()
 MAX_ABS_DAILY_SECURITY_RETURN = float(
     os.getenv("RESEARCH_STRATEGY_MAX_ABS_DAILY_SECURITY_RETURN", "5.0")
+)
+STRATEGY_HOLDINGS_WEIGHT_SUM_TOLERANCE = float(
+    os.getenv("RESEARCH_STRATEGY_HOLDINGS_WEIGHT_SUM_TOLERANCE", "1e-6")
 )
 MISSING_STRATEGIES_JOB_NAME = "strategy_missing_backfill_job"
 
@@ -108,6 +114,13 @@ def _safe_job_name(context: AssetExecutionContext) -> str | None:
     try:
         return getattr(context, "job_name", None)
     except DagsterInvalidPropertyError:
+        return None
+
+
+def _safe_partition_key(context: AssetExecutionContext) -> str | None:
+    try:
+        return getattr(context, "partition_key", None)
+    except Exception:
         return None
 
 
@@ -688,6 +701,81 @@ def _materialize_holdings(
     return int(len(holding_df))
 
 
+def _log_holdings_weight_sum_check(
+    *,
+    measured_con,
+    observability_con,
+    strategies: list[StrategyConfig],
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> None:
+    run_ids = _current_run_ids(strategies)
+    if not run_ids:
+        return
+
+    failing_rows = measured_con.execute(
+        """
+        WITH weight_sums AS (
+            SELECT
+                run_id,
+                strategy_id,
+                rebalance_date,
+                sum(coalesce(target_weight, 0.0)) AS weight_sum
+            FROM gold.strategy_holdings
+            WHERE run_id = ANY(?)
+            GROUP BY run_id, strategy_id, rebalance_date
+        )
+        SELECT
+            run_id,
+            strategy_id,
+            rebalance_date,
+            weight_sum,
+            abs(weight_sum - 1.0) AS abs_deviation
+        FROM weight_sums
+        WHERE abs(weight_sum - 1.0) > ?
+        ORDER BY strategy_id, rebalance_date, run_id
+        """,
+        [run_ids, STRATEGY_HOLDINGS_WEIGHT_SUM_TOLERANCE],
+    ).fetchall()
+
+    failing_groups = [
+        {
+            "run_id": str(row[0]),
+            "strategy_id": str(row[1]),
+            "rebalance_date": str(row[2]),
+            "weight_sum": float(row[3]),
+            "abs_deviation": float(row[4]),
+        }
+        for row in failing_rows
+    ]
+    max_abs_deviation = max(
+        (group["abs_deviation"] for group in failing_groups),
+        default=0.0,
+    )
+
+    write_dq_log(
+        con=observability_con,
+        check_name="dq_gold_strategy_holdings_weight_sum_by_rebalance",
+        severity="RED",
+        status="PASS" if not failing_groups else "FAIL",
+        measured_value=float(len(failing_groups)),
+        threshold_value=0.0,
+        details={
+            "table": "gold.strategy_holdings",
+            "run_ids": run_ids,
+            "expected_weight_sum": 1.0,
+            "tolerance": STRATEGY_HOLDINGS_WEIGHT_SUM_TOLERANCE,
+            "failing_groups": failing_groups,
+            "max_abs_deviation": max_abs_deviation,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
+
+
 def _load_price_history(
     con,
     *,
@@ -1084,7 +1172,7 @@ def gold_strategy_rankings(context: AssetExecutionContext) -> None:
     name="strategy_holdings",
     key_prefix=["gold"],
     deps=[gold_strategy_rankings],
-    required_resource_keys={"research_duckdb"},
+    required_resource_keys={"research_duckdb", "duckdb"},
 )
 def gold_strategy_holdings(context: AssetExecutionContext) -> None:
     """
@@ -1096,7 +1184,16 @@ def gold_strategy_holdings(context: AssetExecutionContext) -> None:
         context,
         source_table="strategy_rankings",
     )
-    row_count = _materialize_holdings(con, strategies, asof_ts=_now_utc_naive())
+    asof_ts = _now_utc_naive()
+    row_count = _materialize_holdings(con, strategies, asof_ts=asof_ts)
+    _log_holdings_weight_sum_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        strategies=strategies,
+        run_id=_safe_run_id(context),
+        job_name=_safe_job_name(context),
+        partition_key=_safe_partition_key(context),
+    )
     context.add_output_metadata(
         {
             "table": "gold.strategy_holdings",
