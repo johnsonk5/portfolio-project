@@ -10,6 +10,10 @@ import pandas as pd
 from dagster import AssetExecutionContext, asset
 from dagster._core.errors import DagsterInvalidPropertyError
 
+from portfolio_project.defs.portfolio_db.observability.observability_modules import (
+    write_dq_log,
+)
+from portfolio_project.defs.research_db.dq_checks import log_duplicate_row_check
 from portfolio_project.defs.research_db.silver.research_prices import (
     RESEARCH_DAILY_PRICES_DATASET,
     silver_research_daily_prices,
@@ -31,6 +35,9 @@ PRICE_GLOB = (
 ).as_posix()
 MAX_ABS_DAILY_SECURITY_RETURN = float(
     os.getenv("RESEARCH_STRATEGY_MAX_ABS_DAILY_SECURITY_RETURN", "5.0")
+)
+STRATEGY_HOLDINGS_WEIGHT_SUM_TOLERANCE = float(
+    os.getenv("RESEARCH_STRATEGY_HOLDINGS_WEIGHT_SUM_TOLERANCE", "1e-6")
 )
 MISSING_STRATEGIES_JOB_NAME = "strategy_missing_backfill_job"
 
@@ -90,6 +97,7 @@ STRATEGY_PERFORMANCE_COLUMNS: list[tuple[str, str]] = [
 @dataclass(frozen=True)
 class StrategyConfig:
     strategy_id: str
+    rebalance_frequency: str
     benchmark_symbol: str
     target_count: int
     weighting_method: str
@@ -108,6 +116,13 @@ def _safe_job_name(context: AssetExecutionContext) -> str | None:
     try:
         return getattr(context, "job_name", None)
     except DagsterInvalidPropertyError:
+        return None
+
+
+def _safe_partition_key(context: AssetExecutionContext) -> str | None:
+    try:
+        return getattr(context, "partition_key", None)
+    except Exception:
         return None
 
 
@@ -163,6 +178,7 @@ def _active_strategies(con, context: AssetExecutionContext) -> list[StrategyConf
         """
         SELECT
             strategy_id,
+            rebalance_frequency,
             benchmark_symbol,
             target_count,
             weighting_method,
@@ -181,13 +197,14 @@ def _active_strategies(con, context: AssetExecutionContext) -> list[StrategyConf
         strategies.append(
             StrategyConfig(
                 strategy_id=strategy_id,
-                benchmark_symbol=str(row[1]),
-                target_count=int(row[2]),
-                weighting_method=str(row[3]),
-                long_short_flag=bool(row[4]),
-                start_date=row[5],
-                end_date=row[6],
-                config=_safe_json_loads(row[7]),
+                rebalance_frequency=str(row[1]),
+                benchmark_symbol=str(row[2]),
+                target_count=int(row[3]),
+                weighting_method=str(row[4]),
+                long_short_flag=bool(row[5]),
+                start_date=row[6],
+                end_date=row[7],
+                config=_safe_json_loads(row[8]),
                 run_id=_strategy_run_id(context, strategy_id),
             )
         )
@@ -222,6 +239,7 @@ def _strategies_with_latest_run_ids(
         resolved.append(
             StrategyConfig(
                 strategy_id=strategy.strategy_id,
+                rebalance_frequency=strategy.rebalance_frequency,
                 benchmark_symbol=strategy.benchmark_symbol,
                 target_count=strategy.target_count,
                 weighting_method=strategy.weighting_method,
@@ -304,6 +322,38 @@ def _rebalance_dates_for_strategy(con, strategy: StrategyConfig) -> list[date]:
 
     start_date = strategy.start_date or date(1900, 1, 1)
     end_date = strategy.end_date or date(2999, 12, 31)
+    rebalance_frequency = strategy.rebalance_frequency.strip().lower()
+    if rebalance_frequency == "daily":
+        rows = con.execute(
+            """
+            SELECT DISTINCT CAST(date AS DATE) AS rebalance_date
+            FROM silver.signals_daily
+            WHERE CAST(date AS DATE) >= ?
+              AND CAST(date AS DATE) <= ?
+            ORDER BY rebalance_date
+            """,
+            [start_date, end_date],
+        ).fetchall()
+        return [row[0] for row in rows if row[0] is not None]
+
+    if rebalance_frequency == "weekly":
+        rows = con.execute(
+            """
+            WITH filtered AS (
+                SELECT CAST(date AS DATE) AS signal_date
+                FROM silver.signals_daily
+                WHERE CAST(date AS DATE) >= ?
+                  AND CAST(date AS DATE) <= ?
+            )
+            SELECT max(signal_date) AS rebalance_date
+            FROM filtered
+            GROUP BY strftime(signal_date, '%G-%V')
+            ORDER BY rebalance_date
+            """,
+            [start_date, end_date],
+        ).fetchall()
+        return [row[0] for row in rows if row[0] is not None]
+
     rows = con.execute(
         """
         WITH filtered AS (
@@ -688,6 +738,192 @@ def _materialize_holdings(
     return int(len(holding_df))
 
 
+def _log_holdings_weight_sum_check(
+    *,
+    measured_con,
+    observability_con,
+    strategies: list[StrategyConfig],
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> None:
+    run_ids = _current_run_ids(strategies)
+    if not run_ids:
+        return
+
+    failing_rows = measured_con.execute(
+        """
+        WITH weight_sums AS (
+            SELECT
+                run_id,
+                strategy_id,
+                rebalance_date,
+                sum(coalesce(target_weight, 0.0)) AS weight_sum
+            FROM gold.strategy_holdings
+            WHERE run_id = ANY(?)
+            GROUP BY run_id, strategy_id, rebalance_date
+        )
+        SELECT
+            run_id,
+            strategy_id,
+            rebalance_date,
+            weight_sum,
+            abs(weight_sum - 1.0) AS abs_deviation
+        FROM weight_sums
+        WHERE abs(weight_sum - 1.0) > ?
+        ORDER BY strategy_id, rebalance_date, run_id
+        """,
+        [run_ids, STRATEGY_HOLDINGS_WEIGHT_SUM_TOLERANCE],
+    ).fetchall()
+
+    failing_groups = [
+        {
+            "run_id": str(row[0]),
+            "strategy_id": str(row[1]),
+            "rebalance_date": str(row[2]),
+            "weight_sum": float(row[3]),
+            "abs_deviation": float(row[4]),
+        }
+        for row in failing_rows
+    ]
+    max_abs_deviation = max(
+        (group["abs_deviation"] for group in failing_groups),
+        default=0.0,
+    )
+
+    write_dq_log(
+        con=observability_con,
+        check_name="dq_gold_strategy_holdings_weight_sum_by_rebalance",
+        severity="RED",
+        status="PASS" if not failing_groups else "FAIL",
+        measured_value=float(len(failing_groups)),
+        threshold_value=0.0,
+        details={
+            "table": "gold.strategy_holdings",
+            "run_ids": run_ids,
+            "expected_weight_sum": 1.0,
+            "tolerance": STRATEGY_HOLDINGS_WEIGHT_SUM_TOLERANCE,
+            "failing_groups": failing_groups,
+            "max_abs_deviation": max_abs_deviation,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
+
+
+def _log_holdings_duplicate_symbol_check(
+    *,
+    measured_con,
+    observability_con,
+    strategies: list[StrategyConfig],
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> None:
+    run_ids = _current_run_ids(strategies)
+    if not run_ids:
+        return
+
+    log_duplicate_row_check(
+        measured_con=measured_con,
+        observability_con=observability_con,
+        check_name="dq_gold_strategy_holdings_unique_symbol_per_rebalance",
+        relation_sql="""
+            SELECT
+                run_id,
+                strategy_id,
+                rebalance_date,
+                symbol
+            FROM gold.strategy_holdings
+            WHERE run_id = ANY(?)
+        """,
+        relation_params=[run_ids],
+        key_columns=["run_id", "strategy_id", "rebalance_date", "symbol"],
+        details={
+            "table": "gold.strategy_holdings",
+            "run_ids": run_ids,
+            "uniqueness_scope": ["strategy_id", "rebalance_date", "symbol"],
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+
+def _log_rebalance_dates_present_check(
+    *,
+    measured_con,
+    observability_con,
+    strategies: list[StrategyConfig],
+    table_name: str,
+    check_name: str,
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> None:
+    run_ids = _current_run_ids(strategies)
+    if not run_ids:
+        return
+
+    actual_rows = measured_con.execute(
+        f"""
+        SELECT DISTINCT strategy_id, rebalance_date
+        FROM gold.{_quote_identifier(table_name)}
+        WHERE run_id = ANY(?)
+        ORDER BY strategy_id, rebalance_date
+        """,
+        [run_ids],
+    ).fetchall()
+    actual_dates_by_strategy: dict[str, set[date]] = {}
+    for strategy_id, rebalance_date in actual_rows:
+        if rebalance_date is None:
+            continue
+        actual_dates_by_strategy.setdefault(str(strategy_id), set()).add(rebalance_date)
+
+    failing_strategies: list[dict[str, Any]] = []
+    measured_value = 0.0
+    for strategy in strategies:
+        expected_dates = set(_rebalance_dates_for_strategy(measured_con, strategy))
+        actual_dates = actual_dates_by_strategy.get(strategy.strategy_id, set())
+        missing_dates = sorted(expected_dates - actual_dates)
+        unexpected_dates = sorted(actual_dates - expected_dates)
+        measured_value += float(len(missing_dates) + len(unexpected_dates))
+        if not missing_dates and not unexpected_dates:
+            continue
+        failing_strategies.append(
+            {
+                "run_id": strategy.run_id,
+                "strategy_id": strategy.strategy_id,
+                "rebalance_frequency": strategy.rebalance_frequency,
+                "expected_rebalance_dates": [str(value) for value in sorted(expected_dates)],
+                "actual_rebalance_dates": [str(value) for value in sorted(actual_dates)],
+                "missing_rebalance_dates": [str(value) for value in missing_dates],
+                "unexpected_rebalance_dates": [str(value) for value in unexpected_dates],
+            }
+        )
+
+    write_dq_log(
+        con=observability_con,
+        check_name=check_name,
+        severity="RED",
+        status="PASS" if measured_value == 0.0 else "FAIL",
+        measured_value=measured_value,
+        threshold_value=0.0,
+        details={
+            "table": f"gold.{table_name}",
+            "run_ids": run_ids,
+            "evaluated_strategy_count": len(strategies),
+            "failing_strategies": failing_strategies,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
+
+
 def _load_price_history(
     con,
     *,
@@ -712,6 +948,25 @@ def _load_price_history(
         """,
         [PRICE_GLOB, symbols, start_date, end_date],
     ).fetch_df()
+
+
+def _load_distinct_trading_dates(
+    con,
+    *,
+    start_date: date,
+    end_date: date,
+) -> list[date]:
+    rows = con.execute(
+        """
+        SELECT DISTINCT CAST(trade_date AS DATE) AS trade_date
+        FROM read_parquet(?)
+        WHERE CAST(trade_date AS DATE) >= ?
+          AND CAST(trade_date AS DATE) <= ?
+        ORDER BY trade_date
+        """,
+        [PRICE_GLOB, start_date, end_date],
+    ).fetchall()
+    return [row[0] for row in rows if row[0] is not None]
 
 
 def _daily_symbol_returns(price_df: pd.DataFrame) -> pd.DataFrame:
@@ -742,6 +997,49 @@ def _next_trading_date(dates: list[date], current_date: date) -> date | None:
         if candidate > current_date:
             return candidate
     return None
+
+
+def _expected_return_dates_for_strategy(
+    con,
+    strategy: StrategyConfig,
+) -> list[date]:
+    holdings_rows = con.execute(
+        """
+        SELECT DISTINCT rebalance_date
+        FROM gold.strategy_holdings
+        WHERE run_id = ?
+        ORDER BY rebalance_date
+        """,
+        [strategy.run_id],
+    ).fetchall()
+    rebalance_dates = [
+        pd.Timestamp(row[0]).date() for row in holdings_rows if row[0] is not None
+    ]
+    if not rebalance_dates:
+        return []
+
+    trading_dates = _load_distinct_trading_dates(
+        con,
+        start_date=rebalance_dates[0],
+        end_date=strategy.end_date or date(2999, 12, 31),
+    )
+    if not trading_dates:
+        return []
+
+    expected_dates: list[date] = []
+    for index, rebalance_date in enumerate(rebalance_dates):
+        effective_start = _next_trading_date(trading_dates, rebalance_date)
+        if effective_start is None:
+            continue
+        next_rebalance = rebalance_dates[index + 1] if index + 1 < len(rebalance_dates) else None
+        period_dates = [
+            trade_date
+            for trade_date in trading_dates
+            if trade_date >= effective_start
+            and (next_rebalance is None or trade_date < next_rebalance)
+        ]
+        expected_dates.extend(period_dates)
+    return expected_dates
 
 
 def _build_returns_for_strategy(
@@ -926,6 +1224,77 @@ def _materialize_returns(
     return int(len(returns_df))
 
 
+def _log_strategy_return_continuity_check(
+    *,
+    measured_con,
+    observability_con,
+    strategies: list[StrategyConfig],
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> None:
+    run_ids = _current_run_ids(strategies)
+    if not run_ids:
+        return
+
+    actual_rows = measured_con.execute(
+        """
+        SELECT strategy_id, date
+        FROM gold.strategy_returns
+        WHERE run_id = ANY(?)
+        ORDER BY strategy_id, date
+        """,
+        [run_ids],
+    ).fetchall()
+    actual_dates_by_strategy: dict[str, set[date]] = {}
+    for strategy_id, return_date in actual_rows:
+        if return_date is None:
+            continue
+        actual_dates_by_strategy.setdefault(str(strategy_id), set()).add(
+            pd.Timestamp(return_date).date()
+        )
+
+    failing_strategies: list[dict[str, Any]] = []
+    measured_value = 0.0
+    for strategy in strategies:
+        expected_dates = set(_expected_return_dates_for_strategy(measured_con, strategy))
+        actual_dates = actual_dates_by_strategy.get(strategy.strategy_id, set())
+        missing_dates = sorted(expected_dates - actual_dates)
+        unexpected_dates = sorted(actual_dates - expected_dates)
+        measured_value += float(len(missing_dates) + len(unexpected_dates))
+        if not missing_dates and not unexpected_dates:
+            continue
+        failing_strategies.append(
+            {
+                "run_id": strategy.run_id,
+                "strategy_id": strategy.strategy_id,
+                "expected_return_dates": [str(value) for value in sorted(expected_dates)],
+                "actual_return_dates": [str(value) for value in sorted(actual_dates)],
+                "missing_return_dates": [str(value) for value in missing_dates],
+                "unexpected_return_dates": [str(value) for value in unexpected_dates],
+            }
+        )
+
+    write_dq_log(
+        con=observability_con,
+        check_name="dq_gold_strategy_returns_expected_return_dates",
+        severity="RED",
+        status="PASS" if measured_value == 0.0 else "FAIL",
+        measured_value=measured_value,
+        threshold_value=0.0,
+        details={
+            "table": "gold.strategy_returns",
+            "run_ids": run_ids,
+            "evaluated_strategy_count": len(strategies),
+            "failing_strategies": failing_strategies,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
+
+
 def _annualized_return(total_return: float, periods: int) -> float | None:
     if periods <= 0 or (1.0 + total_return) <= 0:
         return None
@@ -1084,7 +1453,7 @@ def gold_strategy_rankings(context: AssetExecutionContext) -> None:
     name="strategy_holdings",
     key_prefix=["gold"],
     deps=[gold_strategy_rankings],
-    required_resource_keys={"research_duckdb"},
+    required_resource_keys={"research_duckdb", "duckdb"},
 )
 def gold_strategy_holdings(context: AssetExecutionContext) -> None:
     """
@@ -1096,7 +1465,44 @@ def gold_strategy_holdings(context: AssetExecutionContext) -> None:
         context,
         source_table="strategy_rankings",
     )
-    row_count = _materialize_holdings(con, strategies, asof_ts=_now_utc_naive())
+    asof_ts = _now_utc_naive()
+    row_count = _materialize_holdings(con, strategies, asof_ts=asof_ts)
+    _log_holdings_duplicate_symbol_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        strategies=strategies,
+        run_id=_safe_run_id(context),
+        job_name=_safe_job_name(context),
+        partition_key=_safe_partition_key(context),
+    )
+    _log_holdings_weight_sum_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        strategies=strategies,
+        run_id=_safe_run_id(context),
+        job_name=_safe_job_name(context),
+        partition_key=_safe_partition_key(context),
+    )
+    _log_rebalance_dates_present_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        strategies=strategies,
+        table_name="strategy_rankings",
+        check_name="dq_gold_strategy_rankings_expected_rebalance_dates",
+        run_id=_safe_run_id(context),
+        job_name=_safe_job_name(context),
+        partition_key=_safe_partition_key(context),
+    )
+    _log_rebalance_dates_present_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        strategies=strategies,
+        table_name="strategy_holdings",
+        check_name="dq_gold_strategy_holdings_expected_rebalance_dates",
+        run_id=_safe_run_id(context),
+        job_name=_safe_job_name(context),
+        partition_key=_safe_partition_key(context),
+    )
     context.add_output_metadata(
         {
             "table": "gold.strategy_holdings",
@@ -1110,7 +1516,7 @@ def gold_strategy_holdings(context: AssetExecutionContext) -> None:
     name="strategy_returns",
     key_prefix=["gold"],
     deps=[gold_strategy_holdings],
-    required_resource_keys={"research_duckdb"},
+    required_resource_keys={"research_duckdb", "duckdb"},
 )
 def gold_strategy_returns(context: AssetExecutionContext) -> None:
     """
@@ -1122,7 +1528,16 @@ def gold_strategy_returns(context: AssetExecutionContext) -> None:
         context,
         source_table="strategy_holdings",
     )
-    row_count = _materialize_returns(con, strategies, asof_ts=_now_utc_naive())
+    asof_ts = _now_utc_naive()
+    row_count = _materialize_returns(con, strategies, asof_ts=asof_ts)
+    _log_strategy_return_continuity_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        strategies=strategies,
+        run_id=_safe_run_id(context),
+        job_name=_safe_job_name(context),
+        partition_key=_safe_partition_key(context),
+    )
     context.add_output_metadata(
         {
             "table": "gold.strategy_returns",

@@ -233,7 +233,8 @@ def test_strategy_gold_assets_build_rankings_holdings_returns_and_performance(
     )
 
     con = duckdb.connect(":memory:")
-    context = build_asset_context(resources={"research_duckdb": con})
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con, "duckdb": obs_con})
 
     silver_strategy_module.silver_strategy_definitions(context)
     silver_strategy_module.silver_strategy_parameters(context)
@@ -332,6 +333,51 @@ def test_strategy_gold_assets_build_rankings_holdings_returns_and_performance(
         ("momentum_top_1", "success", True),
     ]
 
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_holdings_unique_symbol_per_rebalance'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_holdings_unique_symbol_per_rebalance", "PASS", 0.0)
+
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_holdings_weight_sum_by_rebalance'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_holdings_weight_sum_by_rebalance", "PASS", 0.0)
+
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_rankings_expected_rebalance_dates'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_rankings_expected_rebalance_dates", "PASS", 0.0)
+
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_holdings_expected_rebalance_dates'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_holdings_expected_rebalance_dates", "PASS", 0.0)
+
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_returns_expected_return_dates'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_returns_expected_return_dates", "PASS", 0.0)
+
 
 def test_strategy_gold_assets_use_existing_upstream_run_ids_across_separate_runs(
     tmp_path: Path, monkeypatch
@@ -347,6 +393,7 @@ def test_strategy_gold_assets_use_existing_upstream_run_ids_across_separate_runs
     )
 
     con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
     ranking_context = build_asset_context(resources={"research_duckdb": con})
 
     silver_strategy_module.silver_strategy_definitions(ranking_context)
@@ -357,7 +404,7 @@ def test_strategy_gold_assets_use_existing_upstream_run_ids_across_separate_runs
     monkeypatch.setattr(gold_strategy_module, "_safe_run_id", lambda _context: "run-rankings")
     gold_strategy_module.gold_strategy_rankings(ranking_context)
 
-    downstream_context = build_asset_context(resources={"research_duckdb": con})
+    downstream_context = build_asset_context(resources={"research_duckdb": con, "duckdb": obs_con})
     monkeypatch.setattr(gold_strategy_module, "_safe_run_id", lambda _context: "run-downstream")
     gold_strategy_module.gold_strategy_holdings(downstream_context)
     gold_strategy_module.gold_strategy_returns(downstream_context)
@@ -385,6 +432,691 @@ def test_strategy_gold_assets_use_existing_upstream_run_ids_across_separate_runs
         ("run-rankings:benchmark_spy_buy_and_hold",),
         ("run-rankings:momentum_top_1",),
     ]
+
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_holdings_unique_symbol_per_rebalance'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_holdings_unique_symbol_per_rebalance", "PASS", 0.0)
+
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_holdings_weight_sum_by_rebalance'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_holdings_weight_sum_by_rebalance", "PASS", 0.0)
+
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_rankings_expected_rebalance_dates'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_rankings_expected_rebalance_dates", "PASS", 0.0)
+
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_holdings_expected_rebalance_dates'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_holdings_expected_rebalance_dates", "PASS", 0.0)
+
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_returns_expected_return_dates'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_returns_expected_return_dates", "PASS", 0.0)
+
+
+def test_strategy_holdings_weight_sum_dq_check_fails_when_rebalance_weights_do_not_sum_to_one() -> (
+    None
+):
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA IF NOT EXISTS gold")
+    con.execute(
+        """
+        CREATE TABLE gold.strategy_holdings (
+            run_id VARCHAR,
+            strategy_id VARCHAR,
+            rebalance_date DATE,
+            symbol VARCHAR,
+            target_weight DOUBLE,
+            side VARCHAR,
+            entry_rank INTEGER,
+            signal_value DOUBLE,
+            asof_ts TIMESTAMP
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO gold.strategy_holdings (
+            run_id,
+            strategy_id,
+            rebalance_date,
+            symbol,
+            target_weight,
+            side,
+            entry_rank,
+            signal_value,
+            asof_ts
+        )
+        VALUES
+            (
+                'run-1:strategy_a',
+                'strategy_a',
+                '2024-01-31',
+                'AAA',
+                0.60,
+                'LONG',
+                1,
+                1.0,
+                current_timestamp
+            ),
+            (
+                'run-1:strategy_a',
+                'strategy_a',
+                '2024-01-31',
+                'BBB',
+                0.35,
+                'LONG',
+                2,
+                0.9,
+                current_timestamp
+            ),
+            (
+                'run-2:strategy_b',
+                'strategy_b',
+                '2024-01-31',
+                'CCC',
+                1.00,
+                'LONG',
+                1,
+                0.8,
+                current_timestamp
+            )
+        """
+    )
+
+    strategies = [
+        gold_strategy_module.StrategyConfig(
+            strategy_id="strategy_a",
+            rebalance_frequency="Monthly",
+            benchmark_symbol="SPY",
+            target_count=2,
+            weighting_method="equal",
+            long_short_flag=False,
+            start_date=date(2024, 1, 1),
+            end_date=None,
+            config={},
+            run_id="run-1:strategy_a",
+        ),
+        gold_strategy_module.StrategyConfig(
+            strategy_id="strategy_b",
+            rebalance_frequency="Monthly",
+            benchmark_symbol="SPY",
+            target_count=1,
+            weighting_method="equal",
+            long_short_flag=False,
+            start_date=date(2024, 1, 1),
+            end_date=None,
+            config={},
+            run_id="run-2:strategy_b",
+        ),
+    ]
+
+    gold_strategy_module._log_holdings_weight_sum_check(
+        measured_con=con,
+        observability_con=obs_con,
+        strategies=strategies,
+        run_id="strategy-holdings-run",
+        job_name="strategy_holdings_job",
+        partition_key=None,
+    )
+
+    dq_row = obs_con.execute(
+        """
+        SELECT status, measured_value, threshold_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_holdings_weight_sum_by_rebalance'
+        """
+    ).fetchone()
+    assert dq_row == ("FAIL", 1.0, 0.0)
+
+    details_row = obs_con.execute(
+        """
+        SELECT details_json
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_holdings_weight_sum_by_rebalance'
+        """
+    ).fetchone()
+    assert details_row is not None
+    details_json = str(details_row[0])
+    assert '"strategy_id": "strategy_a"' in details_json
+    assert '"weight_sum": 0.95' in details_json
+
+
+def test_strategy_holdings_duplicate_symbol_dq_check_fails_for_same_rebalance_symbol() -> None:
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA IF NOT EXISTS gold")
+    con.execute(
+        """
+        CREATE TABLE gold.strategy_holdings (
+            run_id VARCHAR,
+            strategy_id VARCHAR,
+            rebalance_date DATE,
+            symbol VARCHAR,
+            target_weight DOUBLE,
+            side VARCHAR,
+            entry_rank INTEGER,
+            signal_value DOUBLE,
+            asof_ts TIMESTAMP
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO gold.strategy_holdings (
+            run_id,
+            strategy_id,
+            rebalance_date,
+            symbol,
+            target_weight,
+            side,
+            entry_rank,
+            signal_value,
+            asof_ts
+        )
+        VALUES
+            (
+                'run-1:strategy_a',
+                'strategy_a',
+                '2024-01-31',
+                'AAA',
+                0.50,
+                'LONG',
+                1,
+                1.0,
+                current_timestamp
+            ),
+            (
+                'run-1:strategy_a',
+                'strategy_a',
+                '2024-01-31',
+                'AAA',
+                0.50,
+                'LONG',
+                2,
+                0.9,
+                current_timestamp
+            ),
+            (
+                'run-2:strategy_b',
+                'strategy_b',
+                '2024-01-31',
+                'BBB',
+                1.00,
+                'LONG',
+                1,
+                0.8,
+                current_timestamp
+            )
+        """
+    )
+
+    strategies = [
+        gold_strategy_module.StrategyConfig(
+            strategy_id="strategy_a",
+            rebalance_frequency="Monthly",
+            benchmark_symbol="SPY",
+            target_count=2,
+            weighting_method="equal",
+            long_short_flag=False,
+            start_date=date(2024, 1, 1),
+            end_date=None,
+            config={},
+            run_id="run-1:strategy_a",
+        ),
+        gold_strategy_module.StrategyConfig(
+            strategy_id="strategy_b",
+            rebalance_frequency="Monthly",
+            benchmark_symbol="SPY",
+            target_count=1,
+            weighting_method="equal",
+            long_short_flag=False,
+            start_date=date(2024, 1, 1),
+            end_date=None,
+            config={},
+            run_id="run-2:strategy_b",
+        ),
+    ]
+
+    gold_strategy_module._log_holdings_duplicate_symbol_check(
+        measured_con=con,
+        observability_con=obs_con,
+        strategies=strategies,
+        run_id="strategy-holdings-run",
+        job_name="strategy_holdings_job",
+        partition_key=None,
+    )
+
+    dq_row = obs_con.execute(
+        """
+        SELECT status, measured_value, threshold_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_holdings_unique_symbol_per_rebalance'
+        """
+    ).fetchone()
+    assert dq_row == ("FAIL", 1.0, 0.0)
+
+    details_row = obs_con.execute(
+        """
+        SELECT details_json
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_holdings_unique_symbol_per_rebalance'
+        """
+    ).fetchone()
+    assert details_row is not None
+    details_json = str(details_row[0])
+    assert '"uniqueness_scope": ["strategy_id", "rebalance_date", "symbol"]' in details_json
+    assert '"key_columns": ["run_id", "strategy_id", "rebalance_date", "symbol"]' in details_json
+
+
+def test_strategy_rankings_expected_rebalance_dates_dq_check_fails_for_missing_month() -> None:
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA IF NOT EXISTS silver")
+    con.execute("CREATE SCHEMA IF NOT EXISTS gold")
+    con.execute(
+        """
+        CREATE TABLE silver.signals_daily AS
+        SELECT *
+        FROM (
+            VALUES
+                ('2024-01-31', 'AAA'),
+                ('2024-02-29', 'AAA')
+        ) AS t(date, symbol)
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE gold.strategy_rankings (
+            run_id VARCHAR,
+            strategy_id VARCHAR,
+            rebalance_date DATE,
+            symbol VARCHAR,
+            score DOUBLE,
+            rank INTEGER,
+            selected_flag BOOLEAN,
+            asof_ts TIMESTAMP
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO gold.strategy_rankings (
+            run_id,
+            strategy_id,
+            rebalance_date,
+            symbol,
+            score,
+            rank,
+            selected_flag,
+            asof_ts
+        )
+        VALUES (
+            'run-1:strategy_a',
+            'strategy_a',
+            '2024-01-31',
+            'AAA',
+            1.0,
+            1,
+            TRUE,
+            current_timestamp
+        )
+        """
+    )
+
+    strategies = [
+        gold_strategy_module.StrategyConfig(
+            strategy_id="strategy_a",
+            rebalance_frequency="Monthly",
+            benchmark_symbol="SPY",
+            target_count=1,
+            weighting_method="equal",
+            long_short_flag=False,
+            start_date=date(2024, 1, 1),
+            end_date=None,
+            config={},
+            run_id="run-1:strategy_a",
+        )
+    ]
+
+    gold_strategy_module._log_rebalance_dates_present_check(
+        measured_con=con,
+        observability_con=obs_con,
+        strategies=strategies,
+        table_name="strategy_rankings",
+        check_name="dq_gold_strategy_rankings_expected_rebalance_dates",
+        run_id="strategy-holdings-run",
+        job_name="strategy_holdings_job",
+        partition_key=None,
+    )
+
+    dq_row = obs_con.execute(
+        """
+        SELECT status, measured_value, threshold_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_rankings_expected_rebalance_dates'
+        """
+    ).fetchone()
+    assert dq_row == ("FAIL", 1.0, 0.0)
+
+    details_row = obs_con.execute(
+        """
+        SELECT details_json
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_rankings_expected_rebalance_dates'
+        """
+    ).fetchone()
+    assert details_row is not None
+    details_json = str(details_row[0])
+    assert '"missing_rebalance_dates": ["2024-02-29"]' in details_json
+    assert '"table": "gold.strategy_rankings"' in details_json
+
+
+def test_strategy_holdings_expected_rebalance_dates_dq_check_fails_for_unexpected_month() -> None:
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA IF NOT EXISTS silver")
+    con.execute("CREATE SCHEMA IF NOT EXISTS gold")
+    con.execute(
+        """
+        CREATE TABLE silver.signals_daily AS
+        SELECT *
+        FROM (
+            VALUES
+                ('2024-01-31', 'AAA'),
+                ('2024-02-29', 'AAA')
+        ) AS t(date, symbol)
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE gold.strategy_holdings (
+            run_id VARCHAR,
+            strategy_id VARCHAR,
+            rebalance_date DATE,
+            symbol VARCHAR,
+            target_weight DOUBLE,
+            side VARCHAR,
+            entry_rank INTEGER,
+            signal_value DOUBLE,
+            asof_ts TIMESTAMP
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO gold.strategy_holdings (
+            run_id,
+            strategy_id,
+            rebalance_date,
+            symbol,
+            target_weight,
+            side,
+            entry_rank,
+            signal_value,
+            asof_ts
+        )
+        VALUES
+            (
+                'run-1:strategy_a',
+                'strategy_a',
+                '2024-01-31',
+                'AAA',
+                1.0,
+                'LONG',
+                1,
+                1.0,
+                current_timestamp
+            ),
+            (
+                'run-1:strategy_a',
+                'strategy_a',
+                '2024-02-29',
+                'AAA',
+                1.0,
+                'LONG',
+                1,
+                1.0,
+                current_timestamp
+            ),
+            (
+                'run-1:strategy_a',
+                'strategy_a',
+                '2024-03-31',
+                'AAA',
+                1.0,
+                'LONG',
+                1,
+                1.0,
+                current_timestamp
+            )
+        """
+    )
+
+    strategies = [
+        gold_strategy_module.StrategyConfig(
+            strategy_id="strategy_a",
+            rebalance_frequency="Monthly",
+            benchmark_symbol="SPY",
+            target_count=1,
+            weighting_method="equal",
+            long_short_flag=False,
+            start_date=date(2024, 1, 1),
+            end_date=None,
+            config={},
+            run_id="run-1:strategy_a",
+        )
+    ]
+
+    gold_strategy_module._log_rebalance_dates_present_check(
+        measured_con=con,
+        observability_con=obs_con,
+        strategies=strategies,
+        table_name="strategy_holdings",
+        check_name="dq_gold_strategy_holdings_expected_rebalance_dates",
+        run_id="strategy-holdings-run",
+        job_name="strategy_holdings_job",
+        partition_key=None,
+    )
+
+    dq_row = obs_con.execute(
+        """
+        SELECT status, measured_value, threshold_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_holdings_expected_rebalance_dates'
+        """
+    ).fetchone()
+    assert dq_row == ("FAIL", 1.0, 0.0)
+
+    details_row = obs_con.execute(
+        """
+        SELECT details_json
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_holdings_expected_rebalance_dates'
+        """
+    ).fetchone()
+    assert details_row is not None
+    details_json = str(details_row[0])
+    assert '"unexpected_rebalance_dates": ["2024-03-31"]' in details_json
+    assert '"table": "gold.strategy_holdings"' in details_json
+
+
+def test_strategy_returns_expected_dates_dq_check_fails_for_missing_trading_day(
+    tmp_path: Path,
+) -> None:
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA IF NOT EXISTS gold")
+    holdings_df = pd.DataFrame(
+        [
+            {
+                "run_id": "run-1:strategy_a",
+                "strategy_id": "strategy_a",
+                "rebalance_date": "2024-01-31",
+                "symbol": "AAA",
+                "target_weight": 1.0,
+                "side": "LONG",
+                "entry_rank": 1,
+                "signal_value": 1.0,
+                "asof_ts": pd.Timestamp("2024-01-31"),
+            },
+            {
+                "run_id": "run-1:strategy_a",
+                "strategy_id": "strategy_a",
+                "rebalance_date": "2024-02-29",
+                "symbol": "AAA",
+                "target_weight": 1.0,
+                "side": "LONG",
+                "entry_rank": 1,
+                "signal_value": 1.0,
+                "asof_ts": pd.Timestamp("2024-02-29"),
+            },
+        ]
+    )
+    con.register("holdings_df", holdings_df)
+    con.execute("CREATE TABLE gold.strategy_holdings AS SELECT * FROM holdings_df")
+
+    returns_df = pd.DataFrame(
+        [
+            {
+                "run_id": "run-1:strategy_a",
+                "strategy_id": "strategy_a",
+                "date": "2024-02-01",
+                "portfolio_return": 0.01,
+                "benchmark_return": 0.0,
+                "excess_return": 0.01,
+                "cumulative_return": 0.01,
+                "drawdown": 0.0,
+                "turnover": 1.0,
+                "holdings_count": 1,
+                "asof_ts": pd.Timestamp("2024-02-01"),
+            }
+        ]
+    )
+    con.register("returns_df", returns_df)
+    con.execute("CREATE TABLE gold.strategy_returns AS SELECT * FROM returns_df")
+
+    strategies = [
+        gold_strategy_module.StrategyConfig(
+            strategy_id="strategy_a",
+            rebalance_frequency="Monthly",
+            benchmark_symbol="SPY",
+            target_count=1,
+            weighting_method="equal",
+            long_short_flag=False,
+            start_date=date(2024, 1, 1),
+            end_date=None,
+            config={},
+            run_id="run-1:strategy_a",
+        )
+    ]
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        trading_dates_df = pd.DataFrame(
+            [
+                {
+                    "trade_date": "2024-02-01",
+                    "symbol": "AAA",
+                    "close": 100.0,
+                    "adjusted_close": 100.0,
+                },
+                {
+                    "trade_date": "2024-02-02",
+                    "symbol": "AAA",
+                    "close": 101.0,
+                    "adjusted_close": 101.0,
+                },
+                {
+                    "trade_date": "2024-02-29",
+                    "symbol": "AAA",
+                    "close": 102.0,
+                    "adjusted_close": 102.0,
+                },
+                {
+                    "trade_date": "2024-03-01",
+                    "symbol": "AAA",
+                    "close": 103.0,
+                    "adjusted_close": 103.0,
+                },
+            ]
+        )
+        temp_dir = tmp_path
+        month_dir_feb = temp_dir / "silver" / "research_daily_prices" / "month=2024-02"
+        month_dir_feb.mkdir(parents=True, exist_ok=True)
+        trading_dates_df.loc[
+            trading_dates_df["trade_date"].isin(["2024-02-01", "2024-02-02"])
+        ].to_parquet(month_dir_feb / "date=2024-02-01.parquet", index=False)
+        trading_dates_df.loc[trading_dates_df["trade_date"] == "2024-02-29"].to_parquet(
+            month_dir_feb / "date=2024-02-29.parquet", index=False
+        )
+        month_dir_mar = temp_dir / "silver" / "research_daily_prices" / "month=2024-03"
+        month_dir_mar.mkdir(parents=True, exist_ok=True)
+        trading_dates_df.loc[trading_dates_df["trade_date"] == "2024-03-01"].to_parquet(
+            month_dir_mar / "date=2024-03-01.parquet", index=False
+        )
+        monkeypatch.setattr(
+            gold_strategy_module,
+            "PRICE_GLOB",
+            (
+                temp_dir / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet"
+            ).as_posix(),
+        )
+
+        gold_strategy_module._log_strategy_return_continuity_check(
+            measured_con=con,
+            observability_con=obs_con,
+            strategies=strategies,
+            run_id="strategy-returns-run",
+            job_name="strategy_returns_job",
+            partition_key=None,
+        )
+
+    dq_row = obs_con.execute(
+        """
+        SELECT status, measured_value, threshold_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_returns_expected_return_dates'
+        """
+    ).fetchone()
+    assert dq_row == ("FAIL", 2.0, 0.0)
+
+    details_row = obs_con.execute(
+        """
+        SELECT details_json
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_returns_expected_return_dates'
+        """
+    ).fetchone()
+    assert details_row is not None
+    details_json = str(details_row[0])
+    assert '"missing_return_dates": ["2024-02-02", "2024-03-01"]' in details_json
+    assert '"table": "gold.strategy_returns"' in details_json
 
 
 def test_daily_symbol_returns_drops_non_positive_and_extreme_price_jumps() -> None:
@@ -573,6 +1305,7 @@ def test_composite_underrated_momentum_ranking_requires_positive_momentum() -> N
 
     strategy = gold_strategy_module.StrategyConfig(
         strategy_id="underrated_momentum_top_10",
+        rebalance_frequency="Monthly",
         benchmark_symbol="SPY",
         target_count=10,
         weighting_method="equal",
