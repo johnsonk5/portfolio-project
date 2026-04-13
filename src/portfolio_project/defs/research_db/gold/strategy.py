@@ -97,6 +97,7 @@ STRATEGY_PERFORMANCE_COLUMNS: list[tuple[str, str]] = [
 @dataclass(frozen=True)
 class StrategyConfig:
     strategy_id: str
+    rebalance_frequency: str
     benchmark_symbol: str
     target_count: int
     weighting_method: str
@@ -177,6 +178,7 @@ def _active_strategies(con, context: AssetExecutionContext) -> list[StrategyConf
         """
         SELECT
             strategy_id,
+            rebalance_frequency,
             benchmark_symbol,
             target_count,
             weighting_method,
@@ -195,13 +197,14 @@ def _active_strategies(con, context: AssetExecutionContext) -> list[StrategyConf
         strategies.append(
             StrategyConfig(
                 strategy_id=strategy_id,
-                benchmark_symbol=str(row[1]),
-                target_count=int(row[2]),
-                weighting_method=str(row[3]),
-                long_short_flag=bool(row[4]),
-                start_date=row[5],
-                end_date=row[6],
-                config=_safe_json_loads(row[7]),
+                rebalance_frequency=str(row[1]),
+                benchmark_symbol=str(row[2]),
+                target_count=int(row[3]),
+                weighting_method=str(row[4]),
+                long_short_flag=bool(row[5]),
+                start_date=row[6],
+                end_date=row[7],
+                config=_safe_json_loads(row[8]),
                 run_id=_strategy_run_id(context, strategy_id),
             )
         )
@@ -236,6 +239,7 @@ def _strategies_with_latest_run_ids(
         resolved.append(
             StrategyConfig(
                 strategy_id=strategy.strategy_id,
+                rebalance_frequency=strategy.rebalance_frequency,
                 benchmark_symbol=strategy.benchmark_symbol,
                 target_count=strategy.target_count,
                 weighting_method=strategy.weighting_method,
@@ -318,6 +322,38 @@ def _rebalance_dates_for_strategy(con, strategy: StrategyConfig) -> list[date]:
 
     start_date = strategy.start_date or date(1900, 1, 1)
     end_date = strategy.end_date or date(2999, 12, 31)
+    rebalance_frequency = strategy.rebalance_frequency.strip().lower()
+    if rebalance_frequency == "daily":
+        rows = con.execute(
+            """
+            SELECT DISTINCT CAST(date AS DATE) AS rebalance_date
+            FROM silver.signals_daily
+            WHERE CAST(date AS DATE) >= ?
+              AND CAST(date AS DATE) <= ?
+            ORDER BY rebalance_date
+            """,
+            [start_date, end_date],
+        ).fetchall()
+        return [row[0] for row in rows if row[0] is not None]
+
+    if rebalance_frequency == "weekly":
+        rows = con.execute(
+            """
+            WITH filtered AS (
+                SELECT CAST(date AS DATE) AS signal_date
+                FROM silver.signals_daily
+                WHERE CAST(date AS DATE) >= ?
+                  AND CAST(date AS DATE) <= ?
+            )
+            SELECT max(signal_date) AS rebalance_date
+            FROM filtered
+            GROUP BY strftime(signal_date, '%G-%V')
+            ORDER BY rebalance_date
+            """,
+            [start_date, end_date],
+        ).fetchall()
+        return [row[0] for row in rows if row[0] is not None]
+
     rows = con.execute(
         """
         WITH filtered AS (
@@ -816,6 +852,78 @@ def _log_holdings_duplicate_symbol_check(
     )
 
 
+def _log_rebalance_dates_present_check(
+    *,
+    measured_con,
+    observability_con,
+    strategies: list[StrategyConfig],
+    table_name: str,
+    check_name: str,
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> None:
+    run_ids = _current_run_ids(strategies)
+    if not run_ids:
+        return
+
+    actual_rows = measured_con.execute(
+        f"""
+        SELECT DISTINCT strategy_id, rebalance_date
+        FROM gold.{_quote_identifier(table_name)}
+        WHERE run_id = ANY(?)
+        ORDER BY strategy_id, rebalance_date
+        """,
+        [run_ids],
+    ).fetchall()
+    actual_dates_by_strategy: dict[str, set[date]] = {}
+    for strategy_id, rebalance_date in actual_rows:
+        if rebalance_date is None:
+            continue
+        actual_dates_by_strategy.setdefault(str(strategy_id), set()).add(rebalance_date)
+
+    failing_strategies: list[dict[str, Any]] = []
+    measured_value = 0.0
+    for strategy in strategies:
+        expected_dates = set(_rebalance_dates_for_strategy(measured_con, strategy))
+        actual_dates = actual_dates_by_strategy.get(strategy.strategy_id, set())
+        missing_dates = sorted(expected_dates - actual_dates)
+        unexpected_dates = sorted(actual_dates - expected_dates)
+        measured_value += float(len(missing_dates) + len(unexpected_dates))
+        if not missing_dates and not unexpected_dates:
+            continue
+        failing_strategies.append(
+            {
+                "run_id": strategy.run_id,
+                "strategy_id": strategy.strategy_id,
+                "rebalance_frequency": strategy.rebalance_frequency,
+                "expected_rebalance_dates": [str(value) for value in sorted(expected_dates)],
+                "actual_rebalance_dates": [str(value) for value in sorted(actual_dates)],
+                "missing_rebalance_dates": [str(value) for value in missing_dates],
+                "unexpected_rebalance_dates": [str(value) for value in unexpected_dates],
+            }
+        )
+
+    write_dq_log(
+        con=observability_con,
+        check_name=check_name,
+        severity="RED",
+        status="PASS" if measured_value == 0.0 else "FAIL",
+        measured_value=measured_value,
+        threshold_value=0.0,
+        details={
+            "table": f"gold.{table_name}",
+            "run_ids": run_ids,
+            "evaluated_strategy_count": len(strategies),
+            "failing_strategies": failing_strategies,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
+
+
 def _load_price_history(
     con,
     *,
@@ -1238,6 +1346,26 @@ def gold_strategy_holdings(context: AssetExecutionContext) -> None:
         measured_con=con,
         observability_con=context.resources.duckdb,
         strategies=strategies,
+        run_id=_safe_run_id(context),
+        job_name=_safe_job_name(context),
+        partition_key=_safe_partition_key(context),
+    )
+    _log_rebalance_dates_present_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        strategies=strategies,
+        table_name="strategy_rankings",
+        check_name="dq_gold_strategy_rankings_expected_rebalance_dates",
+        run_id=_safe_run_id(context),
+        job_name=_safe_job_name(context),
+        partition_key=_safe_partition_key(context),
+    )
+    _log_rebalance_dates_present_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        strategies=strategies,
+        table_name="strategy_holdings",
+        check_name="dq_gold_strategy_holdings_expected_rebalance_dates",
         run_id=_safe_run_id(context),
         job_name=_safe_job_name(context),
         partition_key=_safe_partition_key(context),
