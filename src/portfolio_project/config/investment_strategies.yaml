@@ -1,0 +1,2133 @@
+strategies:
+  - strategy_id: benchmark_spy_buy_and_hold
+    strategy_name: Buy And Hold SPY
+    strategy_version: v1
+    description: Benchmark strategy that continuously holds SPY with a single-position portfolio.
+    ranking_method: single_asset_hold
+    rebalance_frequency: Monthly
+    target_count: 1
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: benchmark_only
+      selection_mode: fixed_symbol
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: symbol
+        parameter_value: SPY
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: ETF symbol held by the benchmark strategy.
+      - parameter_name: rebalance_buffer_bps
+        parameter_value: "0"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Zero turnover buffer for the static benchmark portfolio.
+
+  - strategy_id: momentum_top_10
+    strategy_name: Momentum Top 10
+    strategy_version: v1
+    description: Long-only strategy that buys the top 10 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 10
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_20
+    strategy_name: Momentum Top 20
+    strategy_version: v1
+    description: Long-only strategy that buys the top 20 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 20
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_30
+    strategy_name: Momentum Top 30
+    strategy_version: v1
+    description: Long-only strategy that buys the top 30 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 30
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_40
+    strategy_name: Momentum Top 40
+    strategy_version: v1
+    description: Long-only strategy that buys the top 40 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 40
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_50
+    strategy_name: Momentum Top 50
+    strategy_version: v1
+    description: Long-only strategy that buys the top 50 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 50
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_60
+    strategy_name: Momentum Top 60
+    strategy_version: v1
+    description: Long-only strategy that buys the top 60 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 60
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_70
+    strategy_name: Momentum Top 70
+    strategy_version: v1
+    description: Long-only strategy that buys the top 70 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 70
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_80
+    strategy_name: Momentum Top 80
+    strategy_version: v1
+    description: Long-only strategy that buys the top 80 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 80
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_90
+    strategy_name: Momentum Top 90
+    strategy_version: v1
+    description: Long-only strategy that buys the top 90 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 90
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_100
+    strategy_name: Momentum Top 100
+    strategy_version: v1
+    description: Long-only strategy that buys the top 100 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 100
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_110
+    strategy_name: Momentum Top 110
+    strategy_version: v1
+    description: Long-only strategy that buys the top 110 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 110
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_120
+    strategy_name: Momentum Top 120
+    strategy_version: v1
+    description: Long-only strategy that buys the top 120 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 120
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_130
+    strategy_name: Momentum Top 130
+    strategy_version: v1
+    description: Long-only strategy that buys the top 130 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 130
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_140
+    strategy_name: Momentum Top 140
+    strategy_version: v1
+    description: Long-only strategy that buys the top 140 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 140
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_150
+    strategy_name: Momentum Top 150
+    strategy_version: v1
+    description: Long-only strategy that buys the top 150 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 150
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_160
+    strategy_name: Momentum Top 160
+    strategy_version: v1
+    description: Long-only strategy that buys the top 160 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 160
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_170
+    strategy_name: Momentum Top 170
+    strategy_version: v1
+    description: Long-only strategy that buys the top 170 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 170
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_180
+    strategy_name: Momentum Top 180
+    strategy_version: v1
+    description: Long-only strategy that buys the top 180 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 180
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_190
+    strategy_name: Momentum Top 190
+    strategy_version: v1
+    description: Long-only strategy that buys the top 190 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 190
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: momentum_top_200
+    strategy_name: Momentum Top 200
+    strategy_version: v1
+    description: Long-only strategy that buys the top 200 securities by 12-1 momentum each month.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 200
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher momentum values rank first.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: low_volatility_top_10
+    strategy_name: Low Volatility Top 10
+    strategy_version: v1
+    description: Long-only strategy that selects the 10 lowest-volatility names in the daily universe.
+    ranking_method: realized_vol_21d_asc
+    rebalance_frequency: Monthly
+    target_count: 10
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: realized_vol_21d
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Volatility metric used for ranking.
+      - parameter_name: ranking_direction
+        parameter_value: asc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Lower volatility values rank first.
+      - parameter_name: min_price_to_sma_200
+        parameter_value: "0.9"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Optional trend floor to avoid deep downtrends.
+
+  - strategy_id: short_term_reversal_top_10
+    strategy_name: Short-Term Reversal Top 10
+    strategy_version: v1
+    description: Long-only strategy that buys the 10 weakest recent performers on a monthly rebalance.
+    ranking_method: returns_5d_asc
+    rebalance_frequency: Monthly
+    target_count: 10
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: returns_5d
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Short-horizon return field used for reversal ranking.
+      - parameter_name: ranking_direction
+        parameter_value: asc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Lower trailing returns rank first for mean reversion.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_10
+    strategy_name: Underrated Momentum Top 10
+    strategy_version: v1
+    description: Long-only strategy that buys 10 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 10
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_20
+    strategy_name: Underrated Momentum Top 20
+    strategy_version: v1
+    description: Long-only strategy that buys 20 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 20
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_30
+    strategy_name: Underrated Momentum Top 30
+    strategy_version: v1
+    description: Long-only strategy that buys 30 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 30
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_40
+    strategy_name: Underrated Momentum Top 40
+    strategy_version: v1
+    description: Long-only strategy that buys 40 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 40
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_50
+    strategy_name: Underrated Momentum Top 50
+    strategy_version: v1
+    description: Long-only strategy that buys 50 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 50
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_60
+    strategy_name: Underrated Momentum Top 60
+    strategy_version: v1
+    description: Long-only strategy that buys 60 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 60
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_70
+    strategy_name: Underrated Momentum Top 70
+    strategy_version: v1
+    description: Long-only strategy that buys 70 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 70
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_80
+    strategy_name: Underrated Momentum Top 80
+    strategy_version: v1
+    description: Long-only strategy that buys 80 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 80
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_90
+    strategy_name: Underrated Momentum Top 90
+    strategy_version: v1
+    description: Long-only strategy that buys 90 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 90
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_100
+    strategy_name: Underrated Momentum Top 100
+    strategy_version: v1
+    description: Long-only strategy that buys 100 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 100
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_110
+    strategy_name: Underrated Momentum Top 110
+    strategy_version: v1
+    description: Long-only strategy that buys 110 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 110
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_120
+    strategy_name: Underrated Momentum Top 120
+    strategy_version: v1
+    description: Long-only strategy that buys 120 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 120
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_130
+    strategy_name: Underrated Momentum Top 130
+    strategy_version: v1
+    description: Long-only strategy that buys 130 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 130
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_140
+    strategy_name: Underrated Momentum Top 140
+    strategy_version: v1
+    description: Long-only strategy that buys 140 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 140
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_150
+    strategy_name: Underrated Momentum Top 150
+    strategy_version: v1
+    description: Long-only strategy that buys 150 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 150
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_160
+    strategy_name: Underrated Momentum Top 160
+    strategy_version: v1
+    description: Long-only strategy that buys 160 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 160
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_170
+    strategy_name: Underrated Momentum Top 170
+    strategy_version: v1
+    description: Long-only strategy that buys 170 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 170
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_180
+    strategy_name: Underrated Momentum Top 180
+    strategy_version: v1
+    description: Long-only strategy that buys 180 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 180
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_190
+    strategy_name: Underrated Momentum Top 190
+    strategy_version: v1
+    description: Long-only strategy that buys 190 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 190
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.
+
+  - strategy_id: underrated_momentum_top_200
+    strategy_name: Underrated Momentum Top 200
+    strategy_version: v1
+    description: Long-only strategy that buys 200 stocks with positive 12-1 momentum that still trade well below their 52-week highs.
+    ranking_method: composite_momentum_below_52w_high_desc
+    rebalance_frequency: Monthly
+    target_count: 200
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2000-01-01
+    end_date:
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+      rebalance_anchor: month_end
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Primary signal for the composite ranking.
+      - parameter_name: secondary_signal_column
+        parameter_value: pct_below_52w_high
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Secondary signal rewarding names still far below their 52-week highs.
+      - parameter_name: score_method
+        parameter_value: zscore_sum
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Sum the cross-sectional z-scores of the two signals.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Higher composite scores rank first.
+      - parameter_name: min_momentum_12_1
+        parameter_value: "0"
+        parameter_type: double
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Require strictly positive 12-1 momentum.
+      - parameter_name: min_avg_dollar_volume_21d
+        parameter_value: "1000000"
+        parameter_type: int
+        effective_start_date: 2000-01-01
+        effective_end_date:
+        is_active: true
+        description: Minimum liquidity threshold for eligible symbols.

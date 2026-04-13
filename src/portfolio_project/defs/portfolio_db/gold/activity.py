@@ -139,4 +139,3 @@ def gold_activity(context: AssetExecutionContext) -> None:
             "row_count": row_count,
         }
     )
-

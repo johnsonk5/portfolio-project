@@ -236,7 +236,9 @@ def _normalize_eodhd_daily_bars_df(
     date_col = (
         "date"
         if "date" in normalized.columns
-        else "trade_date" if "trade_date" in normalized.columns else None
+        else "trade_date"
+        if "trade_date" in normalized.columns
+        else None
     )
     if date_col is None:
         return pd.DataFrame()
@@ -389,9 +391,7 @@ def _write_day_file(
         output_df = day_df.sort_values(sort_columns).reset_index(drop=True)
     else:
         output_df = day_df.reset_index(drop=True)
-    (
-        output_df.to_parquet(out_path, index=False)
-    )
+    (output_df.to_parquet(out_path, index=False))
     return len(day_df), 1
 
 
@@ -475,8 +475,7 @@ def _normalize_alpaca_corporate_actions_df(
     normalized["cash_rate"] = pd.to_numeric(normalized.get("rate"), errors="coerce")
     normalized["ingested_ts"] = datetime.now(timezone.utc)
     normalized = normalized[
-        normalized["symbol"].ne("")
-        & normalized["effective_date"].notna()
+        normalized["symbol"].ne("") & normalized["effective_date"].notna()
     ].copy()
     if start_date is not None:
         normalized = normalized[normalized["effective_date"] >= start_date].copy()
@@ -492,10 +491,7 @@ def _normalize_alpaca_corporate_actions_df(
         & normalized["old_rate"].gt(0)
         & normalized["new_rate"].gt(0)
     )
-    dividend_mask = (
-        normalized["action_type"].eq("cash_dividends")
-        & normalized["cash_rate"].notna()
-    )
+    dividend_mask = normalized["action_type"].eq("cash_dividends") & normalized["cash_rate"].notna()
     normalized = normalized[split_mask | dividend_mask].copy()
     if normalized.empty:
         return pd.DataFrame()
@@ -519,10 +515,14 @@ def _normalize_alpaca_corporate_actions_df(
         "source",
         "ingested_ts",
     ]
-    return normalized[ordered_columns].sort_values(
-        ["symbol", "effective_date", "process_date", "action_type"],
-        kind="stable",
-    ).reset_index(drop=True)
+    return (
+        normalized[ordered_columns]
+        .sort_values(
+            ["symbol", "effective_date", "process_date", "action_type"],
+            kind="stable",
+        )
+        .reset_index(drop=True)
+    )
 
 
 def _fetch_alpaca_corporate_actions_for_day(

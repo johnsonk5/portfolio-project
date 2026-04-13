@@ -46,9 +46,7 @@ def bronze_sp500_companies(context: AssetExecutionContext) -> None:
     out_path = reference_dir / "sp500_companies.parquet"
     df.to_parquet(out_path, index=False)
 
-    context.add_output_metadata(
-        {"path": str(out_path), "row_count": len(df)}
-    )
+    context.add_output_metadata({"path": str(out_path), "row_count": len(df)})
 
 
 @asset(
@@ -91,9 +89,7 @@ def silver_sp500_companies(context: AssetExecutionContext) -> None:
     con.execute("CREATE SCHEMA IF NOT EXISTS silver")
 
     try:
-        assets_df = con.execute(
-            "SELECT asset_id, symbol FROM silver.assets"
-        ).fetch_df()
+        assets_df = con.execute("SELECT asset_id, symbol FROM silver.assets").fetch_df()
     except Exception as exc:
         context.log.warning("Silver assets table missing or unreadable: %s", exc)
         return
@@ -135,4 +131,3 @@ def silver_sp500_companies(context: AssetExecutionContext) -> None:
             "missing_asset_id_count": int(missing_assets),
         }
     )
-

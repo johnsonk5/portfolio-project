@@ -56,3 +56,63 @@
 | `views_30d_avg` | `float` | 30-day rolling average views. |
 | `views_vs_30d_avg` | `float` | `views / views_30d_avg`. |
 | `ingested_ts` | `datetime64[us]` | Ingest timestamp. |
+
+## `gold.strategy_rankings`
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `run_id` | `object` | Strategy run identifier. |
+| `strategy_id` | `object` | Strategy identifier. |
+| `rebalance_date` | `date` | Rebalance date. |
+| `symbol` | `object` | Ticker symbol. |
+| `score` | `float` | Strategy ranking score at rebalance. |
+| `rank` | `int` | Rank position within each rebalance date. |
+| `selected_flag` | `bool` | Whether the symbol was selected into holdings. |
+| `asof_ts` | `datetime64[us]` | Load timestamp. |
+
+## `gold.strategy_holdings`
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `run_id` | `object` | Strategy run identifier. |
+| `strategy_id` | `object` | Strategy identifier. |
+| `rebalance_date` | `date` | Rebalance date. |
+| `symbol` | `object` | Ticker symbol. |
+| `target_weight` | `float` | Assigned portfolio weight for the rebalance period. |
+| `side` | `object` | Portfolio side. |
+| `entry_rank` | `int` | Rank used for inclusion. |
+| `signal_value` | `float` | Ranking signal value used for the holding. |
+| `asof_ts` | `datetime64[us]` | Load timestamp. |
+
+## `gold.strategy_returns`
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `run_id` | `object` | Strategy run identifier. |
+| `strategy_id` | `object` | Strategy identifier. |
+| `date` | `date` | Trading date. |
+| `portfolio_return` | `float` | Strategy daily return. |
+| `benchmark_return` | `float` | Benchmark daily return. |
+| `excess_return` | `float` | Active return versus benchmark. |
+| `cumulative_return` | `float` | Compounded cumulative return path. |
+| `drawdown` | `float` | Running drawdown from the cumulative peak. |
+| `turnover` | `float` | Daily turnover, non-zero on rebalance effective dates. |
+| `holdings_count` | `int` | Active holdings count for the date. |
+| `asof_ts` | `datetime64[us]` | Load timestamp. |
+
+## `gold.strategy_performance`
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `run_id` | `object` | Strategy run identifier. |
+| `strategy_id` | `object` | Strategy identifier. |
+| `cagr` | `float` | Annualized return. |
+| `sharpe_ratio` | `float` | Annualized Sharpe ratio. |
+| `sortino_ratio` | `float` | Annualized Sortino ratio. |
+| `max_drawdown` | `float` | Maximum drawdown over the run. |
+| `annualized_volatility` | `float` | Annualized volatility. |
+| `hit_rate` | `float` | Share of positive daily returns. |
+| `turnover_avg` | `float` | Average daily turnover. |
+| `benchmark_return` | `float` | Benchmark total return over the run. |
+| `alpha` | `float` | Annualized excess return estimate versus benchmark. |
+| `asof_ts` | `datetime64[us]` | Load timestamp. |

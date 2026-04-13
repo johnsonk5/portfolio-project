@@ -63,6 +63,12 @@ from portfolio_project.defs.research_db.bronze.research_prices import (
     bronze_alpaca_prices_daily,
     bronze_eodhd_prices_daily,
 )
+from portfolio_project.defs.research_db.gold.strategy import (
+    gold_strategy_holdings,
+    gold_strategy_performance,
+    gold_strategy_rankings,
+    gold_strategy_returns,
+)
 from portfolio_project.defs.research_db.silver.corporate_actions import (
     silver_alpaca_corporate_actions,
 )
@@ -74,6 +80,11 @@ from portfolio_project.defs.research_db.silver.research_prices import (
 )
 from portfolio_project.defs.research_db.silver.signals import (
     silver_signals_daily,
+)
+from portfolio_project.defs.research_db.silver.strategy import (
+    silver_strategy_definitions,
+    silver_strategy_parameters,
+    silver_strategy_runs,
 )
 from portfolio_project.defs.research_db.silver.universe import (
     silver_universe_membership_daily,
@@ -97,6 +108,16 @@ research_prices_selection = AssetSelection.assets(
     silver_signals_daily,
     silver_universe_membership_daily,
     silver_universe_membership_events,
+)
+
+strategy_backfill_selection = AssetSelection.assets(
+    silver_strategy_definitions,
+    silver_strategy_runs,
+    silver_strategy_parameters,
+    gold_strategy_rankings,
+    gold_strategy_holdings,
+    gold_strategy_returns,
+    gold_strategy_performance,
 )
 
 daily_prices_job = define_asset_job(
@@ -169,6 +190,13 @@ research_daily_prices_job = define_asset_job(
     name="research_daily_prices_job",
     selection=research_prices_selection,
     partitions_def=ALPACA_PRICES_PARTITIONS,
+    executor_def=in_process_executor,
+    hooks={dagster_run_log_success, dagster_run_log_failure},
+)
+
+strategy_missing_backfill_job = define_asset_job(
+    name="strategy_missing_backfill_job",
+    selection=strategy_backfill_selection,
     executor_def=in_process_executor,
     hooks={dagster_run_log_success, dagster_run_log_failure},
 )
@@ -364,8 +392,15 @@ defs = Definitions(
         silver_alpaca_corporate_actions,
         silver_research_daily_prices,
         silver_signals_daily,
+        silver_strategy_definitions,
+        silver_strategy_runs,
+        silver_strategy_parameters,
         silver_universe_membership_events,
         silver_universe_membership_daily,
+        gold_strategy_rankings,
+        gold_strategy_holdings,
+        gold_strategy_returns,
+        gold_strategy_performance,
         gold_alpaca_prices,
         gold_activity,
         bronze_sp500_companies,
@@ -374,6 +409,7 @@ defs = Definitions(
     jobs=[
         daily_prices_job,
         research_daily_prices_job,
+        strategy_missing_backfill_job,
         prices_compaction_job,
         daily_news_job,
         monthly_factors_job,
