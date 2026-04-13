@@ -66,6 +66,9 @@ DQ checks run on successful runs and write to `observability.data_quality_checks
   - Latest Tranco snapshot schema, uniqueness, range checks.
 - `asset_status_updates_job`:
   - `silver.assets` schema, uniqueness, null-threshold checks.
+- Gold strategy holdings:
+  - `gold.strategy_holdings` uniqueness on `strategy_id` + `rebalance_date` + `symbol`.
+  - `gold.strategy_holdings` rebalance weight-sum validation.
 
 ### Status and Severity
 - Status: `PASS`, `FAIL`, `SKIPPED`, `WARN` (surfaced in dashboard issue views).

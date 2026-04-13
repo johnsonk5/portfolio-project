@@ -337,6 +337,15 @@ def test_strategy_gold_assets_build_rankings_holdings_returns_and_performance(
         """
         SELECT check_name, status, measured_value
         FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_holdings_unique_symbol_per_rebalance'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_holdings_unique_symbol_per_rebalance", "PASS", 0.0)
+
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
         WHERE check_name = 'dq_gold_strategy_holdings_weight_sum_by_rebalance'
         """
     ).fetchone()
@@ -396,6 +405,15 @@ def test_strategy_gold_assets_use_existing_upstream_run_ids_across_separate_runs
         ("run-rankings:benchmark_spy_buy_and_hold",),
         ("run-rankings:momentum_top_1",),
     ]
+
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_holdings_unique_symbol_per_rebalance'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_holdings_unique_symbol_per_rebalance", "PASS", 0.0)
 
     dq_row = obs_con.execute(
         """
@@ -532,6 +550,131 @@ def test_strategy_holdings_weight_sum_dq_check_fails_when_rebalance_weights_do_n
     details_json = str(details_row[0])
     assert '"strategy_id": "strategy_a"' in details_json
     assert '"weight_sum": 0.95' in details_json
+
+
+def test_strategy_holdings_duplicate_symbol_dq_check_fails_for_same_rebalance_symbol() -> None:
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA IF NOT EXISTS gold")
+    con.execute(
+        """
+        CREATE TABLE gold.strategy_holdings (
+            run_id VARCHAR,
+            strategy_id VARCHAR,
+            rebalance_date DATE,
+            symbol VARCHAR,
+            target_weight DOUBLE,
+            side VARCHAR,
+            entry_rank INTEGER,
+            signal_value DOUBLE,
+            asof_ts TIMESTAMP
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO gold.strategy_holdings (
+            run_id,
+            strategy_id,
+            rebalance_date,
+            symbol,
+            target_weight,
+            side,
+            entry_rank,
+            signal_value,
+            asof_ts
+        )
+        VALUES
+            (
+                'run-1:strategy_a',
+                'strategy_a',
+                '2024-01-31',
+                'AAA',
+                0.50,
+                'LONG',
+                1,
+                1.0,
+                current_timestamp
+            ),
+            (
+                'run-1:strategy_a',
+                'strategy_a',
+                '2024-01-31',
+                'AAA',
+                0.50,
+                'LONG',
+                2,
+                0.9,
+                current_timestamp
+            ),
+            (
+                'run-2:strategy_b',
+                'strategy_b',
+                '2024-01-31',
+                'BBB',
+                1.00,
+                'LONG',
+                1,
+                0.8,
+                current_timestamp
+            )
+        """
+    )
+
+    strategies = [
+        gold_strategy_module.StrategyConfig(
+            strategy_id="strategy_a",
+            benchmark_symbol="SPY",
+            target_count=2,
+            weighting_method="equal",
+            long_short_flag=False,
+            start_date=date(2024, 1, 1),
+            end_date=None,
+            config={},
+            run_id="run-1:strategy_a",
+        ),
+        gold_strategy_module.StrategyConfig(
+            strategy_id="strategy_b",
+            benchmark_symbol="SPY",
+            target_count=1,
+            weighting_method="equal",
+            long_short_flag=False,
+            start_date=date(2024, 1, 1),
+            end_date=None,
+            config={},
+            run_id="run-2:strategy_b",
+        ),
+    ]
+
+    gold_strategy_module._log_holdings_duplicate_symbol_check(
+        measured_con=con,
+        observability_con=obs_con,
+        strategies=strategies,
+        run_id="strategy-holdings-run",
+        job_name="strategy_holdings_job",
+        partition_key=None,
+    )
+
+    dq_row = obs_con.execute(
+        """
+        SELECT status, measured_value, threshold_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_holdings_unique_symbol_per_rebalance'
+        """
+    ).fetchone()
+    assert dq_row == ("FAIL", 1.0, 0.0)
+
+    details_row = obs_con.execute(
+        """
+        SELECT details_json
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_holdings_unique_symbol_per_rebalance'
+        """
+    ).fetchone()
+    assert details_row is not None
+    details_json = str(details_row[0])
+    assert '"uniqueness_scope": ["strategy_id", "rebalance_date", "symbol"]' in details_json
+    assert '"key_columns": ["run_id", "strategy_id", "rebalance_date", "symbol"]' in details_json
 
 
 def test_daily_symbol_returns_drops_non_positive_and_extreme_price_jumps() -> None:

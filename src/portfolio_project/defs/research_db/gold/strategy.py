@@ -13,6 +13,7 @@ from dagster._core.errors import DagsterInvalidPropertyError
 from portfolio_project.defs.portfolio_db.observability.observability_modules import (
     write_dq_log,
 )
+from portfolio_project.defs.research_db.dq_checks import log_duplicate_row_check
 from portfolio_project.defs.research_db.silver.research_prices import (
     RESEARCH_DAILY_PRICES_DATASET,
     silver_research_daily_prices,
@@ -776,6 +777,45 @@ def _log_holdings_weight_sum_check(
     )
 
 
+def _log_holdings_duplicate_symbol_check(
+    *,
+    measured_con,
+    observability_con,
+    strategies: list[StrategyConfig],
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> None:
+    run_ids = _current_run_ids(strategies)
+    if not run_ids:
+        return
+
+    log_duplicate_row_check(
+        measured_con=measured_con,
+        observability_con=observability_con,
+        check_name="dq_gold_strategy_holdings_unique_symbol_per_rebalance",
+        relation_sql="""
+            SELECT
+                run_id,
+                strategy_id,
+                rebalance_date,
+                symbol
+            FROM gold.strategy_holdings
+            WHERE run_id = ANY(?)
+        """,
+        relation_params=[run_ids],
+        key_columns=["run_id", "strategy_id", "rebalance_date", "symbol"],
+        details={
+            "table": "gold.strategy_holdings",
+            "run_ids": run_ids,
+            "uniqueness_scope": ["strategy_id", "rebalance_date", "symbol"],
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+
 def _load_price_history(
     con,
     *,
@@ -1186,6 +1226,14 @@ def gold_strategy_holdings(context: AssetExecutionContext) -> None:
     )
     asof_ts = _now_utc_naive()
     row_count = _materialize_holdings(con, strategies, asof_ts=asof_ts)
+    _log_holdings_duplicate_symbol_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        strategies=strategies,
+        run_id=_safe_run_id(context),
+        job_name=_safe_job_name(context),
+        partition_key=_safe_partition_key(context),
+    )
     _log_holdings_weight_sum_check(
         measured_con=con,
         observability_con=context.resources.duckdb,
