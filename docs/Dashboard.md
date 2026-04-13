@@ -134,3 +134,36 @@ All observability tables shown on this page are sourced from the portfolio DuckD
 - Asset focused table log from `observability.run_asset_log`.
 ### Job Duration Trend over last 30 days
 - Line chart showing job duration, color coded for failure or success.
+
+## The Lab (`pages/The_Lab.py`)
+
+Strategy research workspace for side-by-side comparisons built on the research DuckDB.
+
+### Controls
+- Multi-select for up to 5 strategies using `silver.strategy_definitions.strategy_name`.
+- Each selected strategy resolves to the latest materialized run in `gold.strategy_performance`.
+
+### Sections
+
+### Cumulative Returns
+- Line chart from `gold.strategy_returns.cumulative_return`.
+- One line per selected strategy.
+
+### Headline Metrics
+- Compares:
+  - `sharpe_ratio`
+  - `annualized_volatility`
+  - `alpha`
+  - `max_drawdown`
+  - benchmark beta computed from daily `portfolio_return` and `benchmark_return`
+
+### Factor Exposures
+- Joins `gold.strategy_returns.date` to `silver.vw_factors.factor_date`.
+- Estimates strategy exposures to:
+  - `MKT-RF`
+  - `SMB`
+  - `HML`
+  - `MOM`
+- Exposures are estimated with ordinary least squares on daily strategy excess returns:
+  - dependent variable: `portfolio_return - rf`
+  - regressors: `mkt_rf`, `smb`, `hml`, `mom`
