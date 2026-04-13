@@ -369,6 +369,15 @@ def test_strategy_gold_assets_build_rankings_holdings_returns_and_performance(
     ).fetchone()
     assert dq_row == ("dq_gold_strategy_holdings_expected_rebalance_dates", "PASS", 0.0)
 
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_returns_expected_return_dates'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_returns_expected_return_dates", "PASS", 0.0)
+
 
 def test_strategy_gold_assets_use_existing_upstream_run_ids_across_separate_runs(
     tmp_path: Path, monkeypatch
@@ -459,6 +468,15 @@ def test_strategy_gold_assets_use_existing_upstream_run_ids_across_separate_runs
         """
     ).fetchone()
     assert dq_row == ("dq_gold_strategy_holdings_expected_rebalance_dates", "PASS", 0.0)
+
+    dq_row = obs_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_returns_expected_return_dates'
+        """
+    ).fetchone()
+    assert dq_row == ("dq_gold_strategy_returns_expected_return_dates", "PASS", 0.0)
 
 
 def test_strategy_holdings_weight_sum_dq_check_fails_when_rebalance_weights_do_not_sum_to_one() -> (
@@ -947,6 +965,158 @@ def test_strategy_holdings_expected_rebalance_dates_dq_check_fails_for_unexpecte
     details_json = str(details_row[0])
     assert '"unexpected_rebalance_dates": ["2024-03-31"]' in details_json
     assert '"table": "gold.strategy_holdings"' in details_json
+
+
+def test_strategy_returns_expected_dates_dq_check_fails_for_missing_trading_day(
+    tmp_path: Path,
+) -> None:
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA IF NOT EXISTS gold")
+    holdings_df = pd.DataFrame(
+        [
+            {
+                "run_id": "run-1:strategy_a",
+                "strategy_id": "strategy_a",
+                "rebalance_date": "2024-01-31",
+                "symbol": "AAA",
+                "target_weight": 1.0,
+                "side": "LONG",
+                "entry_rank": 1,
+                "signal_value": 1.0,
+                "asof_ts": pd.Timestamp("2024-01-31"),
+            },
+            {
+                "run_id": "run-1:strategy_a",
+                "strategy_id": "strategy_a",
+                "rebalance_date": "2024-02-29",
+                "symbol": "AAA",
+                "target_weight": 1.0,
+                "side": "LONG",
+                "entry_rank": 1,
+                "signal_value": 1.0,
+                "asof_ts": pd.Timestamp("2024-02-29"),
+            },
+        ]
+    )
+    con.register("holdings_df", holdings_df)
+    con.execute("CREATE TABLE gold.strategy_holdings AS SELECT * FROM holdings_df")
+
+    returns_df = pd.DataFrame(
+        [
+            {
+                "run_id": "run-1:strategy_a",
+                "strategy_id": "strategy_a",
+                "date": "2024-02-01",
+                "portfolio_return": 0.01,
+                "benchmark_return": 0.0,
+                "excess_return": 0.01,
+                "cumulative_return": 0.01,
+                "drawdown": 0.0,
+                "turnover": 1.0,
+                "holdings_count": 1,
+                "asof_ts": pd.Timestamp("2024-02-01"),
+            }
+        ]
+    )
+    con.register("returns_df", returns_df)
+    con.execute("CREATE TABLE gold.strategy_returns AS SELECT * FROM returns_df")
+
+    strategies = [
+        gold_strategy_module.StrategyConfig(
+            strategy_id="strategy_a",
+            rebalance_frequency="Monthly",
+            benchmark_symbol="SPY",
+            target_count=1,
+            weighting_method="equal",
+            long_short_flag=False,
+            start_date=date(2024, 1, 1),
+            end_date=None,
+            config={},
+            run_id="run-1:strategy_a",
+        )
+    ]
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        trading_dates_df = pd.DataFrame(
+            [
+                {
+                    "trade_date": "2024-02-01",
+                    "symbol": "AAA",
+                    "close": 100.0,
+                    "adjusted_close": 100.0,
+                },
+                {
+                    "trade_date": "2024-02-02",
+                    "symbol": "AAA",
+                    "close": 101.0,
+                    "adjusted_close": 101.0,
+                },
+                {
+                    "trade_date": "2024-02-29",
+                    "symbol": "AAA",
+                    "close": 102.0,
+                    "adjusted_close": 102.0,
+                },
+                {
+                    "trade_date": "2024-03-01",
+                    "symbol": "AAA",
+                    "close": 103.0,
+                    "adjusted_close": 103.0,
+                },
+            ]
+        )
+        temp_dir = tmp_path
+        month_dir_feb = temp_dir / "silver" / "research_daily_prices" / "month=2024-02"
+        month_dir_feb.mkdir(parents=True, exist_ok=True)
+        trading_dates_df.loc[
+            trading_dates_df["trade_date"].isin(["2024-02-01", "2024-02-02"])
+        ].to_parquet(month_dir_feb / "date=2024-02-01.parquet", index=False)
+        trading_dates_df.loc[trading_dates_df["trade_date"] == "2024-02-29"].to_parquet(
+            month_dir_feb / "date=2024-02-29.parquet", index=False
+        )
+        month_dir_mar = temp_dir / "silver" / "research_daily_prices" / "month=2024-03"
+        month_dir_mar.mkdir(parents=True, exist_ok=True)
+        trading_dates_df.loc[trading_dates_df["trade_date"] == "2024-03-01"].to_parquet(
+            month_dir_mar / "date=2024-03-01.parquet", index=False
+        )
+        monkeypatch.setattr(
+            gold_strategy_module,
+            "PRICE_GLOB",
+            (
+                temp_dir / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet"
+            ).as_posix(),
+        )
+
+        gold_strategy_module._log_strategy_return_continuity_check(
+            measured_con=con,
+            observability_con=obs_con,
+            strategies=strategies,
+            run_id="strategy-returns-run",
+            job_name="strategy_returns_job",
+            partition_key=None,
+        )
+
+    dq_row = obs_con.execute(
+        """
+        SELECT status, measured_value, threshold_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_returns_expected_return_dates'
+        """
+    ).fetchone()
+    assert dq_row == ("FAIL", 2.0, 0.0)
+
+    details_row = obs_con.execute(
+        """
+        SELECT details_json
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_gold_strategy_returns_expected_return_dates'
+        """
+    ).fetchone()
+    assert details_row is not None
+    details_json = str(details_row[0])
+    assert '"missing_return_dates": ["2024-02-02", "2024-03-01"]' in details_json
+    assert '"table": "gold.strategy_returns"' in details_json
 
 
 def test_daily_symbol_returns_drops_non_positive_and_extreme_price_jumps() -> None:

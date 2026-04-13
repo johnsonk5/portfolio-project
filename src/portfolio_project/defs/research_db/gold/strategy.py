@@ -950,6 +950,25 @@ def _load_price_history(
     ).fetch_df()
 
 
+def _load_distinct_trading_dates(
+    con,
+    *,
+    start_date: date,
+    end_date: date,
+) -> list[date]:
+    rows = con.execute(
+        """
+        SELECT DISTINCT CAST(trade_date AS DATE) AS trade_date
+        FROM read_parquet(?)
+        WHERE CAST(trade_date AS DATE) >= ?
+          AND CAST(trade_date AS DATE) <= ?
+        ORDER BY trade_date
+        """,
+        [PRICE_GLOB, start_date, end_date],
+    ).fetchall()
+    return [row[0] for row in rows if row[0] is not None]
+
+
 def _daily_symbol_returns(price_df: pd.DataFrame) -> pd.DataFrame:
     if price_df.empty:
         return pd.DataFrame(columns=["trade_date", "symbol", "asset_return"])
@@ -978,6 +997,49 @@ def _next_trading_date(dates: list[date], current_date: date) -> date | None:
         if candidate > current_date:
             return candidate
     return None
+
+
+def _expected_return_dates_for_strategy(
+    con,
+    strategy: StrategyConfig,
+) -> list[date]:
+    holdings_rows = con.execute(
+        """
+        SELECT DISTINCT rebalance_date
+        FROM gold.strategy_holdings
+        WHERE run_id = ?
+        ORDER BY rebalance_date
+        """,
+        [strategy.run_id],
+    ).fetchall()
+    rebalance_dates = [
+        pd.Timestamp(row[0]).date() for row in holdings_rows if row[0] is not None
+    ]
+    if not rebalance_dates:
+        return []
+
+    trading_dates = _load_distinct_trading_dates(
+        con,
+        start_date=rebalance_dates[0],
+        end_date=strategy.end_date or date(2999, 12, 31),
+    )
+    if not trading_dates:
+        return []
+
+    expected_dates: list[date] = []
+    for index, rebalance_date in enumerate(rebalance_dates):
+        effective_start = _next_trading_date(trading_dates, rebalance_date)
+        if effective_start is None:
+            continue
+        next_rebalance = rebalance_dates[index + 1] if index + 1 < len(rebalance_dates) else None
+        period_dates = [
+            trade_date
+            for trade_date in trading_dates
+            if trade_date >= effective_start
+            and (next_rebalance is None or trade_date < next_rebalance)
+        ]
+        expected_dates.extend(period_dates)
+    return expected_dates
 
 
 def _build_returns_for_strategy(
@@ -1160,6 +1222,77 @@ def _materialize_returns(
         """
     )
     return int(len(returns_df))
+
+
+def _log_strategy_return_continuity_check(
+    *,
+    measured_con,
+    observability_con,
+    strategies: list[StrategyConfig],
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> None:
+    run_ids = _current_run_ids(strategies)
+    if not run_ids:
+        return
+
+    actual_rows = measured_con.execute(
+        """
+        SELECT strategy_id, date
+        FROM gold.strategy_returns
+        WHERE run_id = ANY(?)
+        ORDER BY strategy_id, date
+        """,
+        [run_ids],
+    ).fetchall()
+    actual_dates_by_strategy: dict[str, set[date]] = {}
+    for strategy_id, return_date in actual_rows:
+        if return_date is None:
+            continue
+        actual_dates_by_strategy.setdefault(str(strategy_id), set()).add(
+            pd.Timestamp(return_date).date()
+        )
+
+    failing_strategies: list[dict[str, Any]] = []
+    measured_value = 0.0
+    for strategy in strategies:
+        expected_dates = set(_expected_return_dates_for_strategy(measured_con, strategy))
+        actual_dates = actual_dates_by_strategy.get(strategy.strategy_id, set())
+        missing_dates = sorted(expected_dates - actual_dates)
+        unexpected_dates = sorted(actual_dates - expected_dates)
+        measured_value += float(len(missing_dates) + len(unexpected_dates))
+        if not missing_dates and not unexpected_dates:
+            continue
+        failing_strategies.append(
+            {
+                "run_id": strategy.run_id,
+                "strategy_id": strategy.strategy_id,
+                "expected_return_dates": [str(value) for value in sorted(expected_dates)],
+                "actual_return_dates": [str(value) for value in sorted(actual_dates)],
+                "missing_return_dates": [str(value) for value in missing_dates],
+                "unexpected_return_dates": [str(value) for value in unexpected_dates],
+            }
+        )
+
+    write_dq_log(
+        con=observability_con,
+        check_name="dq_gold_strategy_returns_expected_return_dates",
+        severity="RED",
+        status="PASS" if measured_value == 0.0 else "FAIL",
+        measured_value=measured_value,
+        threshold_value=0.0,
+        details={
+            "table": "gold.strategy_returns",
+            "run_ids": run_ids,
+            "evaluated_strategy_count": len(strategies),
+            "failing_strategies": failing_strategies,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
 
 
 def _annualized_return(total_return: float, periods: int) -> float | None:
@@ -1383,7 +1516,7 @@ def gold_strategy_holdings(context: AssetExecutionContext) -> None:
     name="strategy_returns",
     key_prefix=["gold"],
     deps=[gold_strategy_holdings],
-    required_resource_keys={"research_duckdb"},
+    required_resource_keys={"research_duckdb", "duckdb"},
 )
 def gold_strategy_returns(context: AssetExecutionContext) -> None:
     """
@@ -1395,7 +1528,16 @@ def gold_strategy_returns(context: AssetExecutionContext) -> None:
         context,
         source_table="strategy_holdings",
     )
-    row_count = _materialize_returns(con, strategies, asof_ts=_now_utc_naive())
+    asof_ts = _now_utc_naive()
+    row_count = _materialize_returns(con, strategies, asof_ts=asof_ts)
+    _log_strategy_return_continuity_check(
+        measured_con=con,
+        observability_con=context.resources.duckdb,
+        strategies=strategies,
+        run_id=_safe_run_id(context),
+        job_name=_safe_job_name(context),
+        partition_key=_safe_partition_key(context),
+    )
     context.add_output_metadata(
         {
             "table": "gold.strategy_returns",
