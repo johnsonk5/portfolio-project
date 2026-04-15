@@ -140,8 +140,10 @@ All observability tables shown on this page are sourced from the portfolio DuckD
 Strategy research workspace for side-by-side comparisons built on the research DuckDB.
 
 ### Controls
+- View switch between comparison and strategy detail.
 - Multi-select for up to 5 strategies using `silver.strategy_definitions.strategy_name`.
 - Each selected strategy resolves to the latest materialized run in `gold.strategy_performance`.
+- Drilldown action from the comparison view into the strategy detail view for a selected strategy.
 
 ### Sections
 
@@ -167,3 +169,15 @@ Strategy research workspace for side-by-side comparisons built on the research D
 - Exposures are estimated with ordinary least squares on daily strategy excess returns:
   - dependent variable: `portfolio_return - rf`
   - regressors: `mkt_rf`, `smb`, `hml`, `mom`
+
+### Strategy Detail
+- Single-strategy definition view sourced from `silver.strategy_definitions` and `silver.strategy_parameters`.
+- Shows:
+  - definition text
+  - universe
+  - rebalance frequency
+  - weighting method
+  - holding count
+  - signals used
+  - benchmark, selection mode, rebalance anchor, and long-short flag
+- Includes a table of active strategy parameters and their effective dates.
