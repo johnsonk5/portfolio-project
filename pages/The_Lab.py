@@ -548,21 +548,41 @@ def _build_benchmark_comparison_frame(
         }
     )
 
-    benchmark_wealth = (1.0 + frame["benchmark_return"].fillna(0.0)).cumprod()
-    benchmark_running_peak = benchmark_wealth.cummax()
-    benchmark_frame = pd.DataFrame(
-        {
-            "date": frame["date"],
-            "series_name": benchmark_label,
-            "normalized_return": benchmark_wealth - 1.0,
-            "drawdown": (benchmark_wealth / benchmark_running_peak) - 1.0,
-            "rolling_sharpe": _compute_rolling_sharpe(frame["benchmark_return"]),
-            "daily_return": frame["benchmark_return"],
-        }
-    )
+    comparison_frames = [strategy_frame]
+    benchmark_frame = frame.loc[
+        frame["benchmark_return"].notna(), ["date", "benchmark_return"]
+    ].copy()
+    if not benchmark_frame.empty:
+        benchmark_wealth = (1.0 + benchmark_frame["benchmark_return"]).cumprod()
+        benchmark_running_peak = benchmark_wealth.cummax()
+        benchmark_frame = pd.DataFrame(
+            {
+                "date": benchmark_frame["date"],
+                "series_name": benchmark_label,
+                "normalized_return": benchmark_wealth - 1.0,
+                "drawdown": (benchmark_wealth / benchmark_running_peak) - 1.0,
+                "rolling_sharpe": _compute_rolling_sharpe(benchmark_frame["benchmark_return"]),
+                "daily_return": benchmark_frame["benchmark_return"],
+            }
+        )
+        comparison_frames.append(benchmark_frame)
 
-    comparison_df = pd.concat([strategy_frame, benchmark_frame], ignore_index=True)
+    comparison_df = pd.concat(comparison_frames, ignore_index=True)
     return comparison_df.dropna(subset=["date"]).reset_index(drop=True)
+
+
+def _benchmark_data_status(returns_df: pd.DataFrame) -> tuple[str, int, int]:
+    if returns_df.empty or "benchmark_return" not in returns_df.columns:
+        return "missing", 0, 0
+
+    benchmark_returns = pd.to_numeric(returns_df["benchmark_return"], errors="coerce")
+    observed_count = int(benchmark_returns.notna().sum())
+    total_count = int(len(benchmark_returns))
+    if observed_count == 0:
+        return "missing", observed_count, total_count
+    if observed_count < total_count:
+        return "partial", observed_count, total_count
+    return "full", observed_count, total_count
 
 
 def _annualized_return_from_total_return(total_return: float | None, periods: int) -> float | None:
@@ -858,32 +878,38 @@ with tabs["compare"]:
         st.info("No strategy return paths were available for the selected runs.")
     else:
         chart_df = returns_df.dropna(subset=["cumulative_return"]).copy()
-        chart_df["cumulative_return_pct"] = chart_df["cumulative_return"] * 100.0
-        cumulative_chart = (
-            alt.Chart(chart_df)
-            .mark_line(strokeWidth=2.5)
-            .encode(
-                x=alt.X("date:T", title="Date"),
-                y=alt.Y("cumulative_return_pct:Q", title="Cumulative return (%)"),
-                color=alt.Color(
-                    "strategy_name:N",
-                    title="Strategy",
-                    scale=alt.Scale(range=COLORWAY),
-                ),
-                tooltip=[
-                    alt.Tooltip("date:T", title="Date"),
-                    alt.Tooltip("strategy_name:N", title="Strategy"),
-                    alt.Tooltip(
-                        "cumulative_return_pct:Q",
-                        title="Cumulative return (%)",
-                        format=".2f",
-                    ),
-                ],
+        if chart_df.empty:
+            st.info(
+                "Cumulative return data was unavailable for the selected runs, so the chart "
+                "could not be rendered."
             )
-            .properties(height=420)
-            .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
-        )
-        st.altair_chart(cumulative_chart, use_container_width=True)
+        else:
+            chart_df["cumulative_return_pct"] = chart_df["cumulative_return"] * 100.0
+            cumulative_chart = (
+                alt.Chart(chart_df)
+                .mark_line(strokeWidth=2.5)
+                .encode(
+                    x=alt.X("date:T", title="Date"),
+                    y=alt.Y("cumulative_return_pct:Q", title="Cumulative return (%)"),
+                    color=alt.Color(
+                        "strategy_name:N",
+                        title="Strategy",
+                        scale=alt.Scale(range=COLORWAY),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("date:T", title="Date"),
+                        alt.Tooltip("strategy_name:N", title="Strategy"),
+                        alt.Tooltip(
+                            "cumulative_return_pct:Q",
+                            title="Cumulative return (%)",
+                            format=".2f",
+                        ),
+                    ],
+                )
+                .properties(height=420)
+                .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
+            )
+            st.altair_chart(cumulative_chart, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
     metrics_col, exposures_col = st.columns([1.15, 1], gap="large")
@@ -1218,6 +1244,9 @@ with tabs["detail"]:
     else:
         detail_returns_df = detail_returns_df.copy()
         detail_returns_df["date"] = pd.to_datetime(detail_returns_df["date"])
+        benchmark_status, benchmark_observations, total_observations = _benchmark_data_status(
+            detail_returns_df
+        )
 
         detail_performance_row = detail_performance_df.iloc[0]
         detail_snapshot_ts = detail_performance_row.get("asof_ts")
@@ -1229,173 +1258,208 @@ with tabs["detail"]:
                 unsafe_allow_html=True,
             )
 
-        comparison_df = _build_benchmark_comparison_frame(
-            detail_returns_df,
-            strategy_name=str(definition_row["strategy_name"]),
-            benchmark_label=benchmark_label,
-        )
-
-        if comparison_df.empty:
-            st.info("The latest run did not include enough return history to build the comparison.")
+        if benchmark_status == "missing":
+            st.info(
+                "Benchmark comparison charts are unavailable for the latest run because the "
+                "benchmark return series is missing."
+            )
         else:
-            comparison_df["normalized_return_pct"] = comparison_df["normalized_return"] * 100.0
-            comparison_df["drawdown_pct"] = comparison_df["drawdown"] * 100.0
+            if benchmark_status == "partial":
+                st.info(
+                    "Benchmark return history is incomplete for the latest run. Comparison "
+                    f"charts below use {benchmark_observations:,} of {total_observations:,} "
+                    "available benchmark observations."
+                )
 
-            summary_table = _build_benchmark_summary_table(
-                comparison_df,
+            comparison_df = _build_benchmark_comparison_frame(
+                detail_returns_df,
                 strategy_name=str(definition_row["strategy_name"]),
                 benchmark_label=benchmark_label,
             )
 
-            strategy_summary = (
-                summary_table[str(definition_row["strategy_name"])]
-                if not summary_table.empty
-                else pd.Series(dtype=float)
-            )
-            benchmark_summary = (
-                summary_table[benchmark_label]
-                if not summary_table.empty
-                else pd.Series(dtype=float)
-            )
-            total_return_delta = None
-            if (
-                not strategy_summary.empty
-                and not benchmark_summary.empty
-                and pd.notna(strategy_summary.get("Total Return"))
-                and pd.notna(benchmark_summary.get("Total Return"))
-            ):
-                total_return_delta = (
-                    float(strategy_summary["Total Return"])
-                    - float(benchmark_summary["Total Return"])
+            if comparison_df.empty:
+                st.info(
+                    "The latest run did not include enough return history to build the comparison."
                 )
-            sharpe_delta = None
-            if (
-                not strategy_summary.empty
-                and not benchmark_summary.empty
-                and pd.notna(strategy_summary.get("Sharpe"))
-                and pd.notna(benchmark_summary.get("Sharpe"))
-            ):
-                sharpe_delta = float(strategy_summary["Sharpe"]) - float(
-                    benchmark_summary["Sharpe"]
-                )
-
-            st.markdown(
-                '<div class="section-title" style="margin-top: 4px;">Quick Read</div>',
-                unsafe_allow_html=True,
-            )
-            quick_read_cols = st.columns(3, gap="medium")
-            with quick_read_cols[0]:
-                st.metric(
-                    "Return Spread",
-                    _format_comparison_metric("Total Return", total_return_delta),
-                    f"vs {benchmark_symbol}",
-                )
-            with quick_read_cols[1]:
-                st.metric(
-                    "Sharpe Spread",
-                    _format_comparison_metric("Sharpe", sharpe_delta),
-                    "rolling window: 63d chart below",
-                )
-            with quick_read_cols[2]:
-                st.metric(
-                    "Observations",
-                    f"{len(detail_returns_df):,}",
-                    "daily return rows in latest run",
-                )
-
-            st.markdown(
-                '<div class="section-title" style="margin-top: 18px;">Summary Metrics</div>',
-                unsafe_allow_html=True,
-            )
-            if summary_table.empty:
-                st.info("Summary metrics were unavailable for the latest run.")
             else:
-                formatted_summary = summary_table.copy()
-                for row_label in formatted_summary.index:
-                    formatted_summary.loc[row_label] = formatted_summary.loc[row_label].map(
-                        lambda value, row=row_label: _format_comparison_metric(row, value)
+                comparison_df["normalized_return_pct"] = (
+                    comparison_df["normalized_return"] * 100.0
+                )
+                comparison_df["drawdown_pct"] = comparison_df["drawdown"] * 100.0
+
+                summary_table = _build_benchmark_summary_table(
+                    comparison_df,
+                    strategy_name=str(definition_row["strategy_name"]),
+                    benchmark_label=benchmark_label,
+                )
+
+                strategy_summary = (
+                    summary_table[str(definition_row["strategy_name"])]
+                    if not summary_table.empty
+                    else pd.Series(dtype=float)
+                )
+                benchmark_summary = (
+                    summary_table[benchmark_label]
+                    if not summary_table.empty
+                    else pd.Series(dtype=float)
+                )
+                total_return_delta = None
+                if (
+                    not strategy_summary.empty
+                    and not benchmark_summary.empty
+                    and pd.notna(strategy_summary.get("Total Return"))
+                    and pd.notna(benchmark_summary.get("Total Return"))
+                ):
+                    total_return_delta = (
+                        float(strategy_summary["Total Return"])
+                        - float(benchmark_summary["Total Return"])
                     )
-                st.dataframe(formatted_summary, use_container_width=True)
+                sharpe_delta = None
+                if (
+                    not strategy_summary.empty
+                    and not benchmark_summary.empty
+                    and pd.notna(strategy_summary.get("Sharpe"))
+                    and pd.notna(benchmark_summary.get("Sharpe"))
+                ):
+                    sharpe_delta = float(strategy_summary["Sharpe"]) - float(
+                        benchmark_summary["Sharpe"]
+                    )
 
-            st.markdown(
-                (
-                    '<div class="section-title" style="margin-top: 18px;">'
-                    "Normalized Cumulative Returns</div>"
-                ),
-                unsafe_allow_html=True,
-            )
-            series_domain = [str(definition_row["strategy_name"]), benchmark_label]
-            series_scale = alt.Scale(domain=series_domain, range=COLORWAY[:2])
-            color_encoding = alt.Color(
-                "series_name:N",
-                title="Series",
-                scale=series_scale,
-                sort=series_domain,
-            )
-            shared_color_no_legend = alt.Color(
-                "series_name:N",
-                title="Series",
-                scale=series_scale,
-                sort=series_domain,
-                legend=None,
-            )
-            stroke_dash_encoding = alt.StrokeDash(
-                "series_name:N",
-                sort=series_domain,
-                scale=alt.Scale(domain=series_domain, range=[[1, 0], [6, 4]]),
-                legend=None,
-            )
-            cumulative_chart = (
-                alt.Chart(comparison_df)
-                .mark_line(strokeWidth=2.5)
-                .encode(
-                    x=alt.X("date:T", title="Date"),
-                    y=alt.Y("normalized_return_pct:Q", title="Return from start (%)"),
-                    color=color_encoding,
-                    strokeDash=stroke_dash_encoding,
-                    detail="series_name:N",
-                    tooltip=[
-                        alt.Tooltip("date:T", title="Date"),
-                        alt.Tooltip("series_name:N", title="Series"),
-                        alt.Tooltip(
-                            "normalized_return_pct:Q",
-                            title="Return from start (%)",
-                            format=".2f",
-                        ),
-                    ],
+                st.markdown(
+                    '<div class="section-title" style="margin-top: 4px;">Quick Read</div>',
+                    unsafe_allow_html=True,
                 )
-                .properties(height=340)
-                .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
-                .configure_legend(
-                    orient="top",
-                    direction="horizontal",
-                    titleColor="#b6c2e2",
-                    labelColor="#f4f7ff",
-                )
-            )
-            st.altair_chart(cumulative_chart, use_container_width=True)
+                quick_read_cols = st.columns(3, gap="medium")
+                with quick_read_cols[0]:
+                    st.metric(
+                        "Return Spread",
+                        _format_comparison_metric("Total Return", total_return_delta),
+                        f"vs {benchmark_symbol}",
+                    )
+                with quick_read_cols[1]:
+                    st.metric(
+                        "Sharpe Spread",
+                        _format_comparison_metric("Sharpe", sharpe_delta),
+                        "rolling window: 63d chart below",
+                    )
+                with quick_read_cols[2]:
+                    st.metric(
+                        "Observations",
+                        f"{len(detail_returns_df):,}",
+                        "daily return rows in latest run",
+                    )
 
-            lower_chart_left, lower_chart_right = st.columns(2, gap="large")
-            drawdown_chart = (
-                alt.Chart(comparison_df.dropna(subset=["drawdown_pct"]))
-                .mark_line(strokeWidth=2.3)
-                .encode(
-                    x=alt.X("date:T", title="Date"),
-                    y=alt.Y("drawdown_pct:Q", title="Drawdown (%)"),
-                    color=shared_color_no_legend,
-                    strokeDash=stroke_dash_encoding,
-                    detail="series_name:N",
-                    tooltip=[
-                        alt.Tooltip("date:T", title="Date"),
-                        alt.Tooltip("series_name:N", title="Series"),
-                        alt.Tooltip("drawdown_pct:Q", title="Drawdown (%)", format=".2f"),
-                    ],
+                st.markdown(
+                    '<div class="section-title" style="margin-top: 18px;">Summary Metrics</div>',
+                    unsafe_allow_html=True,
                 )
-                .properties(height=280, title="Drawdown")
-                .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
-            )
-            with lower_chart_left:
-                st.altair_chart(drawdown_chart, use_container_width=True)
+                if summary_table.empty:
+                    st.info("Summary metrics were unavailable for the latest run.")
+                else:
+                    formatted_summary = summary_table.copy()
+                    for row_label in formatted_summary.index:
+                        formatted_summary.loc[row_label] = formatted_summary.loc[
+                            row_label
+                        ].map(lambda value, row=row_label: _format_comparison_metric(row, value))
+                    st.dataframe(formatted_summary, use_container_width=True)
+
+                st.markdown(
+                    (
+                        '<div class="section-title" style="margin-top: 18px;">'
+                        "Normalized Cumulative Returns</div>"
+                    ),
+                    unsafe_allow_html=True,
+                )
+                series_domain = (
+                    comparison_df["series_name"]
+                    .dropna()
+                    .astype(str)
+                    .drop_duplicates()
+                    .tolist()
+                )
+                series_scale = alt.Scale(domain=series_domain, range=COLORWAY[:2])
+                color_encoding = alt.Color(
+                    "series_name:N",
+                    title="Series",
+                    scale=series_scale,
+                    sort=series_domain,
+                )
+                shared_color_no_legend = alt.Color(
+                    "series_name:N",
+                    title="Series",
+                    scale=series_scale,
+                    sort=series_domain,
+                    legend=None,
+                )
+                stroke_dash_encoding = alt.StrokeDash(
+                    "series_name:N",
+                    sort=series_domain,
+                    scale=alt.Scale(domain=series_domain, range=[[1, 0], [6, 4]]),
+                    legend=None,
+                )
+                cumulative_chart_df = comparison_df.dropna(subset=["normalized_return_pct"])
+                if cumulative_chart_df.empty:
+                    st.info("Normalized cumulative return data was unavailable for the latest run.")
+                else:
+                    cumulative_chart = (
+                        alt.Chart(cumulative_chart_df)
+                        .mark_line(strokeWidth=2.5)
+                        .encode(
+                            x=alt.X("date:T", title="Date"),
+                            y=alt.Y("normalized_return_pct:Q", title="Return from start (%)"),
+                            color=color_encoding,
+                            strokeDash=stroke_dash_encoding,
+                            detail="series_name:N",
+                            tooltip=[
+                                alt.Tooltip("date:T", title="Date"),
+                                alt.Tooltip("series_name:N", title="Series"),
+                                alt.Tooltip(
+                                    "normalized_return_pct:Q",
+                                    title="Return from start (%)",
+                                    format=".2f",
+                                ),
+                            ],
+                        )
+                        .properties(height=340)
+                        .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
+                        .configure_legend(
+                            orient="top",
+                            direction="horizontal",
+                            titleColor="#b6c2e2",
+                            labelColor="#f4f7ff",
+                        )
+                    )
+                    st.altair_chart(cumulative_chart, use_container_width=True)
+
+                lower_chart_left, lower_chart_right = st.columns(2, gap="large")
+                drawdown_chart_df = comparison_df.dropna(subset=["drawdown_pct"])
+                with lower_chart_left:
+                    if drawdown_chart_df.empty:
+                        st.info("Drawdown data was unavailable for the latest run.")
+                    else:
+                        drawdown_chart = (
+                            alt.Chart(drawdown_chart_df)
+                            .mark_line(strokeWidth=2.3)
+                            .encode(
+                                x=alt.X("date:T", title="Date"),
+                                y=alt.Y("drawdown_pct:Q", title="Drawdown (%)"),
+                                color=shared_color_no_legend,
+                                strokeDash=stroke_dash_encoding,
+                                detail="series_name:N",
+                                tooltip=[
+                                    alt.Tooltip("date:T", title="Date"),
+                                    alt.Tooltip("series_name:N", title="Series"),
+                                    alt.Tooltip(
+                                        "drawdown_pct:Q",
+                                        title="Drawdown (%)",
+                                        format=".2f",
+                                    ),
+                                ],
+                            )
+                            .properties(height=280, title="Drawdown")
+                            .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
+                        )
+                        st.altair_chart(drawdown_chart, use_container_width=True)
 
             rolling_sharpe_df = comparison_df.dropna(subset=["rolling_sharpe"])
             if rolling_sharpe_df.empty:
