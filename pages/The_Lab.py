@@ -155,13 +155,21 @@ def _load_strategy_catalog() -> tuple[pd.DataFrame, str | None]:
 @st.cache_data(show_spinner=False)
 def _load_strategy_detail_payload(
     strategy_id: str,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, str | None]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, str | None]:
     if not strategy_id:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), None
+        return (
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            None,
+        )
 
     db_path = _resolve_research_duckdb_path()
     if not db_path.exists():
         return (
+            pd.DataFrame(),
             pd.DataFrame(),
             pd.DataFrame(),
             pd.DataFrame(),
@@ -261,8 +269,29 @@ def _load_strategy_detail_payload(
             ).fetch_df()
         else:
             returns_df = pd.DataFrame()
+
+        if run_ids:
+            holdings_df = con.execute(
+                """
+                SELECT
+                    h.strategy_id,
+                    h.rebalance_date,
+                    h.symbol,
+                    h.target_weight,
+                    h.entry_rank,
+                    h.signal_value
+                FROM gold.strategy_holdings AS h
+                WHERE h.strategy_id = ?
+                  AND h.run_id = ANY(?)
+                ORDER BY h.rebalance_date DESC, h.entry_rank, h.symbol
+                """,
+                [strategy_id, run_ids],
+            ).fetch_df()
+        else:
+            holdings_df = pd.DataFrame()
     except Exception as exc:
         return (
+            pd.DataFrame(),
             pd.DataFrame(),
             pd.DataFrame(),
             pd.DataFrame(),
@@ -272,7 +301,7 @@ def _load_strategy_detail_payload(
     finally:
         con.close()
 
-    return definition_df, parameters_df, performance_df, returns_df, None
+    return definition_df, parameters_df, performance_df, returns_df, holdings_df, None
 
 
 @st.cache_data(show_spinner=False)
@@ -973,9 +1002,14 @@ with tabs["detail"]:
         _set_lab_query_params("detail", selected_detail_strategy_id)
         st.rerun()
 
-    definition_df, parameters_df, detail_performance_df, detail_returns_df, detail_error = (
-        _load_strategy_detail_payload(selected_detail_strategy_id)
-    )
+    (
+        definition_df,
+        parameters_df,
+        detail_performance_df,
+        detail_returns_df,
+        detail_holdings_df,
+        detail_error,
+    ) = _load_strategy_detail_payload(selected_detail_strategy_id)
     if detail_error:
         st.info(detail_error)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -1062,6 +1096,83 @@ with tabs["detail"]:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-title">Strategy Holdings</div>',
+        unsafe_allow_html=True,
+    )
+    if detail_holdings_df.empty:
+        st.info(
+            "No materialized holdings snapshot was found for this strategy yet. "
+            "Run the research strategy assets to unlock holdings detail."
+        )
+    else:
+        detail_holdings_df = detail_holdings_df.copy()
+        detail_holdings_df["rebalance_date"] = pd.to_datetime(
+            detail_holdings_df["rebalance_date"]
+        )
+        holdings_by_rebalance = (
+            detail_holdings_df.groupby("rebalance_date", dropna=False)
+            .agg(holdings_count=("symbol", "size"))
+            .reset_index()
+            .sort_values("rebalance_date", ascending=False)
+        )
+        rebalance_options = holdings_by_rebalance["rebalance_date"].tolist()
+        default_rebalance = None
+        preferred_rebalances = holdings_by_rebalance.loc[
+            holdings_by_rebalance["holdings_count"] > 1, "rebalance_date"
+        ]
+        if not preferred_rebalances.empty:
+            default_rebalance = preferred_rebalances.iloc[0]
+        elif rebalance_options:
+            default_rebalance = rebalance_options[0]
+
+        selected_rebalance = st.selectbox(
+            "Holdings rebalance date",
+            options=rebalance_options,
+            index=(
+                rebalance_options.index(default_rebalance)
+                if default_rebalance in rebalance_options
+                else 0
+            ),
+            format_func=lambda value: pd.to_datetime(value).strftime("%B %d, %Y"),
+            key=f"holdings_rebalance_{selected_detail_strategy_id}",
+            help="Choose which rebalance snapshot to inspect for the selected strategy.",
+        )
+        selected_holdings_df = detail_holdings_df.loc[
+            detail_holdings_df["rebalance_date"] == selected_rebalance
+        ].copy()
+        selected_rebalance_count = len(selected_holdings_df)
+
+        st.markdown(
+            f'<div class="metric-pill" style="margin-bottom: 14px;">'
+            f"Showing {selected_rebalance_count} holdings for "
+            f"{pd.to_datetime(selected_rebalance).strftime('%B %d, %Y')}</div>",
+            unsafe_allow_html=True,
+        )
+
+        selected_holdings_df["weight_pct"] = selected_holdings_df["target_weight"] * 100.0
+        holdings_display = selected_holdings_df.rename(
+            columns={
+                "symbol": "Symbol",
+                "weight_pct": "Weight",
+                "entry_rank": "Rank",
+                "signal_value": "Signal Score",
+            }
+        )[["Symbol", "Weight", "Rank", "Signal Score"]]
+
+        st.dataframe(
+            holdings_display,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Weight": st.column_config.NumberColumn(format="%.2f%%"),
+                "Rank": st.column_config.NumberColumn(format="%d"),
+                "Signal Score": st.column_config.NumberColumn(format="%.4f"),
+            },
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
     parameter_cols = [
         "parameter_name",
         "parameter_value",
@@ -1142,7 +1253,9 @@ with tabs["detail"]:
                 else pd.Series(dtype=float)
             )
             benchmark_summary = (
-                summary_table[benchmark_label] if not summary_table.empty else pd.Series(dtype=float)
+                summary_table[benchmark_label]
+                if not summary_table.empty
+                else pd.Series(dtype=float)
             )
             total_return_delta = None
             if (
@@ -1152,7 +1265,8 @@ with tabs["detail"]:
                 and pd.notna(benchmark_summary.get("Total Return"))
             ):
                 total_return_delta = (
-                    float(strategy_summary["Total Return"]) - float(benchmark_summary["Total Return"])
+                    float(strategy_summary["Total Return"])
+                    - float(benchmark_summary["Total Return"])
                 )
             sharpe_delta = None
             if (
@@ -1204,7 +1318,10 @@ with tabs["detail"]:
                 st.dataframe(formatted_summary, use_container_width=True)
 
             st.markdown(
-                '<div class="section-title" style="margin-top: 18px;">Normalized Cumulative Returns</div>',
+                (
+                    '<div class="section-title" style="margin-top: 18px;">'
+                    "Normalized Cumulative Returns</div>"
+                ),
                 unsafe_allow_html=True,
             )
             series_domain = [str(definition_row["strategy_name"]), benchmark_label]
