@@ -117,6 +117,13 @@ def _resolve_research_duckdb_path() -> Path:
     return data_root / "duckdb" / "research.duckdb"
 
 
+def _resolve_research_prices_glob() -> str:
+    data_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
+    return (
+        data_root / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet"
+    ).as_posix()
+
+
 @st.cache_data(show_spinner=False)
 def _load_strategy_catalog() -> tuple[pd.DataFrame, str | None]:
     db_path = _resolve_research_duckdb_path()
@@ -260,6 +267,7 @@ def _load_strategy_detail_payload(
                     benchmark_return,
                     cumulative_return,
                     drawdown,
+                    turnover,
                     holdings_count
                 FROM gold.strategy_returns
                 WHERE run_id = ANY(?)
@@ -645,6 +653,575 @@ def _format_comparison_metric(row_label: str, value: object) -> str:
     if row_label in {"Total Return", "CAGR", "Volatility", "Max Drawdown"}:
         return f"{numeric * 100.0:.2f}%"
     return f"{numeric:.2f}"
+
+
+def _render_strategy_benchmark_section(
+    *,
+    strategy_name: str,
+    benchmark_symbol: str,
+    detail_performance_df: pd.DataFrame,
+    detail_returns_df: pd.DataFrame,
+) -> None:
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-title">Benchmark Comparison</div>',
+        unsafe_allow_html=True,
+    )
+    benchmark_label = f"Buy & Hold {benchmark_symbol}"
+
+    if detail_performance_df.empty or detail_returns_df.empty:
+        st.info(
+            "No materialized strategy performance run was found for this strategy yet. "
+            "Run the research strategy assets to unlock benchmark comparisons."
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    detail_returns_df = detail_returns_df.copy()
+    detail_returns_df["date"] = pd.to_datetime(detail_returns_df["date"])
+    benchmark_status, benchmark_observations, total_observations = _benchmark_data_status(
+        detail_returns_df
+    )
+
+    detail_performance_row = detail_performance_df.iloc[0]
+    detail_snapshot_ts = detail_performance_row.get("asof_ts")
+    if pd.notna(detail_snapshot_ts):
+        snapshot_label = pd.to_datetime(detail_snapshot_ts).strftime("%B %d, %Y %H:%M")
+        st.markdown(
+            f'<div class="metric-pill" style="margin-bottom: 14px;">'
+            f"Latest benchmark comparison snapshot: {snapshot_label}</div>",
+            unsafe_allow_html=True,
+        )
+
+    if benchmark_status == "missing":
+        st.info(
+            "Benchmark comparison charts are unavailable for the latest run because the "
+            "benchmark return series is missing."
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    if benchmark_status == "partial":
+        st.info(
+            "Benchmark return history is incomplete for the latest run. Comparison "
+            f"charts below use {benchmark_observations:,} of {total_observations:,} "
+            "available benchmark observations."
+        )
+
+    comparison_df = _build_benchmark_comparison_frame(
+        detail_returns_df,
+        strategy_name=strategy_name,
+        benchmark_label=benchmark_label,
+    )
+
+    if comparison_df.empty:
+        st.info("The latest run did not include enough return history to build the comparison.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    comparison_df["normalized_return_pct"] = comparison_df["normalized_return"] * 100.0
+    comparison_df["drawdown_pct"] = comparison_df["drawdown"] * 100.0
+
+    summary_table = _build_benchmark_summary_table(
+        comparison_df,
+        strategy_name=strategy_name,
+        benchmark_label=benchmark_label,
+    )
+
+    strategy_summary = (
+        summary_table[strategy_name] if not summary_table.empty else pd.Series(dtype=float)
+    )
+    benchmark_summary = (
+        summary_table[benchmark_label] if not summary_table.empty else pd.Series(dtype=float)
+    )
+    total_return_delta = None
+    if (
+        not strategy_summary.empty
+        and not benchmark_summary.empty
+        and pd.notna(strategy_summary.get("Total Return"))
+        and pd.notna(benchmark_summary.get("Total Return"))
+    ):
+        total_return_delta = float(strategy_summary["Total Return"]) - float(
+            benchmark_summary["Total Return"]
+        )
+    sharpe_delta = None
+    if (
+        not strategy_summary.empty
+        and not benchmark_summary.empty
+        and pd.notna(strategy_summary.get("Sharpe"))
+        and pd.notna(benchmark_summary.get("Sharpe"))
+    ):
+        sharpe_delta = float(strategy_summary["Sharpe"]) - float(
+            benchmark_summary["Sharpe"]
+        )
+
+    st.markdown(
+        '<div class="section-title" style="margin-top: 4px;">Quick Read</div>',
+        unsafe_allow_html=True,
+    )
+    quick_read_cols = st.columns(3, gap="medium")
+    with quick_read_cols[0]:
+        st.metric(
+            "Return Spread",
+            _format_comparison_metric("Total Return", total_return_delta),
+            f"vs {benchmark_symbol}",
+        )
+    with quick_read_cols[1]:
+        st.metric(
+            "Sharpe Spread",
+            _format_comparison_metric("Sharpe", sharpe_delta),
+            "rolling window: 63d chart below",
+        )
+    with quick_read_cols[2]:
+        st.metric(
+            "Observations",
+            f"{len(detail_returns_df):,}",
+            "daily return rows in latest run",
+        )
+
+    st.markdown(
+        '<div class="section-title" style="margin-top: 18px;">Summary Metrics</div>',
+        unsafe_allow_html=True,
+    )
+    if summary_table.empty:
+        st.info("Summary metrics were unavailable for the latest run.")
+    else:
+        formatted_summary = summary_table.copy()
+        for row_label in formatted_summary.index:
+            formatted_summary.loc[row_label] = formatted_summary.loc[row_label].map(
+                lambda value, row=row_label: _format_comparison_metric(row, value)
+            )
+        st.dataframe(formatted_summary, use_container_width=True)
+
+    st.markdown(
+        (
+            '<div class="section-title" style="margin-top: 18px;">'
+            "Normalized Cumulative Returns</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    series_domain = comparison_df["series_name"].dropna().astype(str).drop_duplicates().tolist()
+    series_scale = alt.Scale(domain=series_domain, range=COLORWAY[:2])
+    color_encoding = alt.Color(
+        "series_name:N",
+        title="Series",
+        scale=series_scale,
+        sort=series_domain,
+    )
+    shared_color_no_legend = alt.Color(
+        "series_name:N",
+        title="Series",
+        scale=series_scale,
+        sort=series_domain,
+        legend=None,
+    )
+    stroke_dash_encoding = alt.StrokeDash(
+        "series_name:N",
+        sort=series_domain,
+        scale=alt.Scale(domain=series_domain, range=[[1, 0], [6, 4]]),
+        legend=None,
+    )
+    cumulative_chart_df = comparison_df.dropna(subset=["normalized_return_pct"])
+    if cumulative_chart_df.empty:
+        st.info("Normalized cumulative return data was unavailable for the latest run.")
+    else:
+        cumulative_chart = (
+            alt.Chart(cumulative_chart_df)
+            .mark_line(strokeWidth=2.5)
+            .encode(
+                x=alt.X("date:T", title="Date"),
+                y=alt.Y("normalized_return_pct:Q", title="Return from start (%)"),
+                color=color_encoding,
+                strokeDash=stroke_dash_encoding,
+                detail="series_name:N",
+                tooltip=[
+                    alt.Tooltip("date:T", title="Date"),
+                    alt.Tooltip("series_name:N", title="Series"),
+                    alt.Tooltip(
+                        "normalized_return_pct:Q",
+                        title="Return from start (%)",
+                        format=".2f",
+                    ),
+                ],
+            )
+            .properties(height=340)
+            .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
+            .configure_legend(
+                orient="top",
+                direction="horizontal",
+                titleColor="#b6c2e2",
+                labelColor="#f4f7ff",
+            )
+        )
+        st.altair_chart(cumulative_chart, use_container_width=True)
+
+    lower_chart_left, lower_chart_right = st.columns(2, gap="large")
+    drawdown_chart_df = comparison_df.dropna(subset=["drawdown_pct"])
+    with lower_chart_left:
+        if drawdown_chart_df.empty:
+            st.info("Drawdown data was unavailable for the latest run.")
+        else:
+            drawdown_chart = (
+                alt.Chart(drawdown_chart_df)
+                .mark_line(strokeWidth=2.3)
+                .encode(
+                    x=alt.X("date:T", title="Date"),
+                    y=alt.Y("drawdown_pct:Q", title="Drawdown (%)"),
+                    color=shared_color_no_legend,
+                    strokeDash=stroke_dash_encoding,
+                    detail="series_name:N",
+                    tooltip=[
+                        alt.Tooltip("date:T", title="Date"),
+                        alt.Tooltip("series_name:N", title="Series"),
+                        alt.Tooltip("drawdown_pct:Q", title="Drawdown (%)", format=".2f"),
+                    ],
+                )
+                .properties(height=280, title="Drawdown")
+                .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
+            )
+            st.altair_chart(drawdown_chart, use_container_width=True)
+
+    rolling_sharpe_df = comparison_df.dropna(subset=["rolling_sharpe"])
+    if rolling_sharpe_df.empty:
+        with lower_chart_right:
+            st.info("Rolling Sharpe requires at least 21 observations in the latest run.")
+    else:
+        rolling_sharpe_chart = (
+            alt.Chart(rolling_sharpe_df)
+            .mark_line(strokeWidth=2.3)
+            .encode(
+                x=alt.X("date:T", title="Date"),
+                y=alt.Y("rolling_sharpe:Q", title="Sharpe ratio"),
+                color=shared_color_no_legend,
+                strokeDash=stroke_dash_encoding,
+                detail="series_name:N",
+                tooltip=[
+                    alt.Tooltip("date:T", title="Date"),
+                    alt.Tooltip("series_name:N", title="Series"),
+                    alt.Tooltip("rolling_sharpe:Q", title="Rolling Sharpe", format=".2f"),
+                ],
+            )
+            .properties(height=280, title="Rolling Sharpe")
+            .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
+        )
+        with lower_chart_right:
+            st.altair_chart(rolling_sharpe_chart, use_container_width=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _compute_holdings_rebalance_metrics(holdings_df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "rebalance_date",
+        "holdings_count",
+        "turnover",
+        "overlap_prev",
+        "names_changed",
+        "added_count",
+        "removed_count",
+    ]
+    if holdings_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    detail = holdings_df.copy()
+    detail["rebalance_date"] = pd.to_datetime(detail["rebalance_date"])
+    detail["target_weight"] = pd.to_numeric(detail["target_weight"], errors="coerce")
+    detail["signal_value"] = pd.to_numeric(detail["signal_value"], errors="coerce")
+    rebalances = sorted(detail["rebalance_date"].dropna().unique().tolist())
+
+    rows: list[dict[str, object]] = []
+    previous_frame = None
+    for rebalance_date in rebalances:
+        current_frame = detail.loc[detail["rebalance_date"] == rebalance_date].copy()
+        current_weights = current_frame.set_index("symbol")["target_weight"].to_dict()
+        current_symbols = set(current_weights)
+
+        turnover = None
+        overlap_prev = None
+        added_count = None
+        removed_count = None
+        names_changed = None
+        if previous_frame is not None:
+            previous_weights = previous_frame.set_index("symbol")["target_weight"].to_dict()
+            previous_symbols = set(previous_weights)
+            union_symbols = current_symbols | previous_symbols
+            turnover = 0.5 * sum(
+                abs(
+                    float(current_weights.get(symbol, 0.0))
+                    - float(previous_weights.get(symbol, 0.0))
+                )
+                for symbol in union_symbols
+            )
+            intersection_count = len(current_symbols & previous_symbols)
+            overlap_prev = (
+                intersection_count / len(previous_symbols) if previous_symbols else None
+            )
+            added_count = len(current_symbols - previous_symbols)
+            removed_count = len(previous_symbols - current_symbols)
+            names_changed = (added_count or 0) + (removed_count or 0)
+
+        rows.append(
+            {
+                "rebalance_date": rebalance_date,
+                "holdings_count": int(len(current_frame)),
+                "turnover": turnover,
+                "overlap_prev": overlap_prev,
+                "names_changed": names_changed,
+                "added_count": added_count,
+                "removed_count": removed_count,
+            }
+        )
+        previous_frame = current_frame
+
+    return pd.DataFrame(rows)
+
+
+def _compute_average_holding_period_rebalances(holdings_df: pd.DataFrame) -> float | None:
+    if holdings_df.empty:
+        return None
+
+    detail = holdings_df.copy()
+    detail["rebalance_date"] = pd.to_datetime(detail["rebalance_date"])
+    rebalances = sorted(detail["rebalance_date"].dropna().unique().tolist())
+    rebalance_lookup = {rebalance_date: idx for idx, rebalance_date in enumerate(rebalances)}
+    streak_lengths: list[int] = []
+
+    for _, symbol_frame in detail.groupby("symbol", sort=False):
+        indices = sorted(
+            {
+                rebalance_lookup[rebalance_date]
+                for rebalance_date in pd.to_datetime(symbol_frame["rebalance_date"]).tolist()
+                if rebalance_date in rebalance_lookup
+            }
+        )
+        if not indices:
+            continue
+        streak_length = 1
+        for current_idx, previous_idx in zip(indices[1:], indices[:-1], strict=False):
+            if current_idx == previous_idx + 1:
+                streak_length += 1
+            else:
+                streak_lengths.append(streak_length)
+                streak_length = 1
+        streak_lengths.append(streak_length)
+
+    if not streak_lengths:
+        return None
+    return float(np.mean(streak_lengths))
+
+
+def _compute_rebalance_changes(
+    holdings_df: pd.DataFrame,
+    rebalance_date: pd.Timestamp | None = None,
+) -> tuple[pd.Timestamp | None, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if holdings_df.empty:
+        empty = pd.DataFrame()
+        return None, empty, empty, empty
+
+    detail = holdings_df.copy()
+    detail["rebalance_date"] = pd.to_datetime(detail["rebalance_date"])
+    rebalances = sorted(detail["rebalance_date"].dropna().unique().tolist())
+    target_rebalance = (
+        pd.to_datetime(rebalance_date) if rebalance_date is not None else rebalances[-1]
+    )
+    if target_rebalance not in rebalances:
+        empty = pd.DataFrame()
+        return None, empty, empty, empty
+    latest_rebalance = target_rebalance
+    latest_frame = detail.loc[detail["rebalance_date"] == latest_rebalance].copy()
+    if len(rebalances) < 2:
+        empty = pd.DataFrame()
+        return latest_rebalance, latest_frame, empty, empty
+
+    target_index = rebalances.index(latest_rebalance)
+    if target_index == 0:
+        empty = pd.DataFrame()
+        return latest_rebalance, latest_frame, empty, empty
+    previous_rebalance = rebalances[target_index - 1]
+    previous_frame = detail.loc[detail["rebalance_date"] == previous_rebalance].copy()
+
+    latest_symbols = set(latest_frame["symbol"])
+    previous_symbols = set(previous_frame["symbol"])
+
+    added_df = latest_frame.loc[
+        latest_frame["symbol"].isin(latest_symbols - previous_symbols)
+    ].copy()
+    removed_df = previous_frame.loc[
+        previous_frame["symbol"].isin(previous_symbols - latest_symbols)
+    ].copy()
+    return latest_rebalance, latest_frame, added_df, removed_df
+
+
+def _compute_symbol_frequency_table(holdings_df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "symbol",
+        "rebalances_held",
+        "presence_pct",
+        "average_weight",
+        "average_rank",
+        "average_signal_score",
+        "first_seen",
+        "last_seen",
+    ]
+    if holdings_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    detail = holdings_df.copy()
+    detail["rebalance_date"] = pd.to_datetime(detail["rebalance_date"])
+    detail["target_weight"] = pd.to_numeric(detail["target_weight"], errors="coerce")
+    detail["entry_rank"] = pd.to_numeric(detail["entry_rank"], errors="coerce")
+    detail["signal_value"] = pd.to_numeric(detail["signal_value"], errors="coerce")
+    total_rebalances = max(int(detail["rebalance_date"].nunique()), 1)
+
+    frequency_df = (
+        detail.groupby("symbol", sort=False)
+        .agg(
+            rebalances_held=("rebalance_date", "nunique"),
+            average_weight=("target_weight", "mean"),
+            average_rank=("entry_rank", "mean"),
+            average_signal_score=("signal_value", "mean"),
+            first_seen=("rebalance_date", "min"),
+            last_seen=("rebalance_date", "max"),
+        )
+        .reset_index()
+    )
+    frequency_df["presence_pct"] = frequency_df["rebalances_held"] / total_rebalances
+    return frequency_df.sort_values(
+        ["rebalances_held", "average_signal_score", "symbol"],
+        ascending=[False, False, True],
+        kind="stable",
+    ).reset_index(drop=True)
+
+
+@st.cache_data(show_spinner=False)
+def _load_research_price_history(symbols: tuple[str, ...]) -> tuple[pd.DataFrame, str | None]:
+    columns = ["symbol", "trade_date", "close"]
+    clean_symbols = tuple(
+        sorted({str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()})
+    )
+    if not clean_symbols:
+        return pd.DataFrame(columns=columns), None
+
+    price_root = Path(os.getenv("PORTFOLIO_DATA_DIR", "data")) / "silver" / "research_daily_prices"
+    if not price_root.exists():
+        return pd.DataFrame(columns=columns), "Research daily price history was not found on disk."
+
+    con = duckdb.connect(":memory:")
+    try:
+        prices_df = con.execute(
+            """
+            SELECT
+                upper(symbol) AS symbol,
+                trade_date,
+                close
+            FROM read_parquet(?)
+            WHERE upper(symbol) = ANY(?)
+              AND close IS NOT NULL
+            ORDER BY symbol, trade_date
+            """,
+            [_resolve_research_prices_glob(), list(clean_symbols)],
+        ).fetch_df()
+    except Exception as exc:
+        return pd.DataFrame(columns=columns), f"Failed to load research price history: {exc}"
+    finally:
+        con.close()
+
+    if not prices_df.empty:
+        prices_df["trade_date"] = pd.to_datetime(prices_df["trade_date"])
+        prices_df["close"] = pd.to_numeric(prices_df["close"], errors="coerce")
+    return prices_df, None
+
+
+def _compute_symbol_cagr_table(
+    holdings_df: pd.DataFrame,
+    prices_df: pd.DataFrame,
+) -> pd.DataFrame:
+    columns = ["symbol", "holding_spells", "average_cagr", "median_cagr", "latest_cagr"]
+    if holdings_df.empty or prices_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    detail = holdings_df.copy()
+    detail["rebalance_date"] = pd.to_datetime(detail["rebalance_date"])
+    rebalances = sorted(detail["rebalance_date"].dropna().unique().tolist())
+    rebalance_lookup = {rebalance_date: idx for idx, rebalance_date in enumerate(rebalances)}
+
+    price_frame = prices_df.copy()
+    price_frame["trade_date"] = pd.to_datetime(price_frame["trade_date"])
+    price_frame["close"] = pd.to_numeric(price_frame["close"], errors="coerce")
+    price_map = {
+        symbol: frame.sort_values("trade_date", kind="stable").reset_index(drop=True)
+        for symbol, frame in price_frame.groupby("symbol", sort=False)
+    }
+
+    rows: list[dict[str, object]] = []
+    for symbol, symbol_frame in detail.groupby("symbol", sort=False):
+        indices = sorted(
+            {
+                rebalance_lookup[rebalance_date]
+                for rebalance_date in pd.to_datetime(symbol_frame["rebalance_date"]).tolist()
+                if rebalance_date in rebalance_lookup
+            }
+        )
+        if not indices or symbol not in price_map:
+            continue
+
+        symbol_prices = price_map[symbol]
+        trade_dates = symbol_prices["trade_date"]
+        close_prices = symbol_prices["close"]
+        symbol_cagrs: list[float] = []
+
+        streak_start_idx = indices[0]
+        streak_end_idx = indices[0]
+        for current_idx in indices[1:] + [None]:
+            if current_idx is not None and current_idx == streak_end_idx + 1:
+                streak_end_idx = current_idx
+                continue
+
+            start_date = rebalances[streak_start_idx]
+            if streak_end_idx + 1 < len(rebalances):
+                end_date = rebalances[streak_end_idx + 1]
+            else:
+                end_date = trade_dates.max()
+
+            start_position = int(trade_dates.searchsorted(start_date, side="left"))
+            end_position = int(trade_dates.searchsorted(end_date, side="left"))
+            if start_position >= len(symbol_prices) or end_position >= len(symbol_prices):
+                streak_start_idx = current_idx if current_idx is not None else streak_start_idx
+                streak_end_idx = current_idx if current_idx is not None else streak_end_idx
+                continue
+
+            start_trade_date = trade_dates.iloc[start_position]
+            end_trade_date = trade_dates.iloc[end_position]
+            start_price = float(close_prices.iloc[start_position])
+            end_price = float(close_prices.iloc[end_position])
+            elapsed_days = int((end_trade_date - start_trade_date).days)
+            if start_price > 0 and end_price > 0 and elapsed_days > 0:
+                symbol_cagrs.append(
+                    float((end_price / start_price) ** (365.25 / elapsed_days) - 1.0)
+                )
+
+            if current_idx is not None:
+                streak_start_idx = current_idx
+                streak_end_idx = current_idx
+
+        if symbol_cagrs:
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "holding_spells": int(len(symbol_cagrs)),
+                    "average_cagr": float(np.mean(symbol_cagrs)),
+                    "median_cagr": float(np.median(symbol_cagrs)),
+                    "latest_cagr": float(symbol_cagrs[-1]),
+                }
+            )
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows).sort_values(
+        ["average_cagr", "holding_spells", "symbol"],
+        ascending=[False, False, True],
+        kind="stable",
+    ).reset_index(drop=True)
 
 
 def _read_query_param(name: str) -> str | None:
@@ -1122,369 +1699,449 @@ with tabs["detail"]:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="section-title">Strategy Holdings</div>',
-        unsafe_allow_html=True,
+    _render_strategy_benchmark_section(
+        strategy_name=str(definition_row["strategy_name"]),
+        benchmark_symbol=str(definition_row.get("benchmark_symbol") or "SPY").strip().upper()
+        or "SPY",
+        detail_performance_df=detail_performance_df,
+        detail_returns_df=detail_returns_df,
     )
-    if detail_holdings_df.empty:
-        st.info(
-            "No materialized holdings snapshot was found for this strategy yet. "
-            "Run the research strategy assets to unlock holdings detail."
-        )
-    else:
-        detail_holdings_df = detail_holdings_df.copy()
-        detail_holdings_df["rebalance_date"] = pd.to_datetime(
-            detail_holdings_df["rebalance_date"]
-        )
-        holdings_by_rebalance = (
-            detail_holdings_df.groupby("rebalance_date", dropna=False)
-            .agg(holdings_count=("symbol", "size"))
-            .reset_index()
-            .sort_values("rebalance_date", ascending=False)
-        )
-        rebalance_options = holdings_by_rebalance["rebalance_date"].tolist()
-        default_rebalance = None
-        preferred_rebalances = holdings_by_rebalance.loc[
-            holdings_by_rebalance["holdings_count"] > 1, "rebalance_date"
-        ]
-        if not preferred_rebalances.empty:
-            default_rebalance = preferred_rebalances.iloc[0]
-        elif rebalance_options:
-            default_rebalance = rebalance_options[0]
 
-        selected_rebalance = st.selectbox(
-            "Holdings rebalance date",
-            options=rebalance_options,
-            index=(
-                rebalance_options.index(default_rebalance)
-                if default_rebalance in rebalance_options
-                else 0
-            ),
-            format_func=lambda value: pd.to_datetime(value).strftime("%B %d, %Y"),
-            key=f"holdings_rebalance_{selected_detail_strategy_id}",
-            help="Choose which rebalance snapshot to inspect for the selected strategy.",
-        )
-        selected_holdings_df = detail_holdings_df.loc[
-            detail_holdings_df["rebalance_date"] == selected_rebalance
-        ].copy()
-        selected_rebalance_count = len(selected_holdings_df)
+    detail_tab, holdings_tab = st.tabs(["Details", "Holdings"])
 
+    with holdings_tab:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
         st.markdown(
-            f'<div class="metric-pill" style="margin-bottom: 14px;">'
-            f"Showing {selected_rebalance_count} holdings for "
-            f"{pd.to_datetime(selected_rebalance).strftime('%B %d, %Y')}</div>",
+            '<div class="section-title">Current Holdings</div>',
             unsafe_allow_html=True,
         )
-
-        selected_holdings_df["weight_pct"] = selected_holdings_df["target_weight"] * 100.0
-        holdings_display = selected_holdings_df.rename(
-            columns={
-                "symbol": "Symbol",
-                "weight_pct": "Weight",
-                "entry_rank": "Rank",
-                "signal_value": "Signal Score",
-            }
-        )[["Symbol", "Weight", "Rank", "Signal Score"]]
-
-        st.dataframe(
-            holdings_display,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Weight": st.column_config.NumberColumn(format="%.2f%%"),
-                "Rank": st.column_config.NumberColumn(format="%d"),
-                "Signal Score": st.column_config.NumberColumn(format="%.4f"),
-            },
-        )
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    parameter_cols = [
-        "parameter_name",
-        "parameter_value",
-        "parameter_type",
-        "effective_start_date",
-        "effective_end_date",
-        "description",
-    ]
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="section-title">Active Signals And Parameters</div>',
-        unsafe_allow_html=True,
-    )
-    if parameters_df.empty:
-        st.info("No active parameter rows were found for this strategy.")
-    else:
-        parameter_display = parameters_df[parameter_cols].rename(
-            columns={
-                "parameter_name": "Parameter",
-                "parameter_value": "Value",
-                "parameter_type": "Type",
-                "effective_start_date": "Effective Start",
-                "effective_end_date": "Effective End",
-                "description": "Description",
-            }
-        )
-        st.dataframe(parameter_display, use_container_width=True, hide_index=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="section-title">Benchmark Comparison</div>',
-        unsafe_allow_html=True,
-    )
-    benchmark_symbol = str(definition_row.get("benchmark_symbol") or "SPY").strip().upper() or "SPY"
-    benchmark_label = f"Buy & Hold {benchmark_symbol}"
-
-    if detail_performance_df.empty or detail_returns_df.empty:
-        st.info(
-            "No materialized strategy performance run was found for this strategy yet. "
-            "Run the research strategy assets to unlock benchmark comparisons."
-        )
-    else:
-        detail_returns_df = detail_returns_df.copy()
-        detail_returns_df["date"] = pd.to_datetime(detail_returns_df["date"])
-        benchmark_status, benchmark_observations, total_observations = _benchmark_data_status(
-            detail_returns_df
-        )
-
-        detail_performance_row = detail_performance_df.iloc[0]
-        detail_snapshot_ts = detail_performance_row.get("asof_ts")
-        if pd.notna(detail_snapshot_ts):
-            snapshot_label = pd.to_datetime(detail_snapshot_ts).strftime("%B %d, %Y %H:%M")
-            st.markdown(
-                f'<div class="metric-pill" style="margin-bottom: 14px;">'
-                f"Latest benchmark comparison snapshot: {snapshot_label}</div>",
-                unsafe_allow_html=True,
-            )
-
-        if benchmark_status == "missing":
+        if detail_holdings_df.empty:
             st.info(
-                "Benchmark comparison charts are unavailable for the latest run because the "
-                "benchmark return series is missing."
+                "No materialized holdings snapshot was found for this strategy yet. "
+                "Run the research strategy assets to unlock holdings detail."
             )
         else:
-            if benchmark_status == "partial":
-                st.info(
-                    "Benchmark return history is incomplete for the latest run. Comparison "
-                    f"charts below use {benchmark_observations:,} of {total_observations:,} "
-                    "available benchmark observations."
-                )
-
-            comparison_df = _build_benchmark_comparison_frame(
-                detail_returns_df,
-                strategy_name=str(definition_row["strategy_name"]),
-                benchmark_label=benchmark_label,
+            detail_holdings_df = detail_holdings_df.copy()
+            detail_holdings_df["rebalance_date"] = pd.to_datetime(
+                detail_holdings_df["rebalance_date"]
+            )
+            detail_holdings_df["target_weight"] = pd.to_numeric(
+                detail_holdings_df["target_weight"], errors="coerce"
+            )
+            detail_holdings_df["entry_rank"] = pd.to_numeric(
+                detail_holdings_df["entry_rank"], errors="coerce"
+            )
+            detail_holdings_df["signal_value"] = pd.to_numeric(
+                detail_holdings_df["signal_value"], errors="coerce"
             )
 
-            if comparison_df.empty:
+            rebalance_dates = sorted(
+                detail_holdings_df["rebalance_date"].dropna().unique().tolist(),
+                reverse=True,
+            )
+            selected_rebalance = st.selectbox(
+                "Rebalance date",
+                options=rebalance_dates,
+                index=0,
+                format_func=lambda value: pd.to_datetime(value).strftime("%B %d, %Y"),
+                key=f"holdings_tab_rebalance_{selected_detail_strategy_id}",
+                help="Inspect holdings at any rebalance date for this strategy.",
+            )
+
+            selected_holdings_df = detail_holdings_df.loc[
+                detail_holdings_df["rebalance_date"] == selected_rebalance
+            ].copy()
+            selected_holdings_df["weight_pct"] = selected_holdings_df["target_weight"] * 100.0
+            selected_date_label = pd.to_datetime(selected_rebalance).strftime("%B %d, %Y")
+            st.markdown(
+                f'<div class="metric-pill" style="margin-bottom: 14px;">'
+                f"Showing {len(selected_holdings_df):,} holdings for {selected_date_label}</div>",
+                unsafe_allow_html=True,
+            )
+            expected_target_count = (
+                int(definition_row["target_count"])
+                if pd.notna(definition_row.get("target_count"))
+                else None
+            )
+            selected_symbols = selected_holdings_df["symbol"].astype(str).str.upper().tolist()
+            if (
+                expected_target_count is not None
+                and expected_target_count > 1
+                and len(selected_holdings_df) == 1
+                and selected_symbols == ["SPY"]
+            ):
+                st.warning(
+                    "This rebalance snapshot contains only `SPY` even though the strategy target "
+                    f"holding count is {expected_target_count}. That points to an upstream "
+                    "holdings materialization issue rather than a real rebalance."
+                )
+            holdings_display = selected_holdings_df.rename(
+                columns={
+                    "symbol": "Symbol",
+                    "weight_pct": "Weight",
+                    "entry_rank": "Rank",
+                    "signal_value": "Signal Score",
+                }
+            )[["Symbol", "Weight", "Rank", "Signal Score"]]
+            st.dataframe(
+                holdings_display,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Weight": st.column_config.NumberColumn(format="%.2f%%"),
+                    "Rank": st.column_config.NumberColumn(format="%d"),
+                    "Signal Score": st.column_config.NumberColumn(format="%.4f"),
+                },
+            )
+
+            st.markdown(
+                (
+                    '<div class="section-title" style="margin-top: 18px;">'
+                    "What Changed At Selected Rebalance</div>"
+                ),
+                unsafe_allow_html=True,
+            )
+            selected_rebalance_ts, _, added_df, removed_df = _compute_rebalance_changes(
+                detail_holdings_df,
+                selected_rebalance,
+            )
+            if selected_rebalance_ts is None:
+                st.info("The selected rebalance could not be resolved from holdings history.")
+            elif added_df.empty and removed_df.empty:
                 st.info(
-                    "The latest run did not include enough return history to build the comparison."
+                    "There is not enough rebalance history yet to compare the selected holdings "
+                    "against the prior rebalance."
                 )
             else:
-                comparison_df["normalized_return_pct"] = (
-                    comparison_df["normalized_return"] * 100.0
-                )
-                comparison_df["drawdown_pct"] = comparison_df["drawdown"] * 100.0
-
-                summary_table = _build_benchmark_summary_table(
-                    comparison_df,
-                    strategy_name=str(definition_row["strategy_name"]),
-                    benchmark_label=benchmark_label,
-                )
-
-                strategy_summary = (
-                    summary_table[str(definition_row["strategy_name"])]
-                    if not summary_table.empty
-                    else pd.Series(dtype=float)
-                )
-                benchmark_summary = (
-                    summary_table[benchmark_label]
-                    if not summary_table.empty
-                    else pd.Series(dtype=float)
-                )
-                total_return_delta = None
-                if (
-                    not strategy_summary.empty
-                    and not benchmark_summary.empty
-                    and pd.notna(strategy_summary.get("Total Return"))
-                    and pd.notna(benchmark_summary.get("Total Return"))
-                ):
-                    total_return_delta = (
-                        float(strategy_summary["Total Return"])
-                        - float(benchmark_summary["Total Return"])
+                rebalance_metrics_df = _compute_holdings_rebalance_metrics(detail_holdings_df)
+                latest_metrics = rebalance_metrics_df.loc[
+                    rebalance_metrics_df["rebalance_date"] == selected_rebalance_ts
+                ].copy()
+                change_metric_cols = st.columns(4, gap="medium")
+                with change_metric_cols[0]:
+                    st.metric("Added", f"{len(added_df):,}")
+                with change_metric_cols[1]:
+                    st.metric("Removed", f"{len(removed_df):,}")
+                with change_metric_cols[2]:
+                    overlap_value = latest_metrics["overlap_prev"].iloc[0]
+                    st.metric(
+                        "Overlap",
+                        f"{float(overlap_value) * 100.0:.1f}%"
+                        if pd.notna(overlap_value)
+                        else "n/a",
                     )
-                sharpe_delta = None
-                if (
-                    not strategy_summary.empty
-                    and not benchmark_summary.empty
-                    and pd.notna(strategy_summary.get("Sharpe"))
-                    and pd.notna(benchmark_summary.get("Sharpe"))
-                ):
-                    sharpe_delta = float(strategy_summary["Sharpe"]) - float(
-                        benchmark_summary["Sharpe"]
+                with change_metric_cols[3]:
+                    turnover_value = latest_metrics["turnover"].iloc[0]
+                    st.metric(
+                        "Turnover",
+                        f"{float(turnover_value) * 100.0:.1f}%"
+                        if pd.notna(turnover_value)
+                        else "n/a",
                     )
 
+                change_chart_df = pd.concat(
+                    [
+                        added_df.assign(change_type="Added", signed_score=added_df["signal_value"]),
+                        removed_df.assign(
+                            change_type="Removed",
+                            signed_score=-removed_df["signal_value"].abs(),
+                        ),
+                    ],
+                    ignore_index=True,
+                )
+                if not change_chart_df.empty:
+                    change_chart = (
+                        alt.Chart(change_chart_df)
+                        .mark_bar(cornerRadius=6)
+                        .encode(
+                            x=alt.X("signed_score:Q", title="Signal-score view"),
+                            y=alt.Y("symbol:N", sort="-x", title="Symbol"),
+                            color=alt.Color(
+                                "change_type:N",
+                                title="Change",
+                                scale=alt.Scale(
+                                    domain=["Added", "Removed"],
+                                    range=["#6ee7b7", "#f97316"],
+                                ),
+                            ),
+                            tooltip=[
+                                alt.Tooltip("symbol:N", title="Symbol"),
+                                alt.Tooltip("change_type:N", title="Change"),
+                                alt.Tooltip("signal_value:Q", title="Signal Score", format=".4f"),
+                            ],
+                        )
+                        .properties(height=max(180, 24 * len(change_chart_df)))
+                        .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
+                    )
+                    with st.container(height=360):
+                        st.altair_chart(change_chart, use_container_width=True)
+
+                added_col, removed_col = st.columns(2, gap="large")
+                with added_col:
+                    st.markdown(
+                        '<div class="section-title" style="margin-top: 8px;">Added Names</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if added_df.empty:
+                        st.info("No new names were added at the latest rebalance.")
+                    else:
+                        added_display = added_df.copy()
+                        added_display["target_weight"] = added_display["target_weight"] * 100.0
+                        st.dataframe(
+                            added_display.rename(
+                                columns={
+                                    "symbol": "Symbol",
+                                    "target_weight": "Weight (%)",
+                                    "entry_rank": "Rank",
+                                    "signal_value": "Signal Score",
+                                }
+                            )[["Symbol", "Weight (%)", "Rank", "Signal Score"]],
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "Weight (%)": st.column_config.NumberColumn(format="%.2f"),
+                                "Rank": st.column_config.NumberColumn(format="%d"),
+                                "Signal Score": st.column_config.NumberColumn(format="%.4f"),
+                            },
+                        )
+                with removed_col:
+                    st.markdown(
+                        '<div class="section-title" style="margin-top: 8px;">Removed Names</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if removed_df.empty:
+                        st.info("No names were removed at the latest rebalance.")
+                    else:
+                        removed_display = removed_df.copy()
+                        removed_display["target_weight"] = removed_display["target_weight"] * 100.0
+                        st.dataframe(
+                            removed_display.rename(
+                                columns={
+                                    "symbol": "Symbol",
+                                    "target_weight": "Prior Weight (%)",
+                                    "entry_rank": "Prior Rank",
+                                    "signal_value": "Prior Signal Score",
+                                }
+                            )[["Symbol", "Prior Weight (%)", "Prior Rank", "Prior Signal Score"]],
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "Prior Weight (%)": st.column_config.NumberColumn(format="%.2f"),
+                                "Prior Rank": st.column_config.NumberColumn(format="%d"),
+                                "Prior Signal Score": st.column_config.NumberColumn(format="%.4f"),
+                            },
+                        )
+
+            st.markdown(
+                (
+                    '<div class="section-title" style="margin-top: 18px;">'
+                    "Portfolio Stability Over Time</div>"
+                ),
+                unsafe_allow_html=True,
+            )
+            rebalance_metrics_df = _compute_holdings_rebalance_metrics(detail_holdings_df)
+            stability_df = rebalance_metrics_df.dropna(subset=["turnover", "overlap_prev"]).copy()
+            average_holding_period = _compute_average_holding_period_rebalances(detail_holdings_df)
+
+            stability_cols = st.columns(4, gap="medium")
+            avg_turnover = stability_df["turnover"].mean() if not stability_df.empty else np.nan
+            avg_names_changed = (
+                stability_df["names_changed"].mean() if not stability_df.empty else np.nan
+            )
+            avg_overlap = (
+                stability_df["overlap_prev"].mean() if not stability_df.empty else np.nan
+            )
+            with stability_cols[0]:
+                st.metric(
+                    "Avg Turnover",
+                    f"{float(avg_turnover) * 100.0:.1f}%" if pd.notna(avg_turnover) else "n/a",
+                )
+            with stability_cols[1]:
+                st.metric(
+                    "Names Changed",
+                    f"{float(avg_names_changed):.1f}" if pd.notna(avg_names_changed) else "n/a",
+                )
+            with stability_cols[2]:
+                st.metric(
+                    "Avg Overlap",
+                    f"{float(avg_overlap) * 100.0:.1f}%" if pd.notna(avg_overlap) else "n/a",
+                )
+            with stability_cols[3]:
+                st.metric(
+                    "Avg Holding Period",
+                    f"{average_holding_period:.1f} rebalances"
+                    if average_holding_period is not None
+                    else "n/a",
+                )
+
+            if stability_df.empty:
+                st.info(
+                    "A stability time series needs at least two rebalances before turnover and "
+                    "overlap can be calculated."
+                )
+            else:
+                stability_df["turnover_pct"] = stability_df["turnover"] * 100.0
+                turnover_chart = (
+                    alt.Chart(stability_df)
+                    .mark_line(point=True, strokeWidth=2.6)
+                    .encode(
+                        x=alt.X("rebalance_date:T", title="Rebalance Date"),
+                        y=alt.Y("turnover_pct:Q", title="Turnover (%)"),
+                        tooltip=[
+                            alt.Tooltip("rebalance_date:T", title="Rebalance Date"),
+                            alt.Tooltip("turnover_pct:Q", title="Turnover (%)", format=".2f"),
+                            alt.Tooltip("overlap_prev:Q", title="Overlap", format=".3f"),
+                            alt.Tooltip("names_changed:Q", title="Names Changed", format=","),
+                        ],
+                    )
+                    .properties(height=280)
+                    .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
+                )
+                st.altair_chart(turnover_chart, use_container_width=True)
+
+                stability_table = stability_df.rename(
+                    columns={
+                        "rebalance_date": "Rebalance Date",
+                        "turnover_pct": "Turnover (%)",
+                        "overlap_prev": "Overlap",
+                        "names_changed": "Names Changed",
+                        "added_count": "Added",
+                        "removed_count": "Removed",
+                    }
+                )[[
+                    "Rebalance Date",
+                    "Turnover (%)",
+                    "Overlap",
+                    "Names Changed",
+                    "Added",
+                    "Removed",
+                ]]
+                st.dataframe(
+                    stability_table,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Rebalance Date": st.column_config.DateColumn(format="MMM DD, YYYY"),
+                        "Turnover (%)": st.column_config.NumberColumn(format="%.2f"),
+                        "Overlap": st.column_config.NumberColumn(format="%.3f"),
+                        "Names Changed": st.column_config.NumberColumn(format="%d"),
+                        "Added": st.column_config.NumberColumn(format="%d"),
+                        "Removed": st.column_config.NumberColumn(format="%d"),
+                    },
+                )
+
+            frequency_df = _compute_symbol_frequency_table(detail_holdings_df)
+            recurring_col, cagr_col = st.columns(2, gap="large")
+            with recurring_col:
                 st.markdown(
-                    '<div class="section-title" style="margin-top: 4px;">Quick Read</div>',
+                    '<div class="section-title" style="margin-top: 18px;">Recurring Names</div>',
                     unsafe_allow_html=True,
                 )
-                quick_read_cols = st.columns(3, gap="medium")
-                with quick_read_cols[0]:
-                    st.metric(
-                        "Return Spread",
-                        _format_comparison_metric("Total Return", total_return_delta),
-                        f"vs {benchmark_symbol}",
-                    )
-                with quick_read_cols[1]:
-                    st.metric(
-                        "Sharpe Spread",
-                        _format_comparison_metric("Sharpe", sharpe_delta),
-                        "rolling window: 63d chart below",
-                    )
-                with quick_read_cols[2]:
-                    st.metric(
-                        "Observations",
-                        f"{len(detail_returns_df):,}",
-                        "daily return rows in latest run",
-                    )
-
-                st.markdown(
-                    '<div class="section-title" style="margin-top: 18px;">Summary Metrics</div>',
-                    unsafe_allow_html=True,
-                )
-                if summary_table.empty:
-                    st.info("Summary metrics were unavailable for the latest run.")
+                if frequency_df.empty:
+                    st.info("No recurring-name statistics were available for this strategy yet.")
                 else:
-                    formatted_summary = summary_table.copy()
-                    for row_label in formatted_summary.index:
-                        formatted_summary.loc[row_label] = formatted_summary.loc[
-                            row_label
-                        ].map(lambda value, row=row_label: _format_comparison_metric(row, value))
-                    st.dataframe(formatted_summary, use_container_width=True)
+                    recurring_display = frequency_df.head(15).copy()
+                    recurring_display["presence_pct"] = recurring_display["presence_pct"] * 100.0
+                    recurring_display["average_weight"] = (
+                        recurring_display["average_weight"] * 100.0
+                    )
+                    st.dataframe(
+                        recurring_display.rename(
+                            columns={
+                                "symbol": "Symbol",
+                                "rebalances_held": "Rebalances Held",
+                                "presence_pct": "Presence (%)",
+                                "average_weight": "Avg Weight (%)",
+                                "average_rank": "Avg Rank",
+                                "average_signal_score": "Avg Signal Score",
+                                "first_seen": "First Seen",
+                                "last_seen": "Last Seen",
+                            }
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Rebalances Held": st.column_config.NumberColumn(format="%d"),
+                            "Presence (%)": st.column_config.NumberColumn(format="%.1f"),
+                            "Avg Weight (%)": st.column_config.NumberColumn(format="%.2f"),
+                            "Avg Rank": st.column_config.NumberColumn(format="%.1f"),
+                            "Avg Signal Score": st.column_config.NumberColumn(format="%.4f"),
+                            "First Seen": st.column_config.DateColumn(format="MMM DD, YYYY"),
+                            "Last Seen": st.column_config.DateColumn(format="MMM DD, YYYY"),
+                        },
+                    )
 
+            with cagr_col:
                 st.markdown(
                     (
                         '<div class="section-title" style="margin-top: 18px;">'
-                        "Normalized Cumulative Returns</div>"
+                        "Strongest Holding Outcomes</div>"
                     ),
                     unsafe_allow_html=True,
                 )
-                series_domain = (
-                    comparison_df["series_name"]
-                    .dropna()
-                    .astype(str)
-                    .drop_duplicates()
-                    .tolist()
+                prices_df, prices_error = _load_research_price_history(
+                    tuple(frequency_df["symbol"].tolist())
                 )
-                series_scale = alt.Scale(domain=series_domain, range=COLORWAY[:2])
-                color_encoding = alt.Color(
-                    "series_name:N",
-                    title="Series",
-                    scale=series_scale,
-                    sort=series_domain,
-                )
-                shared_color_no_legend = alt.Color(
-                    "series_name:N",
-                    title="Series",
-                    scale=series_scale,
-                    sort=series_domain,
-                    legend=None,
-                )
-                stroke_dash_encoding = alt.StrokeDash(
-                    "series_name:N",
-                    sort=series_domain,
-                    scale=alt.Scale(domain=series_domain, range=[[1, 0], [6, 4]]),
-                    legend=None,
-                )
-                cumulative_chart_df = comparison_df.dropna(subset=["normalized_return_pct"])
-                if cumulative_chart_df.empty:
-                    st.info("Normalized cumulative return data was unavailable for the latest run.")
+                cagr_df = _compute_symbol_cagr_table(detail_holdings_df, prices_df)
+                if prices_error:
+                    st.info(prices_error)
+                elif cagr_df.empty:
+                    st.info(
+                        "Symbol-level CAGR estimates were unavailable for this strategy's holdings "
+                        "history."
+                    )
                 else:
-                    cumulative_chart = (
-                        alt.Chart(cumulative_chart_df)
-                        .mark_line(strokeWidth=2.5)
-                        .encode(
-                            x=alt.X("date:T", title="Date"),
-                            y=alt.Y("normalized_return_pct:Q", title="Return from start (%)"),
-                            color=color_encoding,
-                            strokeDash=stroke_dash_encoding,
-                            detail="series_name:N",
-                            tooltip=[
-                                alt.Tooltip("date:T", title="Date"),
-                                alt.Tooltip("series_name:N", title="Series"),
-                                alt.Tooltip(
-                                    "normalized_return_pct:Q",
-                                    title="Return from start (%)",
-                                    format=".2f",
-                                ),
-                            ],
-                        )
-                        .properties(height=340)
-                        .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
-                        .configure_legend(
-                            orient="top",
-                            direction="horizontal",
-                            titleColor="#b6c2e2",
-                            labelColor="#f4f7ff",
-                        )
+                    cagr_display = cagr_df.head(12).copy()
+                    for column in ["average_cagr", "median_cagr", "latest_cagr"]:
+                        cagr_display[column] = cagr_display[column] * 100.0
+                    st.dataframe(
+                        cagr_display.rename(
+                            columns={
+                                "symbol": "Symbol",
+                                "holding_spells": "Holding Spells",
+                                "average_cagr": "Average CAGR (%)",
+                                "median_cagr": "Median CAGR (%)",
+                                "latest_cagr": "Latest Spell CAGR (%)",
+                            }
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Holding Spells": st.column_config.NumberColumn(format="%d"),
+                            "Average CAGR (%)": st.column_config.NumberColumn(format="%.2f"),
+                            "Median CAGR (%)": st.column_config.NumberColumn(format="%.2f"),
+                            "Latest Spell CAGR (%)": st.column_config.NumberColumn(format="%.2f"),
+                        },
                     )
-                    st.altair_chart(cumulative_chart, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
-                lower_chart_left, lower_chart_right = st.columns(2, gap="large")
-                drawdown_chart_df = comparison_df.dropna(subset=["drawdown_pct"])
-                with lower_chart_left:
-                    if drawdown_chart_df.empty:
-                        st.info("Drawdown data was unavailable for the latest run.")
-                    else:
-                        drawdown_chart = (
-                            alt.Chart(drawdown_chart_df)
-                            .mark_line(strokeWidth=2.3)
-                            .encode(
-                                x=alt.X("date:T", title="Date"),
-                                y=alt.Y("drawdown_pct:Q", title="Drawdown (%)"),
-                                color=shared_color_no_legend,
-                                strokeDash=stroke_dash_encoding,
-                                detail="series_name:N",
-                                tooltip=[
-                                    alt.Tooltip("date:T", title="Date"),
-                                    alt.Tooltip("series_name:N", title="Series"),
-                                    alt.Tooltip(
-                                        "drawdown_pct:Q",
-                                        title="Drawdown (%)",
-                                        format=".2f",
-                                    ),
-                                ],
-                            )
-                            .properties(height=280, title="Drawdown")
-                            .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
-                        )
-                        st.altair_chart(drawdown_chart, use_container_width=True)
+    with detail_tab:
+        parameter_cols = [
+            "parameter_name",
+            "parameter_value",
+            "parameter_type",
+            "effective_start_date",
+            "effective_end_date",
+            "description",
+        ]
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="section-title">Active Signals And Parameters</div>',
+            unsafe_allow_html=True,
+        )
+        if parameters_df.empty:
+            st.info("No active parameter rows were found for this strategy.")
+        else:
+            parameter_display = parameters_df[parameter_cols].rename(
+                columns={
+                    "parameter_name": "Parameter",
+                    "parameter_value": "Value",
+                    "parameter_type": "Type",
+                    "effective_start_date": "Effective Start",
+                    "effective_end_date": "Effective End",
+                    "description": "Description",
+                }
+            )
+            st.dataframe(parameter_display, use_container_width=True, hide_index=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
-            rolling_sharpe_df = comparison_df.dropna(subset=["rolling_sharpe"])
-            if rolling_sharpe_df.empty:
-                with lower_chart_right:
-                    st.info("Rolling Sharpe requires at least 21 observations in the latest run.")
-            else:
-                rolling_sharpe_chart = (
-                    alt.Chart(rolling_sharpe_df)
-                    .mark_line(strokeWidth=2.3)
-                    .encode(
-                        x=alt.X("date:T", title="Date"),
-                        y=alt.Y("rolling_sharpe:Q", title="Sharpe ratio"),
-                        color=shared_color_no_legend,
-                        strokeDash=stroke_dash_encoding,
-                        detail="series_name:N",
-                        tooltip=[
-                            alt.Tooltip("date:T", title="Date"),
-                            alt.Tooltip("series_name:N", title="Series"),
-                            alt.Tooltip("rolling_sharpe:Q", title="Rolling Sharpe", format=".2f"),
-                        ],
-                    )
-                    .properties(height=280, title="Rolling Sharpe")
-                    .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
-                )
-                with lower_chart_right:
-                    st.altair_chart(rolling_sharpe_chart, use_container_width=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)
