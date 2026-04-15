@@ -155,13 +155,19 @@ def _load_strategy_catalog() -> tuple[pd.DataFrame, str | None]:
 @st.cache_data(show_spinner=False)
 def _load_strategy_detail_payload(
     strategy_id: str,
-) -> tuple[pd.DataFrame, pd.DataFrame, str | None]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, str | None]:
     if not strategy_id:
-        return pd.DataFrame(), pd.DataFrame(), None
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), None
 
     db_path = _resolve_research_duckdb_path()
     if not db_path.exists():
-        return pd.DataFrame(), pd.DataFrame(), f"Research DuckDB not found at {db_path}"
+        return (
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            f"Research DuckDB not found at {db_path}",
+        )
 
     con = duckdb.connect(str(db_path), read_only=True)
     try:
@@ -203,8 +209,62 @@ def _load_strategy_detail_payload(
             """,
             [strategy_id],
         ).fetch_df()
+
+        performance_df = con.execute(
+            """
+            WITH latest_performance AS (
+                SELECT
+                    *,
+                    row_number() OVER (
+                        PARTITION BY strategy_id
+                        ORDER BY asof_ts DESC, run_id DESC
+                    ) AS row_num
+                FROM gold.strategy_performance
+                WHERE strategy_id = ?
+            )
+            SELECT
+                run_id,
+                strategy_id,
+                cagr,
+                sharpe_ratio,
+                sortino_ratio,
+                max_drawdown,
+                annualized_volatility,
+                hit_rate,
+                turnover_avg,
+                benchmark_return,
+                alpha,
+                asof_ts
+            FROM latest_performance
+            WHERE row_num = 1
+            """,
+            [strategy_id],
+        ).fetch_df()
+
+        run_ids = performance_df["run_id"].dropna().astype(str).unique().tolist()
+        if run_ids:
+            returns_df = con.execute(
+                """
+                SELECT
+                    strategy_id,
+                    date,
+                    portfolio_return,
+                    benchmark_return,
+                    cumulative_return,
+                    drawdown,
+                    holdings_count
+                FROM gold.strategy_returns
+                WHERE run_id = ANY(?)
+                ORDER BY date
+                """,
+                [run_ids],
+            ).fetch_df()
+        else:
+            returns_df = pd.DataFrame()
     except Exception as exc:
         return (
+            pd.DataFrame(),
+            pd.DataFrame(),
             pd.DataFrame(),
             pd.DataFrame(),
             f"Failed to load strategy detail data: {exc}",
@@ -212,7 +272,7 @@ def _load_strategy_detail_payload(
     finally:
         con.close()
 
-    return definition_df, parameters_df, None
+    return definition_df, parameters_df, performance_df, returns_df, None
 
 
 @st.cache_data(show_spinner=False)
@@ -409,6 +469,133 @@ def _build_metric_table(
     frame = frame.set_index("Strategy").transpose()
     frame.index = [METRIC_LABELS.get(index, index) for index in frame.index]
     return frame
+
+
+def _compute_rolling_sharpe(
+    returns: pd.Series,
+    *,
+    window: int = 63,
+    min_periods: int = 21,
+) -> pd.Series:
+    values = pd.to_numeric(returns, errors="coerce").astype(float)
+    rolling_mean = values.rolling(window=window, min_periods=min_periods).mean()
+    rolling_std = values.rolling(window=window, min_periods=min_periods).std(ddof=1)
+    sharpe = (rolling_mean / rolling_std) * np.sqrt(252.0)
+    sharpe = sharpe.where(rolling_std > 0)
+    return sharpe.replace([np.inf, -np.inf], np.nan)
+
+
+def _build_benchmark_comparison_frame(
+    returns_df: pd.DataFrame,
+    *,
+    strategy_name: str,
+    benchmark_label: str,
+) -> pd.DataFrame:
+    columns = [
+        "date",
+        "series_name",
+        "normalized_return",
+        "drawdown",
+        "rolling_sharpe",
+        "daily_return",
+    ]
+    if returns_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    frame = returns_df.sort_values("date", kind="stable").copy()
+    frame["portfolio_return"] = pd.to_numeric(frame["portfolio_return"], errors="coerce")
+    frame["benchmark_return"] = pd.to_numeric(frame["benchmark_return"], errors="coerce")
+    frame["cumulative_return"] = pd.to_numeric(frame["cumulative_return"], errors="coerce")
+    frame["drawdown"] = pd.to_numeric(frame["drawdown"], errors="coerce")
+
+    strategy_frame = pd.DataFrame(
+        {
+            "date": frame["date"],
+            "series_name": strategy_name,
+            "normalized_return": frame["cumulative_return"],
+            "drawdown": frame["drawdown"],
+            "rolling_sharpe": _compute_rolling_sharpe(frame["portfolio_return"]),
+            "daily_return": frame["portfolio_return"],
+        }
+    )
+
+    benchmark_wealth = (1.0 + frame["benchmark_return"].fillna(0.0)).cumprod()
+    benchmark_running_peak = benchmark_wealth.cummax()
+    benchmark_frame = pd.DataFrame(
+        {
+            "date": frame["date"],
+            "series_name": benchmark_label,
+            "normalized_return": benchmark_wealth - 1.0,
+            "drawdown": (benchmark_wealth / benchmark_running_peak) - 1.0,
+            "rolling_sharpe": _compute_rolling_sharpe(frame["benchmark_return"]),
+            "daily_return": frame["benchmark_return"],
+        }
+    )
+
+    comparison_df = pd.concat([strategy_frame, benchmark_frame], ignore_index=True)
+    return comparison_df.dropna(subset=["date"]).reset_index(drop=True)
+
+
+def _annualized_return_from_total_return(total_return: float | None, periods: int) -> float | None:
+    if total_return is None or periods <= 0 or (1.0 + total_return) <= 0:
+        return None
+    return float((1.0 + total_return) ** (252.0 / periods) - 1.0)
+
+
+def _compute_series_summary(
+    returns: pd.Series,
+    drawdowns: pd.Series,
+    normalized_returns: pd.Series,
+) -> dict[str, float | None]:
+    daily_returns = pd.to_numeric(returns, errors="coerce").dropna().astype(float)
+    drawdown_series = pd.to_numeric(drawdowns, errors="coerce").dropna().astype(float)
+    normalized_series = pd.to_numeric(normalized_returns, errors="coerce").dropna().astype(float)
+    periods = int(len(daily_returns))
+    total_return = float(normalized_series.iloc[-1]) if not normalized_series.empty else None
+    daily_std = float(daily_returns.std(ddof=1)) if periods > 1 else float("nan")
+    annualized_volatility = daily_std * np.sqrt(252.0) if np.isfinite(daily_std) else None
+    sharpe_ratio = (
+        float(daily_returns.mean()) / daily_std * np.sqrt(252.0)
+        if np.isfinite(daily_std) and daily_std > 0
+        else None
+    )
+    return {
+        "Total Return": total_return,
+        "CAGR": _annualized_return_from_total_return(total_return, periods),
+        "Sharpe": sharpe_ratio,
+        "Volatility": annualized_volatility,
+        "Max Drawdown": float(drawdown_series.min()) if not drawdown_series.empty else None,
+    }
+
+
+def _build_benchmark_summary_table(
+    comparison_df: pd.DataFrame,
+    *,
+    strategy_name: str,
+    benchmark_label: str,
+) -> pd.DataFrame:
+    if comparison_df.empty:
+        return pd.DataFrame()
+
+    summaries: dict[str, dict[str, float | None]] = {}
+    for label in [strategy_name, benchmark_label]:
+        series_frame = comparison_df[comparison_df["series_name"] == label].copy()
+        summaries[label] = _compute_series_summary(
+            series_frame["daily_return"],
+            series_frame["drawdown"],
+            series_frame["normalized_return"],
+        )
+
+    return pd.DataFrame(summaries)
+
+
+def _format_comparison_metric(row_label: str, value: object) -> str:
+    if value is None or pd.isna(value):
+        return "n/a"
+    numeric = float(value)
+    if row_label in {"Total Return", "CAGR", "Volatility", "Max Drawdown"}:
+        return f"{numeric * 100.0:.2f}%"
+    return f"{numeric:.2f}"
 
 
 def _read_query_param(name: str) -> str | None:
@@ -786,8 +973,8 @@ with tabs["detail"]:
         _set_lab_query_params("detail", selected_detail_strategy_id)
         st.rerun()
 
-    definition_df, parameters_df, detail_error = _load_strategy_detail_payload(
-        selected_detail_strategy_id
+    definition_df, parameters_df, detail_performance_df, detail_returns_df, detail_error = (
+        _load_strategy_detail_payload(selected_detail_strategy_id)
     )
     if detail_error:
         st.info(detail_error)
@@ -902,4 +1089,221 @@ with tabs["detail"]:
             }
         )
         st.dataframe(parameter_display, use_container_width=True, hide_index=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-title">Benchmark Comparison</div>',
+        unsafe_allow_html=True,
+    )
+    benchmark_symbol = str(definition_row.get("benchmark_symbol") or "SPY").strip().upper() or "SPY"
+    benchmark_label = f"Buy & Hold {benchmark_symbol}"
+
+    if detail_performance_df.empty or detail_returns_df.empty:
+        st.info(
+            "No materialized strategy performance run was found for this strategy yet. "
+            "Run the research strategy assets to unlock benchmark comparisons."
+        )
+    else:
+        detail_returns_df = detail_returns_df.copy()
+        detail_returns_df["date"] = pd.to_datetime(detail_returns_df["date"])
+
+        detail_performance_row = detail_performance_df.iloc[0]
+        detail_snapshot_ts = detail_performance_row.get("asof_ts")
+        if pd.notna(detail_snapshot_ts):
+            snapshot_label = pd.to_datetime(detail_snapshot_ts).strftime("%B %d, %Y %H:%M")
+            st.markdown(
+                f'<div class="metric-pill" style="margin-bottom: 14px;">'
+                f"Latest benchmark comparison snapshot: {snapshot_label}</div>",
+                unsafe_allow_html=True,
+            )
+
+        comparison_df = _build_benchmark_comparison_frame(
+            detail_returns_df,
+            strategy_name=str(definition_row["strategy_name"]),
+            benchmark_label=benchmark_label,
+        )
+
+        if comparison_df.empty:
+            st.info("The latest run did not include enough return history to build the comparison.")
+        else:
+            comparison_df["normalized_return_pct"] = comparison_df["normalized_return"] * 100.0
+            comparison_df["drawdown_pct"] = comparison_df["drawdown"] * 100.0
+
+            summary_table = _build_benchmark_summary_table(
+                comparison_df,
+                strategy_name=str(definition_row["strategy_name"]),
+                benchmark_label=benchmark_label,
+            )
+
+            strategy_summary = (
+                summary_table[str(definition_row["strategy_name"])]
+                if not summary_table.empty
+                else pd.Series(dtype=float)
+            )
+            benchmark_summary = (
+                summary_table[benchmark_label] if not summary_table.empty else pd.Series(dtype=float)
+            )
+            total_return_delta = None
+            if (
+                not strategy_summary.empty
+                and not benchmark_summary.empty
+                and pd.notna(strategy_summary.get("Total Return"))
+                and pd.notna(benchmark_summary.get("Total Return"))
+            ):
+                total_return_delta = (
+                    float(strategy_summary["Total Return"]) - float(benchmark_summary["Total Return"])
+                )
+            sharpe_delta = None
+            if (
+                not strategy_summary.empty
+                and not benchmark_summary.empty
+                and pd.notna(strategy_summary.get("Sharpe"))
+                and pd.notna(benchmark_summary.get("Sharpe"))
+            ):
+                sharpe_delta = float(strategy_summary["Sharpe"]) - float(
+                    benchmark_summary["Sharpe"]
+                )
+
+            st.markdown(
+                '<div class="section-title" style="margin-top: 4px;">Quick Read</div>',
+                unsafe_allow_html=True,
+            )
+            quick_read_cols = st.columns(3, gap="medium")
+            with quick_read_cols[0]:
+                st.metric(
+                    "Return Spread",
+                    _format_comparison_metric("Total Return", total_return_delta),
+                    f"vs {benchmark_symbol}",
+                )
+            with quick_read_cols[1]:
+                st.metric(
+                    "Sharpe Spread",
+                    _format_comparison_metric("Sharpe", sharpe_delta),
+                    "rolling window: 63d chart below",
+                )
+            with quick_read_cols[2]:
+                st.metric(
+                    "Observations",
+                    f"{len(detail_returns_df):,}",
+                    "daily return rows in latest run",
+                )
+
+            st.markdown(
+                '<div class="section-title" style="margin-top: 18px;">Summary Metrics</div>',
+                unsafe_allow_html=True,
+            )
+            if summary_table.empty:
+                st.info("Summary metrics were unavailable for the latest run.")
+            else:
+                formatted_summary = summary_table.copy()
+                for row_label in formatted_summary.index:
+                    formatted_summary.loc[row_label] = formatted_summary.loc[row_label].map(
+                        lambda value, row=row_label: _format_comparison_metric(row, value)
+                    )
+                st.dataframe(formatted_summary, use_container_width=True)
+
+            st.markdown(
+                '<div class="section-title" style="margin-top: 18px;">Normalized Cumulative Returns</div>',
+                unsafe_allow_html=True,
+            )
+            series_domain = [str(definition_row["strategy_name"]), benchmark_label]
+            series_scale = alt.Scale(domain=series_domain, range=COLORWAY[:2])
+            color_encoding = alt.Color(
+                "series_name:N",
+                title="Series",
+                scale=series_scale,
+                sort=series_domain,
+            )
+            shared_color_no_legend = alt.Color(
+                "series_name:N",
+                title="Series",
+                scale=series_scale,
+                sort=series_domain,
+                legend=None,
+            )
+            stroke_dash_encoding = alt.StrokeDash(
+                "series_name:N",
+                sort=series_domain,
+                scale=alt.Scale(domain=series_domain, range=[[1, 0], [6, 4]]),
+                legend=None,
+            )
+            cumulative_chart = (
+                alt.Chart(comparison_df)
+                .mark_line(strokeWidth=2.5)
+                .encode(
+                    x=alt.X("date:T", title="Date"),
+                    y=alt.Y("normalized_return_pct:Q", title="Return from start (%)"),
+                    color=color_encoding,
+                    strokeDash=stroke_dash_encoding,
+                    detail="series_name:N",
+                    tooltip=[
+                        alt.Tooltip("date:T", title="Date"),
+                        alt.Tooltip("series_name:N", title="Series"),
+                        alt.Tooltip(
+                            "normalized_return_pct:Q",
+                            title="Return from start (%)",
+                            format=".2f",
+                        ),
+                    ],
+                )
+                .properties(height=340)
+                .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
+                .configure_legend(
+                    orient="top",
+                    direction="horizontal",
+                    titleColor="#b6c2e2",
+                    labelColor="#f4f7ff",
+                )
+            )
+            st.altair_chart(cumulative_chart, use_container_width=True)
+
+            lower_chart_left, lower_chart_right = st.columns(2, gap="large")
+            drawdown_chart = (
+                alt.Chart(comparison_df.dropna(subset=["drawdown_pct"]))
+                .mark_line(strokeWidth=2.3)
+                .encode(
+                    x=alt.X("date:T", title="Date"),
+                    y=alt.Y("drawdown_pct:Q", title="Drawdown (%)"),
+                    color=shared_color_no_legend,
+                    strokeDash=stroke_dash_encoding,
+                    detail="series_name:N",
+                    tooltip=[
+                        alt.Tooltip("date:T", title="Date"),
+                        alt.Tooltip("series_name:N", title="Series"),
+                        alt.Tooltip("drawdown_pct:Q", title="Drawdown (%)", format=".2f"),
+                    ],
+                )
+                .properties(height=280, title="Drawdown")
+                .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
+            )
+            with lower_chart_left:
+                st.altair_chart(drawdown_chart, use_container_width=True)
+
+            rolling_sharpe_df = comparison_df.dropna(subset=["rolling_sharpe"])
+            if rolling_sharpe_df.empty:
+                with lower_chart_right:
+                    st.info("Rolling Sharpe requires at least 21 observations in the latest run.")
+            else:
+                rolling_sharpe_chart = (
+                    alt.Chart(rolling_sharpe_df)
+                    .mark_line(strokeWidth=2.3)
+                    .encode(
+                        x=alt.X("date:T", title="Date"),
+                        y=alt.Y("rolling_sharpe:Q", title="Sharpe ratio"),
+                        color=shared_color_no_legend,
+                        strokeDash=stroke_dash_encoding,
+                        detail="series_name:N",
+                        tooltip=[
+                            alt.Tooltip("date:T", title="Date"),
+                            alt.Tooltip("series_name:N", title="Series"),
+                            alt.Tooltip("rolling_sharpe:Q", title="Rolling Sharpe", format=".2f"),
+                        ],
+                    )
+                    .properties(height=280, title="Rolling Sharpe")
+                    .configure_axis(gridColor="rgba(148, 163, 184, 0.25)")
+                )
+                with lower_chart_right:
+                    st.altair_chart(rolling_sharpe_chart, use_container_width=True)
+
     st.markdown("</div>", unsafe_allow_html=True)
