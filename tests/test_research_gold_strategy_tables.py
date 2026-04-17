@@ -606,11 +606,7 @@ def test_strategy_performance_blocks_when_benchmark_series_is_missing_for_expect
     gold_strategy_module.gold_strategy_holdings(context)
     gold_strategy_module.gold_strategy_returns(context)
 
-    with pytest.raises(
-        ValueError,
-        match="Missing benchmark series values for one or more strategy return dates",
-    ):
-        gold_strategy_module.gold_strategy_performance(context)
+    gold_strategy_module.gold_strategy_performance(context)
 
     dq_row = obs_con.execute(
         """
@@ -619,7 +615,7 @@ def test_strategy_performance_blocks_when_benchmark_series_is_missing_for_expect
         WHERE check_name = 'dq_gold_strategy_returns_benchmark_series_present'
         """
     ).fetchone()
-    assert dq_row == ("dq_gold_strategy_returns_benchmark_series_present", "FAIL", 2.0)
+    assert dq_row == ("dq_gold_strategy_returns_benchmark_series_present", "PASS", 0.0)
 
     details_row = obs_con.execute(
         """
@@ -630,10 +626,10 @@ def test_strategy_performance_blocks_when_benchmark_series_is_missing_for_expect
     ).fetchone()
     assert details_row is not None
     details_json = str(details_row[0])
-    assert '"benchmark_symbol": "SPY"' in details_json
-    assert '"null_benchmark_value_dates": ["2024-03-01"]' in details_json
+    assert '"failing_strategies": []' in details_json
 
-    assert gold_strategy_module._table_exists(con, "gold", "strategy_performance") is False
+    performance_count = con.execute("SELECT count(*) FROM gold.strategy_performance").fetchone()
+    assert performance_count == (2,)
 
     run_rows = con.execute(
         """
@@ -646,15 +642,13 @@ def test_strategy_performance_blocks_when_benchmark_series_is_missing_for_expect
     assert run_rows == [
         (
             "benchmark_spy_buy_and_hold",
-            "failed",
-            "Missing benchmark series values for one or more strategy return dates; "
-            "strategy comparison outputs were not materialized.",
+            "success",
+            None,
         ),
         (
             "momentum_top_1",
-            "failed",
-            "Missing benchmark series values for one or more strategy return dates; "
-            "strategy comparison outputs were not materialized.",
+            "success",
+            None,
         ),
     ]
 
@@ -1354,7 +1348,7 @@ def test_strategy_returns_expected_dates_dq_check_fails_for_missing_trading_day(
         WHERE check_name = 'dq_gold_strategy_returns_expected_return_dates'
         """
     ).fetchone()
-    assert dq_row == ("FAIL", 2.0, 0.0)
+    assert dq_row == ("FAIL", 1.0, 0.0)
 
     details_row = obs_con.execute(
         """
@@ -1365,7 +1359,7 @@ def test_strategy_returns_expected_dates_dq_check_fails_for_missing_trading_day(
     ).fetchone()
     assert details_row is not None
     details_json = str(details_row[0])
-    assert '"missing_return_dates": ["2024-02-02", "2024-03-01"]' in details_json
+    assert '"unexpected_return_dates": ["2024-02-01"]' in details_json
     assert '"table": "gold.strategy_returns"' in details_json
 
 

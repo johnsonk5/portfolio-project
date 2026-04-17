@@ -107,9 +107,10 @@ def test_research_daily_prices_prefers_alpaca_on_overlap(tmp_path: Path) -> None
     assert float(out_df.loc[out_df["symbol"] == "AAPL", "dollar_volume"].iloc[0]) == 100500.0
 
 
-def test_research_daily_prices_rerun_replaces_stale_partition(tmp_path: Path) -> None:
+def test_research_daily_prices_rerun_replaces_stale_partition(tmp_path: Path, monkeypatch) -> None:
     data_root = tmp_path / "data"
     research_silver_prices_module.DATA_ROOT = data_root
+    monkeypatch.setattr(research_silver_prices_module, "RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT", 1)
     partition_key = "2026-02-13"
 
     first_frame = pd.DataFrame(
@@ -157,9 +158,12 @@ def test_research_daily_prices_rerun_replaces_stale_partition(tmp_path: Path) ->
     assert out_df["symbol"].tolist() == ["AAPL"]
 
 
-def test_research_daily_prices_applies_split_adjustments_for_alpaca_rows(tmp_path: Path) -> None:
+def test_research_daily_prices_applies_split_adjustments_for_alpaca_rows(
+    tmp_path: Path, monkeypatch
+) -> None:
     data_root = tmp_path / "data"
     research_silver_prices_module.DATA_ROOT = data_root
+    monkeypatch.setattr(research_silver_prices_module, "RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT", 1)
     partition_key = "2026-02-13"
 
     _write_bronze_prices(
@@ -250,9 +254,11 @@ def test_validate_research_daily_prices_schema_detects_missing_columns_and_type_
 
 def test_research_daily_prices_writes_schema_dq_check_to_portfolio_observability(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     data_root = tmp_path / "data"
     research_silver_prices_module.DATA_ROOT = data_root
+    monkeypatch.setattr(research_silver_prices_module, "RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT", 1)
     partition_key = "2026-02-13"
 
     _write_bronze_prices(
