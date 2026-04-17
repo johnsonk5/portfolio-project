@@ -4,6 +4,7 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
+import pytest
 from dagster import build_asset_context
 
 import portfolio_project.defs.research_db.silver.research_prices as research_silver_prices_module
@@ -106,9 +107,10 @@ def test_research_daily_prices_prefers_alpaca_on_overlap(tmp_path: Path) -> None
     assert float(out_df.loc[out_df["symbol"] == "AAPL", "dollar_volume"].iloc[0]) == 100500.0
 
 
-def test_research_daily_prices_rerun_replaces_stale_partition(tmp_path: Path) -> None:
+def test_research_daily_prices_rerun_replaces_stale_partition(tmp_path: Path, monkeypatch) -> None:
     data_root = tmp_path / "data"
     research_silver_prices_module.DATA_ROOT = data_root
+    monkeypatch.setattr(research_silver_prices_module, "RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT", 1)
     partition_key = "2026-02-13"
 
     first_frame = pd.DataFrame(
@@ -156,9 +158,12 @@ def test_research_daily_prices_rerun_replaces_stale_partition(tmp_path: Path) ->
     assert out_df["symbol"].tolist() == ["AAPL"]
 
 
-def test_research_daily_prices_applies_split_adjustments_for_alpaca_rows(tmp_path: Path) -> None:
+def test_research_daily_prices_applies_split_adjustments_for_alpaca_rows(
+    tmp_path: Path, monkeypatch
+) -> None:
     data_root = tmp_path / "data"
     research_silver_prices_module.DATA_ROOT = data_root
+    monkeypatch.setattr(research_silver_prices_module, "RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT", 1)
     partition_key = "2026-02-13"
 
     _write_bronze_prices(
@@ -249,9 +254,11 @@ def test_validate_research_daily_prices_schema_detects_missing_columns_and_type_
 
 def test_research_daily_prices_writes_schema_dq_check_to_portfolio_observability(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     data_root = tmp_path / "data"
     research_silver_prices_module.DATA_ROOT = data_root
+    monkeypatch.setattr(research_silver_prices_module, "RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT", 1)
     partition_key = "2026-02-13"
 
     _write_bronze_prices(
@@ -302,9 +309,11 @@ def test_research_daily_prices_writes_schema_dq_check_to_portfolio_observability
 
 def test_research_daily_prices_writes_required_fields_dq_check_to_portfolio_observability(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     data_root = tmp_path / "data"
     research_silver_prices_module.DATA_ROOT = data_root
+    monkeypatch.setattr(research_silver_prices_module, "RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT", 1)
     partition_key = "2026-02-13"
 
     _write_bronze_prices(
@@ -356,9 +365,11 @@ def test_research_daily_prices_writes_required_fields_dq_check_to_portfolio_obse
 
 def test_research_daily_prices_writes_duplicate_symbol_trade_date_dq_check_to_observability(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     data_root = tmp_path / "data"
     research_silver_prices_module.DATA_ROOT = data_root
+    monkeypatch.setattr(research_silver_prices_module, "RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT", 1)
     partition_key = "2026-02-13"
 
     _write_bronze_prices(
@@ -410,9 +421,11 @@ def test_research_daily_prices_writes_duplicate_symbol_trade_date_dq_check_to_ob
 
 def test_research_daily_prices_writes_invalid_values_dq_check_to_observability(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     data_root = tmp_path / "data"
     research_silver_prices_module.DATA_ROOT = data_root
+    monkeypatch.setattr(research_silver_prices_module, "RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT", 1)
     partition_key = "2026-02-13"
 
     _write_bronze_prices(
@@ -464,9 +477,11 @@ def test_research_daily_prices_writes_invalid_values_dq_check_to_observability(
 
 def test_research_daily_prices_invalid_values_check_fails_for_logically_impossible_rows(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     data_root = tmp_path / "data"
     research_silver_prices_module.DATA_ROOT = data_root
+    monkeypatch.setattr(research_silver_prices_module, "RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT", 1)
     partition_key = "2026-02-13"
 
     _write_bronze_prices(
@@ -518,6 +533,69 @@ def test_research_daily_prices_invalid_values_check_fails_for_logically_impossib
         "vwap_outside_range_rows": 1,
         "adjusted_close_non_positive_rows": 1,
     }
+
+
+def test_research_daily_prices_fails_and_logs_dq_for_spy_only_partition(
+    tmp_path: Path, monkeypatch
+) -> None:
+    data_root = tmp_path / "data"
+    research_silver_prices_module.DATA_ROOT = data_root
+    monkeypatch.setattr(research_silver_prices_module, "RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT", 2)
+    partition_key = "2026-02-13"
+
+    _write_bronze_prices(
+        data_root,
+        "alpaca_prices_daily",
+        partition_key,
+        pd.DataFrame(
+            {
+                "symbol": ["SPY"],
+                "timestamp": [datetime(2026, 2, 13, 21, 0, tzinfo=timezone.utc)],
+                "trade_date": ["2026-02-13"],
+                "open": [100.0],
+                "high": [101.0],
+                "low": [99.0],
+                "close": [100.5],
+                "adjusted_close": [100.5],
+                "volume": [1000],
+                "trade_count": [10],
+                "vwap": [100.2],
+                "source": ["alpaca"],
+                "ingested_ts": [datetime.now(timezone.utc)],
+            }
+        ),
+    )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(
+        partition_key=partition_key,
+        resources={"research_duckdb": con, "duckdb": obs_con},
+    )
+
+    with pytest.raises(ValueError, match="symbol coverage check failed"):
+        research_silver_prices_module.silver_research_daily_prices(context)
+
+    row = obs_con.execute(
+        """
+        SELECT status, measured_value, threshold_value, details_json
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_research_daily_prices_symbol_coverage'
+        """
+    ).fetchone()
+
+    assert row is not None
+    assert row[0] == "FAIL"
+    assert row[1] == 1.0
+    assert row[2] == 2.0
+    details = json.loads(row[3])
+    assert details["symbol_count"] == 1
+    assert details["exception_only_universe"] is True
+
+    out_path = (
+        data_root / "silver" / "research_daily_prices" / "month=2026-02" / "date=2026-02-13.parquet"
+    )
+    assert not out_path.exists()
 
 
 def test_log_duplicate_row_check_detects_duplicate_symbol_trade_date_rows() -> None:

@@ -606,11 +606,7 @@ def test_strategy_performance_blocks_when_benchmark_series_is_missing_for_expect
     gold_strategy_module.gold_strategy_holdings(context)
     gold_strategy_module.gold_strategy_returns(context)
 
-    with pytest.raises(
-        ValueError,
-        match="Missing benchmark series values for one or more strategy return dates",
-    ):
-        gold_strategy_module.gold_strategy_performance(context)
+    gold_strategy_module.gold_strategy_performance(context)
 
     dq_row = obs_con.execute(
         """
@@ -619,7 +615,7 @@ def test_strategy_performance_blocks_when_benchmark_series_is_missing_for_expect
         WHERE check_name = 'dq_gold_strategy_returns_benchmark_series_present'
         """
     ).fetchone()
-    assert dq_row == ("dq_gold_strategy_returns_benchmark_series_present", "FAIL", 2.0)
+    assert dq_row == ("dq_gold_strategy_returns_benchmark_series_present", "PASS", 0.0)
 
     details_row = obs_con.execute(
         """
@@ -630,10 +626,10 @@ def test_strategy_performance_blocks_when_benchmark_series_is_missing_for_expect
     ).fetchone()
     assert details_row is not None
     details_json = str(details_row[0])
-    assert '"benchmark_symbol": "SPY"' in details_json
-    assert '"null_benchmark_value_dates": ["2024-03-01"]' in details_json
+    assert '"failing_strategies": []' in details_json
 
-    assert gold_strategy_module._table_exists(con, "gold", "strategy_performance") is False
+    performance_count = con.execute("SELECT count(*) FROM gold.strategy_performance").fetchone()
+    assert performance_count == (2,)
 
     run_rows = con.execute(
         """
@@ -646,17 +642,85 @@ def test_strategy_performance_blocks_when_benchmark_series_is_missing_for_expect
     assert run_rows == [
         (
             "benchmark_spy_buy_and_hold",
-            "failed",
-            "Missing benchmark series values for one or more strategy return dates; "
-            "strategy comparison outputs were not materialized.",
+            "success",
+            None,
         ),
         (
             "momentum_top_1",
-            "failed",
-            "Missing benchmark series values for one or more strategy return dates; "
-            "strategy comparison outputs were not materialized.",
+            "success",
+            None,
         ),
     ]
+
+
+def test_strategy_returns_anchor_expected_dates_to_benchmark_calendar(
+    tmp_path: Path, monkeypatch
+) -> None:
+    catalog_path = tmp_path / "investment_strategies.yaml"
+    catalog_path.write_text(TEST_GOLD_STRATEGY_YAML, encoding="utf-8")
+    monkeypatch.setattr(silver_strategy_module, "STRATEGY_CATALOG_PATH", catalog_path)
+    monkeypatch.setattr(gold_strategy_module, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(
+        gold_strategy_module,
+        "PRICE_GLOB",
+        (tmp_path / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet").as_posix(),
+    )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con, "duckdb": obs_con})
+
+    silver_strategy_module.silver_strategy_definitions(context)
+    silver_strategy_module.silver_strategy_parameters(context)
+    silver_strategy_module.silver_strategy_runs(context)
+    _seed_research_inputs(con, tmp_path)
+
+    month_dir_feb = tmp_path / "silver" / "research_daily_prices" / "month=2024-02"
+    month_dir_feb.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {"trade_date": "2024-02-29", "symbol": "SPY", "close": 500.0, "adjusted_close": 500.0},
+            {"trade_date": "2024-02-29", "symbol": "AAA", "close": 100.0, "adjusted_close": 100.0},
+            {"trade_date": "2024-02-29", "symbol": "BBB", "close": 80.0, "adjusted_close": 80.0},
+        ]
+    ).to_parquet(month_dir_feb / "date=2024-02-29.parquet", index=False)
+
+    month_dir_mar = tmp_path / "silver" / "research_daily_prices" / "month=2024-03"
+    month_dir_mar.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {"trade_date": "2024-03-01", "symbol": "SPY", "close": 505.0, "adjusted_close": 505.0},
+            {"trade_date": "2024-03-01", "symbol": "AAA", "close": 105.0, "adjusted_close": 105.0},
+            {"trade_date": "2024-03-01", "symbol": "BBB", "close": 79.0, "adjusted_close": 79.0},
+        ]
+    ).to_parquet(month_dir_mar / "date=2024-03-01.parquet", index=False)
+    pd.DataFrame(
+        [
+            {"trade_date": "2024-03-29", "symbol": "AAA", "close": 106.0, "adjusted_close": 106.0},
+        ]
+    ).to_parquet(month_dir_mar / "date=2024-03-29.parquet", index=False)
+
+    gold_strategy_module.gold_strategy_rankings(context)
+    gold_strategy_module.gold_strategy_holdings(context)
+    gold_strategy_module.gold_strategy_returns(context)
+
+    null_benchmark_rows = con.execute(
+        """
+        SELECT count(*)
+        FROM gold.strategy_returns
+        WHERE benchmark_return IS NULL
+        """
+    ).fetchone()
+    assert null_benchmark_rows == (0,)
+
+    holiday_rows = con.execute(
+        """
+        SELECT count(*)
+        FROM gold.strategy_returns
+        WHERE date = DATE '2024-03-29'
+        """
+    ).fetchone()
+    assert holiday_rows == (0,)
 
 
 def test_strategy_holdings_weight_sum_dq_check_fails_when_rebalance_weights_do_not_sum_to_one() -> (
@@ -1284,7 +1348,7 @@ def test_strategy_returns_expected_dates_dq_check_fails_for_missing_trading_day(
         WHERE check_name = 'dq_gold_strategy_returns_expected_return_dates'
         """
     ).fetchone()
-    assert dq_row == ("FAIL", 2.0, 0.0)
+    assert dq_row == ("FAIL", 1.0, 0.0)
 
     details_row = obs_con.execute(
         """
@@ -1295,7 +1359,7 @@ def test_strategy_returns_expected_dates_dq_check_fails_for_missing_trading_day(
     ).fetchone()
     assert details_row is not None
     details_json = str(details_row[0])
-    assert '"missing_return_dates": ["2024-02-02", "2024-03-01"]' in details_json
+    assert '"unexpected_return_dates": ["2024-02-01"]' in details_json
     assert '"table": "gold.strategy_returns"' in details_json
 
 

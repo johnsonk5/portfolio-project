@@ -1,7 +1,7 @@
 import json
 import os
 import statistics
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -436,6 +436,63 @@ def _is_us_trading_day(partition_key: str) -> bool:
     if day.weekday() >= 5:
         return False
 
+    def _observed_fixed_holiday(year: int, month: int, day_of_month: int) -> date:
+        holiday = date(year, month, day_of_month)
+        if holiday.weekday() == 5:
+            return holiday - timedelta(days=1)
+        if holiday.weekday() == 6:
+            return holiday + timedelta(days=1)
+        return holiday
+
+    def _nth_weekday_of_month(year: int, month: int, weekday: int, occurrence: int) -> date:
+        month_start = date(year, month, 1)
+        delta = (weekday - month_start.weekday()) % 7
+        return month_start + timedelta(days=delta + (occurrence - 1) * 7)
+
+    def _last_weekday_of_month(year: int, month: int, weekday: int) -> date:
+        if month == 12:
+            next_month_start = date(year + 1, 1, 1)
+        else:
+            next_month_start = date(year, month + 1, 1)
+        cursor = next_month_start - timedelta(days=1)
+        while cursor.weekday() != weekday:
+            cursor -= timedelta(days=1)
+        return cursor
+
+    def _easter_sunday(year: int) -> date:
+        # Anonymous Gregorian algorithm.
+        a = year % 19
+        b = year // 100
+        c = year % 100
+        d = b // 4
+        e = b % 4
+        f = (b + 8) // 25
+        g = (b - f + 1) // 3
+        h = (19 * a + b - d - g + 15) % 30
+        i = c // 4
+        k = c % 4
+        l = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * l) // 451
+        month = (h + l - 7 * m + 114) // 31
+        day_of_month = ((h + l - 7 * m + 114) % 31) + 1
+        return date(year, month, day_of_month)
+
+    def _fallback_us_market_holidays(year: int) -> set[date]:
+        holidays = {
+            _observed_fixed_holiday(year, 1, 1),
+            _nth_weekday_of_month(year, 1, 0, 3),   # Martin Luther King Jr. Day
+            _nth_weekday_of_month(year, 2, 0, 3),   # Presidents Day
+            _easter_sunday(year) - timedelta(days=2),  # Good Friday
+            _last_weekday_of_month(year, 5, 0),     # Memorial Day
+            _nth_weekday_of_month(year, 9, 0, 1),   # Labor Day
+            _nth_weekday_of_month(year, 11, 3, 4),  # Thanksgiving
+            _observed_fixed_holiday(year, 12, 25),
+        }
+        if year >= 2022:
+            holidays.add(_observed_fixed_holiday(year, 6, 19))  # Juneteenth
+        holidays.add(_observed_fixed_holiday(year, 7, 4))
+        return holidays
+
     # Prefer NYSE calendar if available to account for market holidays.
     try:
         import pandas_market_calendars as mcal
@@ -444,7 +501,7 @@ def _is_us_trading_day(partition_key: str) -> bool:
         schedule = nyse.schedule(start_date=day, end_date=day)
         return not schedule.empty
     except Exception:
-        return True
+        return day not in _fallback_us_market_holidays(day.year)
 
 
 def _silver_price_partition_paths(partition_key: str) -> list[str]:
@@ -762,6 +819,7 @@ def _check_research_prices_freshness(
     lookback_partitions = int(os.getenv("RESEARCH_FRESHNESS_ROW_COUNT_LOOKBACK_PARTITIONS", "20"))
     min_history = int(os.getenv("RESEARCH_FRESHNESS_ROW_COUNT_MIN_HISTORY", "3"))
     min_ratio = float(os.getenv("RESEARCH_FRESHNESS_MIN_ROW_COUNT_RATIO", "0.7"))
+    absolute_min_row_count = int(os.getenv("RESEARCH_FRESHNESS_ABSOLUTE_MIN_ROW_COUNT", "2"))
 
     prior_paths = [
         path
@@ -809,6 +867,11 @@ def _check_research_prices_freshness(
     }
 
     if len(prior_partition_counts) < min_history:
+        insufficient_history_status = (
+            "FAIL"
+            if expected_present and float(current_row_count) < float(absolute_min_row_count)
+            else "SKIPPED"
+        )
         row_count_check = {
             "run_id": run_id,
             "job_name": job_name,
@@ -817,14 +880,17 @@ def _check_research_prices_freshness(
             "severity": _freshness_severity(
                 "research_daily_prices_partition_row_count_vs_recent_median"
             ),
-            "status": "SKIPPED",
+            "status": insufficient_history_status,
             "measured_value": float(current_row_count) if expected_present else None,
-            "threshold_value": None,
+            "threshold_value": (
+                float(absolute_min_row_count) if insufficient_history_status == "FAIL" else None
+            ),
             "details_json": json.dumps(
                 {
                     "reason": "insufficient_history",
                     "current_partition_path": expected_path.as_posix(),
                     "current_row_count": current_row_count,
+                    "absolute_minimum_row_count": absolute_min_row_count,
                     "minimum_history_required": min_history,
                     "history_partitions_available": len(prior_partition_counts),
                     "recent_partition_counts": dict(prior_partition_counts),
@@ -986,6 +1052,9 @@ def _check_research_universe_freshness(
     lookback_partitions = int(os.getenv("RESEARCH_UNIVERSE_FRESHNESS_LOOKBACK_PARTITIONS", "20"))
     min_history = int(os.getenv("RESEARCH_UNIVERSE_FRESHNESS_MIN_HISTORY", "3"))
     min_ratio = float(os.getenv("RESEARCH_UNIVERSE_FRESHNESS_MIN_SYMBOL_COUNT_RATIO", "0.95"))
+    absolute_min_symbol_count = int(
+        os.getenv("RESEARCH_UNIVERSE_FRESHNESS_ABSOLUTE_MIN_SYMBOL_COUNT", "2")
+    )
     drop_lookback_partitions = int(os.getenv("RESEARCH_UNIVERSE_DROP_LOOKBACK_PARTITIONS", "20"))
     drop_min_history = int(os.getenv("RESEARCH_UNIVERSE_DROP_MIN_HISTORY", "3"))
     drop_ratio_multiplier = float(os.getenv("RESEARCH_UNIVERSE_DROP_RATIO_MULTIPLIER", "3.0"))
@@ -1336,23 +1405,34 @@ def _check_research_universe_freshness(
     ][:lookback_partitions]
 
     if len(prior_counts) < min_history:
+        insufficient_history_status = (
+            "FAIL"
+            if partition_key in counts_lookup
+            and float(current_symbol_count) < float(absolute_min_symbol_count)
+            else "SKIPPED"
+        )
         count_check = {
             "run_id": run_id,
             "job_name": job_name,
             "partition_key": partition_key,
             "check_name": count_check_name,
             "severity": _freshness_severity(count_check_name),
-            "status": "SKIPPED",
+            "status": insufficient_history_status,
             "measured_value": (
                 float(current_symbol_count) if partition_key in counts_lookup else None
             ),
-            "threshold_value": None,
+            "threshold_value": (
+                float(absolute_min_symbol_count)
+                if insufficient_history_status == "FAIL"
+                else None
+            ),
             "details_json": json.dumps(
                 {
                     "reason": "insufficient_history",
                     "current_symbol_count": current_symbol_count,
                     "expected_member_date": partition_key,
                     "target_universe_size": universe_size,
+                    "absolute_minimum_symbol_count": absolute_min_symbol_count,
                     "minimum_history_required": min_history,
                     "history_partitions_available": len(prior_counts),
                     "recent_symbol_counts": dict(prior_counts),
@@ -1793,11 +1873,16 @@ def dagster_run_log_success(context) -> None:
         raise RuntimeError("Observability failure(s): " + " | ".join(errors))
 
 
+def _failure_event_message(context) -> str | None:
+    failure_event = getattr(context, "failure_event", None)
+    if failure_event is None:
+        return None
+    return getattr(failure_event, "message", None)
+
+
 @failure_hook(required_resource_keys={"duckdb"})
 def dagster_run_log_failure(context) -> None:
-    error_message = None
-    if context.failure_event is not None:
-        error_message = context.failure_event.message
+    error_message = _failure_event_message(context)
     try:
         _write_run_log(context, status="FAILURE", error_message=error_message)
     except Exception as exc:
@@ -1824,9 +1909,7 @@ def dagster_run_log_success_sensor(context) -> None:
     minimum_interval_seconds=30,
 )
 def dagster_run_log_failure_sensor(context) -> None:
-    error_message = None
-    if context.failure_event is not None:
-        error_message = context.failure_event.message
+    error_message = _failure_event_message(context)
     try:
         _write_run_log(context, status="FAILURE", error_message=error_message)
     except Exception as exc:

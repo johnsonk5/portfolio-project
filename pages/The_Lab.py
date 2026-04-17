@@ -186,6 +186,26 @@ def _load_strategy_detail_payload(
 
     con = duckdb.connect(str(db_path), read_only=True)
     try:
+        run_id_df = con.execute(
+            """
+            WITH latest_success AS (
+                SELECT
+                    run_id,
+                    row_number() OVER (
+                        ORDER BY asof_ts DESC, completed_at DESC, started_at DESC, run_id DESC
+                    ) AS row_num
+                FROM silver.strategy_runs
+                WHERE strategy_id = ?
+                  AND run_status = 'success'
+            )
+            SELECT run_id
+            FROM latest_success
+            WHERE row_num = 1
+            """,
+            [strategy_id],
+        ).fetch_df()
+        run_ids = run_id_df["run_id"].dropna().astype(str).unique().tolist()
+
         definition_df = con.execute(
             """
             SELECT
@@ -225,38 +245,31 @@ def _load_strategy_detail_payload(
             [strategy_id],
         ).fetch_df()
 
-        performance_df = con.execute(
-            """
-            WITH latest_performance AS (
+        if run_ids:
+            performance_df = con.execute(
+                """
                 SELECT
-                    *,
-                    row_number() OVER (
-                        PARTITION BY strategy_id
-                        ORDER BY asof_ts DESC, run_id DESC
-                    ) AS row_num
+                    run_id,
+                    strategy_id,
+                    cagr,
+                    sharpe_ratio,
+                    sortino_ratio,
+                    max_drawdown,
+                    annualized_volatility,
+                    hit_rate,
+                    turnover_avg,
+                    benchmark_return,
+                    alpha,
+                    asof_ts
                 FROM gold.strategy_performance
                 WHERE strategy_id = ?
-            )
-            SELECT
-                run_id,
-                strategy_id,
-                cagr,
-                sharpe_ratio,
-                sortino_ratio,
-                max_drawdown,
-                annualized_volatility,
-                hit_rate,
-                turnover_avg,
-                benchmark_return,
-                alpha,
-                asof_ts
-            FROM latest_performance
-            WHERE row_num = 1
-            """,
-            [strategy_id],
-        ).fetch_df()
+                  AND run_id = ANY(?)
+                """,
+                [strategy_id, run_ids],
+            ).fetch_df()
+        else:
+            performance_df = pd.DataFrame()
 
-        run_ids = performance_df["run_id"].dropna().astype(str).unique().tolist()
         if run_ids:
             returns_df = con.execute(
                 """

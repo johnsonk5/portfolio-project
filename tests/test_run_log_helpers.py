@@ -10,6 +10,7 @@ from portfolio_project.defs.portfolio_db.observability.run_log import (
     _check_research_universe_freshness,
     _collect_materialization_asset_metrics,
     _collect_materialization_metrics,
+    _failure_event_message,
     _is_us_trading_day,
     _metadata_int,
 )
@@ -37,6 +38,15 @@ def test_metadata_int_reads_supported_numeric_shapes() -> None:
     assert _metadata_int(_meta_value(float_value=5.0)) == 5
     assert _metadata_int(_meta_value(float_value=5.5)) is None
     assert _metadata_int(_meta_value(value=True)) is None
+
+
+def test_failure_event_message_handles_missing_attribute() -> None:
+    assert _failure_event_message(SimpleNamespace()) is None
+
+
+def test_failure_event_message_reads_event_message_when_present() -> None:
+    context = SimpleNamespace(failure_event=SimpleNamespace(message="boom"))
+    assert _failure_event_message(context) == "boom"
 
 
 def test_collect_materialization_metrics_aggregates_expected_totals() -> None:
@@ -160,6 +170,12 @@ def test_collect_materialization_asset_metrics_rolls_up_by_asset_key() -> None:
 def test_is_us_trading_day_rejects_weekends_and_bad_inputs() -> None:
     assert _is_us_trading_day("2026-02-14") is False
     assert _is_us_trading_day("not-a-date") is False
+
+
+def test_is_us_trading_day_rejects_good_friday_without_market_calendar_dependency() -> None:
+    assert _is_us_trading_day("2026-04-02") is True
+    assert _is_us_trading_day("2026-04-03") is False
+    assert _is_us_trading_day("2026-04-06") is True
 
 
 def _write_research_partition(tmp_path, partition_key: str, row_count: int) -> None:
@@ -298,6 +314,29 @@ def test_research_price_freshness_fails_when_row_count_drops_below_recent_baseli
     }
 
 
+def test_research_price_freshness_fails_absolute_minimum_with_insufficient_history(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("PORTFOLIO_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("RESEARCH_FRESHNESS_ABSOLUTE_MIN_ROW_COUNT", "2")
+    _write_research_partition(tmp_path, "2026-02-13", 1)
+
+    rows = _check_research_prices_freshness(
+        duckdb.connect(":memory:"),
+        "run-2b",
+        "research_daily_prices_job",
+        "2026-02-13",
+    )
+
+    by_name = {row["check_name"]: row for row in rows}
+    count_row = by_name["research_daily_prices_partition_row_count_vs_recent_median"]
+
+    assert count_row["status"] == "FAIL"
+    assert count_row["measured_value"] == 1.0
+    assert count_row["threshold_value"] == 2.0
+    assert json.loads(count_row["details_json"])["absolute_minimum_row_count"] == 2
+
+
 def test_research_universe_freshness_fails_when_expected_latest_member_date_is_missing() -> None:
     con = duckdb.connect(":memory:")
     _write_universe_counts(
@@ -381,6 +420,54 @@ def test_research_universe_freshness_fails_when_symbol_count_drops_below_recent_
     assert drop_details["drop_ratio_multiplier"] == 3.0
     assert drop_details["minimum_drop_ratio_threshold"] == 0.03
     assert drop_details["historical_drop_ratios"] == [0.0, 0.04]
+
+
+def test_research_universe_freshness_fails_absolute_minimum_with_insufficient_history(
+    monkeypatch,
+) -> None:
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA IF NOT EXISTS silver")
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE silver.universe_membership_daily (
+            member_date DATE,
+            symbol VARCHAR,
+            liquidity_rank BIGINT,
+            rolling_avg_dollar_volume DOUBLE,
+            source VARCHAR,
+            ingested_ts TIMESTAMP
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO silver.universe_membership_daily (
+            member_date,
+            symbol,
+            liquidity_rank,
+            rolling_avg_dollar_volume,
+            source,
+            ingested_ts
+        )
+        VALUES (DATE '2026-02-13', 'SPY', 1, 1.0, 'test', current_timestamp)
+        """
+    )
+
+    monkeypatch.setenv("RESEARCH_UNIVERSE_FRESHNESS_ABSOLUTE_MIN_SYMBOL_COUNT", "2")
+    rows = _check_research_universe_freshness(
+        con,
+        "run-4c",
+        "research_daily_prices_job",
+        "2026-02-13",
+    )
+
+    by_name = {row["check_name"]: row for row in rows}
+    count_row = by_name["research_universe_membership_symbol_count_vs_recent_median"]
+
+    assert count_row["status"] == "FAIL"
+    assert count_row["measured_value"] == 1.0
+    assert count_row["threshold_value"] == 2.0
+    assert json.loads(count_row["details_json"])["absolute_minimum_symbol_count"] == 2
 
 
 def test_research_universe_freshness_flags_unusual_day_over_day_drop() -> None:
