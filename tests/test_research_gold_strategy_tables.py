@@ -659,6 +659,76 @@ def test_strategy_performance_blocks_when_benchmark_series_is_missing_for_expect
     ]
 
 
+def test_strategy_returns_anchor_expected_dates_to_benchmark_calendar(
+    tmp_path: Path, monkeypatch
+) -> None:
+    catalog_path = tmp_path / "investment_strategies.yaml"
+    catalog_path.write_text(TEST_GOLD_STRATEGY_YAML, encoding="utf-8")
+    monkeypatch.setattr(silver_strategy_module, "STRATEGY_CATALOG_PATH", catalog_path)
+    monkeypatch.setattr(gold_strategy_module, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(
+        gold_strategy_module,
+        "PRICE_GLOB",
+        (tmp_path / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet").as_posix(),
+    )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con, "duckdb": obs_con})
+
+    silver_strategy_module.silver_strategy_definitions(context)
+    silver_strategy_module.silver_strategy_parameters(context)
+    silver_strategy_module.silver_strategy_runs(context)
+    _seed_research_inputs(con, tmp_path)
+
+    month_dir_feb = tmp_path / "silver" / "research_daily_prices" / "month=2024-02"
+    month_dir_feb.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {"trade_date": "2024-02-29", "symbol": "SPY", "close": 500.0, "adjusted_close": 500.0},
+            {"trade_date": "2024-02-29", "symbol": "AAA", "close": 100.0, "adjusted_close": 100.0},
+            {"trade_date": "2024-02-29", "symbol": "BBB", "close": 80.0, "adjusted_close": 80.0},
+        ]
+    ).to_parquet(month_dir_feb / "date=2024-02-29.parquet", index=False)
+
+    month_dir_mar = tmp_path / "silver" / "research_daily_prices" / "month=2024-03"
+    month_dir_mar.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {"trade_date": "2024-03-01", "symbol": "SPY", "close": 505.0, "adjusted_close": 505.0},
+            {"trade_date": "2024-03-01", "symbol": "AAA", "close": 105.0, "adjusted_close": 105.0},
+            {"trade_date": "2024-03-01", "symbol": "BBB", "close": 79.0, "adjusted_close": 79.0},
+        ]
+    ).to_parquet(month_dir_mar / "date=2024-03-01.parquet", index=False)
+    pd.DataFrame(
+        [
+            {"trade_date": "2024-03-29", "symbol": "AAA", "close": 106.0, "adjusted_close": 106.0},
+        ]
+    ).to_parquet(month_dir_mar / "date=2024-03-29.parquet", index=False)
+
+    gold_strategy_module.gold_strategy_rankings(context)
+    gold_strategy_module.gold_strategy_holdings(context)
+    gold_strategy_module.gold_strategy_returns(context)
+
+    null_benchmark_rows = con.execute(
+        """
+        SELECT count(*)
+        FROM gold.strategy_returns
+        WHERE benchmark_return IS NULL
+        """
+    ).fetchone()
+    assert null_benchmark_rows == (0,)
+
+    holiday_rows = con.execute(
+        """
+        SELECT count(*)
+        FROM gold.strategy_returns
+        WHERE date = DATE '2024-03-29'
+        """
+    ).fetchone()
+    assert holiday_rows == (0,)
+
+
 def test_strategy_holdings_weight_sum_dq_check_fails_when_rebalance_weights_do_not_sum_to_one() -> (
     None
 ):

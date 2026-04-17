@@ -215,6 +215,7 @@ def silver_signals_daily(context: AssetExecutionContext) -> None:
         """,
         [prices_glob, SIGNALS_SYMBOL_BUCKETS, 0, SIGNAL_VERSION],
     )
+
     for bucket_index in range(SIGNALS_SYMBOL_BUCKETS):
         context.log.info(
             "Building silver.signals_daily bucket %s/%s",
