@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 import os
@@ -382,6 +383,17 @@ def _build_rankings_for_strategy(
 
     for rebalance_date in rebalance_dates:
         parameters = _active_parameters_by_date(con, strategy.strategy_id, rebalance_date)
+        ranking_method = str(
+            con.execute(
+                """
+                SELECT ranking_method
+                FROM silver.strategy_definitions
+                WHERE strategy_id = ?
+                LIMIT 1
+                """,
+                [strategy.strategy_id],
+            ).fetchone()[0]
+        ).strip().lower()
         signal_column = str(parameters.get("signal_column") or "momentum_12_1").strip()
         secondary_signal_column = str(parameters.get("secondary_signal_column") or "").strip()
         ranking_direction = str(parameters.get("ranking_direction") or "desc").strip().lower()
@@ -389,6 +401,7 @@ def _build_rankings_for_strategy(
         universe_name = str(strategy.config.get("universe") or "").strip().lower()
         selection_mode = str(strategy.config.get("selection_mode") or "").strip().lower()
         fixed_symbol = str(parameters.get("symbol") or strategy.benchmark_symbol).strip().upper()
+        max_pct_below_52w_high = parameters.get("max_pct_below_52w_high")
 
         if selection_mode == "fixed_symbol" or universe_name == "benchmark_only":
             candidate_rows = con.execute(
@@ -403,6 +416,22 @@ def _build_rankings_for_strategy(
                 """,
                 [rebalance_date, fixed_symbol],
             ).fetchall()
+        elif ranking_method == "random_selection":
+            sql = """
+                SELECT upper(trim(s.symbol)) AS symbol
+                FROM silver.signals_daily AS s
+                INNER JOIN silver.universe_membership_daily AS u
+                    ON CAST(u.member_date AS DATE) = CAST(s.date AS DATE)
+                   AND upper(trim(u.symbol)) = upper(trim(s.symbol))
+                WHERE CAST(s.date AS DATE) = ?
+            """
+            params = [rebalance_date]
+            min_avg_dollar_volume_21d = parameters.get("min_avg_dollar_volume_21d")
+            if min_avg_dollar_volume_21d is not None:
+                sql += " AND CAST(s.avg_dollar_volume_21d AS DOUBLE) >= ?"
+                params.append(float(min_avg_dollar_volume_21d))
+            sql += " ORDER BY symbol"
+            candidate_rows = con.execute(sql, params).fetchall()
         else:
             secondary_select_sql = ""
             secondary_not_null_sql = ""
@@ -440,29 +469,59 @@ def _build_rankings_for_strategy(
             if min_momentum_12_1 is not None:
                 sql += " AND CAST(s.momentum_12_1 AS DOUBLE) > ?"
                 params.append(float(min_momentum_12_1))
+            if max_pct_below_52w_high is not None:
+                sql += " AND CAST(s.pct_below_52w_high AS DOUBLE) <= ?"
+                params.append(float(max_pct_below_52w_high))
             candidate_rows = con.execute(sql, params).fetchall()
 
-        candidate_columns = (
-            ["symbol", "primary_score", "secondary_score"]
-            if secondary_signal_column
-            else ["symbol", "primary_score"]
-        )
-        candidate_df = pd.DataFrame(candidate_rows, columns=candidate_columns)
-        if candidate_df.empty:
-            continue
-
-        if secondary_signal_column and score_method == "zscore_sum":
-            def _zscore(series: pd.Series) -> pd.Series:
-                std = series.std(ddof=0)
-                if pd.isna(std) or std == 0:
-                    return pd.Series(0.0, index=series.index)
-                return (series - series.mean()) / std
-
-            candidate_df["score"] = _zscore(candidate_df["primary_score"]) + _zscore(
-                candidate_df["secondary_score"]
+        if ranking_method == "random_selection":
+            candidate_df = pd.DataFrame(candidate_rows, columns=["symbol"])
+            if candidate_df.empty:
+                continue
+            random_seed = int(parameters.get("random_seed") or 0)
+            candidate_df["score"] = candidate_df["symbol"].map(
+                lambda symbol: int.from_bytes(
+                    hashlib.sha256(
+                        f"{strategy.strategy_id}|{rebalance_date.isoformat()}|{random_seed}|{symbol}".encode(
+                            "utf-8"
+                        )
+                    ).digest()[:8],
+                    byteorder="big",
+                    signed=False,
+                )
+                / float(2**64 - 1)
             )
         else:
-            candidate_df["score"] = candidate_df["primary_score"]
+            candidate_columns = (
+                ["symbol", "primary_score", "secondary_score"]
+                if secondary_signal_column
+                else ["symbol", "primary_score"]
+            )
+            candidate_df = pd.DataFrame(candidate_rows, columns=candidate_columns)
+            if candidate_df.empty:
+                continue
+
+            if secondary_signal_column and score_method == "zscore_sum":
+                def _zscore(series: pd.Series) -> pd.Series:
+                    std = series.std(ddof=0)
+                    if pd.isna(std) or std == 0:
+                        return pd.Series(0.0, index=series.index)
+                    return (series - series.mean()) / std
+
+                candidate_df["score"] = _zscore(candidate_df["primary_score"]) + _zscore(
+                    candidate_df["secondary_score"]
+                )
+            elif secondary_signal_column and score_method == "ratio":
+                candidate_df = candidate_df[
+                    candidate_df["secondary_score"].notna() & candidate_df["secondary_score"].gt(0)
+                ].copy()
+                if candidate_df.empty:
+                    continue
+                candidate_df["score"] = (
+                    candidate_df["primary_score"] / candidate_df["secondary_score"]
+                )
+            else:
+                candidate_df["score"] = candidate_df["primary_score"]
 
         ascending = ranking_direction == "asc"
         candidate_df = candidate_df.sort_values(
