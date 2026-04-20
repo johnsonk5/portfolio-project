@@ -21,6 +21,7 @@ from portfolio_project.defs.research_db.silver.research_prices import (
 )
 from portfolio_project.defs.research_db.silver.signals import silver_signals_daily
 from portfolio_project.defs.research_db.silver.strategy import (
+    STRATEGY_RUNS_COLUMNS,
     _ensure_table_contract,
     _quote_identifier,
     _safe_run_id,
@@ -633,10 +634,16 @@ def _ensure_strategy_run_rows(
         ]
     )
     _register_temp_df(con, "strategy_run_seed_df", run_rows)
+    target_columns = [column_name for column_name, _ in STRATEGY_RUNS_COLUMNS]
+    quoted_target_columns = ", ".join(_quote_identifier(column) for column in target_columns)
+    projected_seed_columns = ", ".join(
+        f"seed.{_quote_identifier(column)}" for column in target_columns
+    )
     con.execute(
-        """
+        f"""
         INSERT INTO silver.strategy_runs
-        SELECT seed.*
+        ({quoted_target_columns})
+        SELECT {projected_seed_columns}
         FROM strategy_run_seed_df
         AS seed
         WHERE NOT EXISTS (
@@ -1087,17 +1094,20 @@ def _load_distinct_trading_dates(
     *,
     start_date: date,
     end_date: date,
+    symbols: list[str] | None = None,
 ) -> list[date]:
-    rows = con.execute(
-        """
+    params: list[Any] = [PRICE_GLOB, start_date, end_date]
+    sql = """
         SELECT DISTINCT CAST(trade_date AS DATE) AS trade_date
         FROM read_parquet(?)
         WHERE CAST(trade_date AS DATE) >= ?
           AND CAST(trade_date AS DATE) <= ?
-        ORDER BY trade_date
-        """,
-        [PRICE_GLOB, start_date, end_date],
-    ).fetchall()
+    """
+    if symbols:
+        sql += "\n  AND upper(trim(symbol)) = ANY(?)"
+        params.append(symbols)
+    sql += "\nORDER BY trade_date"
+    rows = con.execute(sql, params).fetchall()
     return [row[0] for row in rows if row[0] is not None]
 
 
@@ -1154,6 +1164,7 @@ def _expected_return_dates_for_strategy(
         con,
         start_date=rebalance_dates[0],
         end_date=strategy.end_date or date(2999, 12, 31),
+        symbols=[strategy.benchmark_symbol.strip().upper()],
     )
     if not trading_dates:
         return []
@@ -1260,17 +1271,24 @@ def _build_returns_for_strategy(
         if benchmark_symbol in asset_return_wide.columns
         else pd.Series(dtype="float64")
     )
+    benchmark_trade_dates = (
+        sorted(pd.to_datetime(benchmark_returns.dropna().index).date.tolist())
+        if not benchmark_returns.empty
+        else []
+    )
+    if not benchmark_trade_dates:
+        return []
     daily_rows: list[dict[str, Any]] = []
     cumulative_wealth = 1.0
     peak_wealth = 1.0
 
     for period in periods:
-        for trade_date in asset_return_wide.index:
-            trade_day = pd.Timestamp(trade_date).date()
+        for trade_day in benchmark_trade_dates:
             if trade_day < period["effective_start"]:
                 continue
             if period["effective_end"] is not None and trade_day >= period["effective_end"]:
                 continue
+            trade_date = pd.Timestamp(trade_day)
             weights = period["weights"]
             weighted_returns = []
             for symbol, weight in weights.items():

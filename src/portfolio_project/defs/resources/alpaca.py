@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import pandas as pd
-from alpaca.data.enums import CorporateActionsType
+from alpaca.data.enums import CorporateActionsType, DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.historical.corporate_actions import CorporateActionsClient
 from alpaca.data.requests import CorporateActionsRequest, StockBarsRequest
@@ -14,6 +14,13 @@ from alpaca.trading.requests import GetAssetsRequest
 from dagster import Bool, Field, resource
 
 from portfolio_project.defs.resources.env import load_local_env
+
+
+def _resolve_daily_bars_feed() -> DataFeed:
+    raw_value = os.getenv("ALPACA_DAILY_BARS_FEED", "iex").strip().lower()
+    if raw_value == "sip":
+        return DataFeed.SIP
+    return DataFeed.IEX
 
 
 @resource(
@@ -94,6 +101,7 @@ class AlpacaClient:
             start_date = end_date - timedelta(days=30)
 
         tf = TimeFrame(1, TimeFrameUnit.Day)
+        feed = _resolve_daily_bars_feed()
 
         if isinstance(symbol_or_symbols, str):
             symbols = [symbol_or_symbols]
@@ -105,6 +113,7 @@ class AlpacaClient:
             timeframe=tf,
             start=start_date,
             end=end_date,
+            feed=feed,
         )
 
         bars = self.client.get_stock_bars(request)

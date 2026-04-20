@@ -92,6 +92,19 @@ def _apply_max_symbol_limit(symbols: list[str], max_symbols: int | None) -> list
     return symbols[:max_symbols]
 
 
+def _is_exception_only_symbol_universe(symbols: list[str] | None) -> bool:
+    normalized_symbols = {
+        str(symbol).strip().upper() for symbol in (symbols or []) if str(symbol).strip()
+    }
+    exception_symbols = {symbol.upper() for symbol in DEFAULT_EXCEPTION_SYMBOLS}
+    return bool(normalized_symbols) and normalized_symbols.issubset(exception_symbols)
+
+
+def _allow_exception_only_fallback() -> bool:
+    raw_value = os.getenv("RESEARCH_ALPACA_ALLOW_EXCEPTION_ONLY_FALLBACK", "")
+    return raw_value.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+
+
 def _coerce_bool(value: object) -> bool:
     if isinstance(value, bool):
         return value
@@ -100,19 +113,28 @@ def _coerce_bool(value: object) -> bool:
     return str(value).strip().lower() in {"1", "true", "t", "yes", "y"}
 
 
+def _normalize_enumish_str(value: object) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    normalized = str(value).strip()
+    if "." in normalized:
+        normalized = normalized.split(".")[-1]
+    return normalized.strip().lower()
+
+
 def _is_probable_common_equity(asset_row: pd.Series) -> bool:
-    asset_class = str(asset_row.get("asset_class", "")).strip().lower()
+    asset_class = _normalize_enumish_str(asset_row.get("asset_class"))
     if asset_class != "us_equity":
         return False
 
     if not _coerce_bool(asset_row.get("tradable")):
         return False
 
-    exchange = str(asset_row.get("exchange", "")).strip().upper()
+    exchange = _normalize_enumish_str(asset_row.get("exchange")).upper()
     if exchange in _OTC_EXCHANGES:
         return False
 
-    status = str(asset_row.get("status", "")).strip().lower()
+    status = _normalize_enumish_str(asset_row.get("status"))
     if status and status != "active":
         return False
 
@@ -651,6 +673,16 @@ def bronze_alpaca_prices_daily(context: AssetExecutionContext) -> None:
         configured_symbols=op_config.get("symbols"),
         max_symbols=op_config.get("max_symbols"),
     )
+    if (
+        not op_config.get("symbols")
+        and _is_exception_only_symbol_universe(symbols)
+        and not _allow_exception_only_fallback()
+    ):
+        raise ValueError(
+            "Resolved only exception fallback symbols for Alpaca research price ingestion. "
+            "This usually means Alpaca asset universe resolution returned no eligible common "
+            "equities. Refusing to materialize a fallback-only partition."
+        )
     if not symbols:
         context.log.warning("No symbols resolved for Alpaca daily price ingestion.")
         return
@@ -713,6 +745,16 @@ def bronze_alpaca_corporate_actions_daily(context: AssetExecutionContext) -> Non
         configured_symbols=op_config.get("symbols"),
         max_symbols=op_config.get("max_symbols"),
     )
+    if (
+        not op_config.get("symbols")
+        and _is_exception_only_symbol_universe(symbols)
+        and not _allow_exception_only_fallback()
+    ):
+        raise ValueError(
+            "Resolved only exception fallback symbols for Alpaca corporate action ingestion. "
+            "This usually means Alpaca asset universe resolution returned no eligible common "
+            "equities. Refusing to materialize a fallback-only run."
+        )
     if not symbols:
         context.log.warning("No symbols resolved for Alpaca corporate actions ingestion.")
         return
