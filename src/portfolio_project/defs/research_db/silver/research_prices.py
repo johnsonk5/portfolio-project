@@ -198,7 +198,7 @@ def _log_research_daily_prices_schema_check(
 
     result = _validate_research_daily_prices_schema(con, parquet_path)
     write_dq_log(
-        con=con,
+        con=context.resources.duckdb,
         check_name="dq_research_daily_prices_schema_columns_and_types",
         severity="RED",
         status=result["status"],
