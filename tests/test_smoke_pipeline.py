@@ -9,9 +9,88 @@ from dagster import AssetKey, SourceAsset, build_asset_context, materialize
 import portfolio_project.defs.portfolio_db.gold.news as gold_news_module
 import portfolio_project.defs.portfolio_db.gold.prices as gold_prices_module
 import portfolio_project.defs.portfolio_db.silver.prices as silver_prices_module
+import portfolio_project.defs.research_db.gold.strategy as research_gold_strategy_module
+import portfolio_project.defs.research_db.silver.signals as research_signals_module
+import portfolio_project.defs.research_db.silver.strategy as research_strategy_module
+import portfolio_project.defs.research_db.silver.universe as research_universe_module
 from portfolio_project.defs.portfolio_db.gold.news import gold_headlines
 from portfolio_project.defs.portfolio_db.gold.prices import gold_alpaca_prices
 from portfolio_project.defs.portfolio_db.silver.prices import silver_alpaca_prices_parquet
+from portfolio_project.defs.research_db.gold.strategy import (
+    gold_strategy_holdings,
+    gold_strategy_performance,
+    gold_strategy_rankings,
+    gold_strategy_returns,
+)
+from portfolio_project.defs.research_db.silver.signals import silver_signals_daily
+from portfolio_project.defs.research_db.silver.strategy import (
+    silver_strategy_definitions,
+    silver_strategy_parameters,
+    silver_strategy_runs,
+)
+from portfolio_project.defs.research_db.silver.universe import (
+    silver_universe_membership_daily,
+    silver_universe_membership_events,
+)
+
+RESEARCH_SMOKE_STRATEGY_YAML = """
+strategies:
+  - strategy_id: benchmark_spy_buy_and_hold
+    strategy_name: Buy And Hold SPY
+    strategy_version: smoke
+    description: Benchmark strategy.
+    ranking_method: single_asset_hold
+    rebalance_frequency: Monthly
+    target_count: 1
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2024-01-01
+    end_date: 2024-02-29
+    is_active: true
+    config:
+      universe: benchmark_only
+      selection_mode: fixed_symbol
+    parameters:
+      - parameter_name: symbol
+        parameter_value: SPY
+        parameter_type: string
+        effective_start_date: 2024-01-01
+        effective_end_date:
+        is_active: true
+        description: Benchmark symbol.
+  - strategy_id: momentum_top_1
+    strategy_name: Momentum Top 1
+    strategy_version: smoke
+    description: Momentum strategy.
+    ranking_method: momentum_12_1_desc
+    rebalance_frequency: Monthly
+    target_count: 1
+    weighting_method: equal
+    benchmark_symbol: SPY
+    long_short_flag: false
+    start_date: 2024-01-01
+    end_date: 2024-02-29
+    is_active: true
+    config:
+      universe: universe_membership_daily
+      selection_mode: top_n
+    parameters:
+      - parameter_name: signal_column
+        parameter_value: momentum_12_1
+        parameter_type: string
+        effective_start_date: 2024-01-01
+        effective_end_date:
+        is_active: true
+        description: Signal column.
+      - parameter_name: ranking_direction
+        parameter_value: desc
+        parameter_type: string
+        effective_start_date: 2024-01-01
+        effective_end_date:
+        is_active: true
+        description: Ranking direction.
+"""
 
 
 def _write_fixture_bronze_bars(data_root: Path, partition_key: str, symbols: list[str]) -> None:
@@ -49,6 +128,55 @@ def _write_fixture_silver_prices(
     out_dir = data_root / "silver" / "prices" / f"date={partition_key}" / f"symbol={symbol}"
     out_dir.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(out_dir / "prices0.parquet", index=False)
+
+
+def _write_research_price_partitions(data_root: Path) -> None:
+    dates = pd.bdate_range("2023-01-03", "2024-03-01")
+    rows = []
+    for idx, ts in enumerate(dates):
+        trade_date = ts.date().isoformat()
+        prices = {
+            "SPY": 100.0 + (idx * 0.04),
+            "AAA": 45.0 + (idx * 0.18),
+            "BBB": 90.0 + (idx * 0.02),
+        }
+        volumes = {
+            "SPY": 1_000_000,
+            "AAA": 800_000,
+            "BBB": 700_000,
+        }
+        for symbol, close in prices.items():
+            volume = volumes[symbol]
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "timestamp": ts.tz_localize(timezone.utc),
+                    "trade_date": trade_date,
+                    "open": close - 0.25,
+                    "high": close + 0.5,
+                    "low": close - 0.5,
+                    "close": close,
+                    "adjusted_close": close,
+                    "volume": volume,
+                    "trade_count": 100,
+                    "vwap": close,
+                    "dollar_volume": close * volume,
+                    "source": "smoke",
+                    "ingested_ts": datetime.now(timezone.utc),
+                }
+            )
+
+    prices_df = pd.DataFrame(rows)
+    for trade_date, frame in prices_df.groupby("trade_date", sort=True):
+        out_path = (
+            data_root
+            / "silver"
+            / "research_daily_prices"
+            / f"month={str(trade_date)[:7]}"
+            / f"date={trade_date}.parquet"
+        )
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        frame.to_parquet(out_path, index=False)
 
 
 @pytest.mark.smoke
@@ -511,3 +639,122 @@ def test_gold_prices_upsert_rolls_back_on_insert_error(tmp_path: Path) -> None:
     close_after = close_after_row[0]
     assert rows_after == 1
     assert close_after == pytest.approx(200.0)
+
+
+@pytest.mark.smoke
+def test_research_workflow_materializes_strategy_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_root = tmp_path / "data"
+    catalog_path = tmp_path / "investment_strategies.yaml"
+    catalog_path.write_text(RESEARCH_SMOKE_STRATEGY_YAML, encoding="utf-8")
+    _write_research_price_partitions(data_root)
+
+    monkeypatch.setattr(research_signals_module, "DATA_ROOT", data_root)
+    monkeypatch.setattr(research_signals_module, "SIGNALS_SYMBOL_BUCKETS", 1)
+    monkeypatch.setattr(research_universe_module, "DATA_ROOT", data_root)
+    monkeypatch.setattr(research_universe_module, "LIQUIDITY_LOOKBACK_DAYS", 2)
+    monkeypatch.setattr(research_universe_module, "UNIVERSE_SIZE", 3)
+    monkeypatch.setattr(research_strategy_module, "STRATEGY_CATALOG_PATH", catalog_path)
+    monkeypatch.setattr(research_gold_strategy_module, "DATA_ROOT", data_root)
+    monkeypatch.setattr(
+        research_gold_strategy_module,
+        "PRICE_GLOB",
+        (data_root / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet").as_posix(),
+    )
+
+    research_con = duckdb.connect(":memory:")
+    observability_con = duckdb.connect(":memory:")
+
+    result = materialize(
+        assets=[
+            SourceAsset(AssetKey(["silver", "research_daily_prices"])),
+            silver_signals_daily,
+            silver_universe_membership_daily,
+            silver_universe_membership_events,
+            silver_strategy_definitions,
+            silver_strategy_parameters,
+            silver_strategy_runs,
+            gold_strategy_rankings,
+            gold_strategy_holdings,
+            gold_strategy_returns,
+            gold_strategy_performance,
+        ],
+        resources={
+            "research_duckdb": research_con,
+            "duckdb": observability_con,
+        },
+    )
+
+    assert result.success
+
+    output_counts = research_con.execute(
+        """
+        SELECT
+            (SELECT count(*) FROM silver.signals_daily),
+            (SELECT count(*) FROM silver.universe_membership_daily),
+            (SELECT count(*) FROM silver.universe_membership_events),
+            (SELECT count(*) FROM gold.strategy_rankings),
+            (SELECT count(*) FROM gold.strategy_holdings),
+            (SELECT count(*) FROM gold.strategy_returns),
+            (SELECT count(*) FROM gold.strategy_performance)
+        """
+    ).fetchone()
+    assert output_counts is not None
+    assert all(count > 0 for count in output_counts)
+
+    strategy_rows = research_con.execute(
+        """
+        SELECT strategy_id, run_status, rankings_row_count, holdings_row_count,
+               returns_row_count, performance_row_count
+        FROM silver.strategy_runs
+        WHERE strategy_id IN ('benchmark_spy_buy_and_hold', 'momentum_top_1')
+        ORDER BY strategy_id
+        """
+    ).fetchall()
+    assert len(strategy_rows) == 2
+    by_strategy = {row[0]: row[1:] for row in strategy_rows}
+    assert by_strategy["benchmark_spy_buy_and_hold"][:3] == ("success", 2, 2)
+    assert by_strategy["benchmark_spy_buy_and_hold"][3] > 0
+    assert by_strategy["benchmark_spy_buy_and_hold"][4] == 1
+    assert by_strategy["momentum_top_1"][:3] == ("success", 6, 2)
+    assert by_strategy["momentum_top_1"][3] > 0
+    assert by_strategy["momentum_top_1"][4] == 1
+
+    selected_holdings = research_con.execute(
+        """
+        SELECT strategy_id, rebalance_date, symbol, target_weight
+        FROM gold.strategy_holdings
+        ORDER BY strategy_id, rebalance_date, symbol
+        """
+    ).fetchall()
+    assert selected_holdings == [
+        ("benchmark_spy_buy_and_hold", date(2024, 1, 31), "SPY", 1.0),
+        ("benchmark_spy_buy_and_hold", date(2024, 2, 29), "SPY", 1.0),
+        ("momentum_top_1", date(2024, 1, 31), "AAA", 1.0),
+        ("momentum_top_1", date(2024, 2, 29), "AAA", 1.0),
+    ]
+
+    dq_rows = observability_con.execute(
+        """
+        SELECT check_name, status
+        FROM observability.data_quality_checks
+        WHERE check_name IN (
+            'dq_research_signals_daily_required_fields_nulls',
+            'dq_research_universe_membership_daily_required_fields_nulls',
+            'dq_research_universe_membership_events_required_fields_nulls',
+            'dq_gold_strategy_holdings_weight_sum_by_rebalance',
+            'dq_gold_strategy_returns_benchmark_series_present',
+            'dq_gold_strategy_returns_expected_return_dates'
+        )
+        ORDER BY check_name
+        """
+    ).fetchall()
+    assert dq_rows == [
+        ("dq_gold_strategy_holdings_weight_sum_by_rebalance", "PASS"),
+        ("dq_gold_strategy_returns_benchmark_series_present", "PASS"),
+        ("dq_gold_strategy_returns_expected_return_dates", "PASS"),
+        ("dq_research_signals_daily_required_fields_nulls", "PASS"),
+        ("dq_research_universe_membership_daily_required_fields_nulls", "PASS"),
+        ("dq_research_universe_membership_events_required_fields_nulls", "PASS"),
+    ]
