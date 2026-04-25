@@ -213,6 +213,23 @@ def _active_strategies(con, context: AssetExecutionContext) -> list[StrategyConf
     return strategies
 
 
+def _ranking_method_for_strategy(con, strategy_id: str) -> str:
+    if not _table_exists(con, "silver", "strategy_definitions"):
+        return ""
+    row = con.execute(
+        """
+        SELECT ranking_method
+        FROM silver.strategy_definitions
+        WHERE strategy_id = ?
+        LIMIT 1
+        """,
+        [strategy_id],
+    ).fetchone()
+    if row is None or row[0] is None:
+        return ""
+    return str(row[0]).strip().lower()
+
+
 def _strategies_with_latest_run_ids(
     con,
     context: AssetExecutionContext,
@@ -384,17 +401,7 @@ def _build_rankings_for_strategy(
 
     for rebalance_date in rebalance_dates:
         parameters = _active_parameters_by_date(con, strategy.strategy_id, rebalance_date)
-        ranking_method = str(
-            con.execute(
-                """
-                SELECT ranking_method
-                FROM silver.strategy_definitions
-                WHERE strategy_id = ?
-                LIMIT 1
-                """,
-                [strategy.strategy_id],
-            ).fetchone()[0]
-        ).strip().lower()
+        ranking_method = _ranking_method_for_strategy(con, strategy.strategy_id)
         signal_column = str(parameters.get("signal_column") or "momentum_12_1").strip()
         secondary_signal_column = str(parameters.get("secondary_signal_column") or "").strip()
         ranking_direction = str(parameters.get("ranking_direction") or "desc").strip().lower()
