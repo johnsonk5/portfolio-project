@@ -2,6 +2,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from dagster import build_asset_context
 
 import portfolio_project.defs.research_db.bronze.research_prices as research_prices_module
@@ -85,6 +86,42 @@ def test_resolve_alpaca_symbols_filters_to_common_equities_and_keeps_spy() -> No
     assert symbols == ["AAPL", "SPY"]
 
 
+def test_resolve_alpaca_symbols_accepts_enum_like_asset_metadata_strings() -> None:
+    assets_df = pd.DataFrame(
+        [
+            {
+                "symbol": "AAPL",
+                "name": "Apple Inc.",
+                "asset_class": "AssetClass.US_EQUITY",
+                "tradable": True,
+                "status": "AssetStatus.ACTIVE",
+                "exchange": "AssetExchange.NASDAQ",
+            },
+            {
+                "symbol": "SPY",
+                "name": "SPDR S&P 500 ETF Trust",
+                "asset_class": "AssetClass.US_EQUITY",
+                "tradable": True,
+                "status": "AssetStatus.ACTIVE",
+                "exchange": "AssetExchange.ARCA",
+            },
+            {
+                "symbol": "QQQ",
+                "name": "Invesco QQQ ETF",
+                "asset_class": "AssetClass.US_EQUITY",
+                "tradable": True,
+                "status": "AssetStatus.ACTIVE",
+                "exchange": "AssetExchange.NASDAQ",
+            },
+        ]
+    )
+    context = build_asset_context(resources={"alpaca": _FakeAlpacaResource(assets_df)})
+
+    symbols = research_prices_module._resolve_alpaca_symbols(context)
+
+    assert symbols == ["AAPL", "SPY"]
+
+
 def test_bronze_alpaca_prices_daily_writes_partition(tmp_path: Path, monkeypatch) -> None:
     data_root = tmp_path / "data"
     research_prices_module.DATA_ROOT = data_root
@@ -137,6 +174,27 @@ def test_bronze_alpaca_prices_daily_writes_partition(tmp_path: Path, monkeypatch
     assert len(out_df) == 2
     assert set(out_df["symbol"]) == {"AAPL", "MSFT"}
     assert set(out_df["source"]) == {"alpaca"}
+
+
+def test_bronze_alpaca_prices_daily_fails_for_exception_only_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
+    data_root = tmp_path / "data"
+    research_prices_module.DATA_ROOT = data_root
+
+    monkeypatch.setattr(
+        research_prices_module,
+        "_resolve_alpaca_symbols",
+        lambda context, configured_symbols=None, max_symbols=None: ["SPY"],
+    )
+
+    context = build_asset_context(
+        resources={"alpaca": _FakeAlpacaResource()},
+        partition_key="2020-01-02",
+    )
+
+    with pytest.raises(ValueError, match="exception fallback symbols"):
+        research_prices_module.bronze_alpaca_prices_daily(context)
 
 
 def test_bronze_eodhd_prices_daily_writes_partition(tmp_path: Path) -> None:

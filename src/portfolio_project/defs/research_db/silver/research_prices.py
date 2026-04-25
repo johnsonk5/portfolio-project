@@ -24,6 +24,10 @@ RESEARCH_PRICES_PARTITIONS = DailyPartitionsDefinition(
 )
 RESEARCH_DAILY_PRICES_DATASET = "research_daily_prices"
 SOURCE_PRIORITY = {"alpaca": 0, "eodhd": 1}
+RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT = int(
+    os.getenv("RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT", "2")
+)
+RESEARCH_DAILY_PRICES_EXCEPTION_SYMBOLS = {"SPY"}
 PRICE_COLUMNS = [
     "symbol",
     "timestamp",
@@ -194,7 +198,7 @@ def _log_research_daily_prices_schema_check(
 
     result = _validate_research_daily_prices_schema(con, parquet_path)
     write_dq_log(
-        con=con,
+        con=context.resources.duckdb,
         check_name="dq_research_daily_prices_schema_columns_and_types",
         severity="RED",
         status=result["status"],
@@ -380,6 +384,63 @@ def _log_research_daily_prices_invalid_values_check(
         measured_con.close()
 
 
+def _log_research_daily_prices_symbol_coverage_check(
+    context: AssetExecutionContext,
+    day_df: pd.DataFrame,
+) -> dict[str, object]:
+    try:
+        run = getattr(context, "run", None)
+    except DagsterInvalidPropertyError:
+        run = None
+    run_id = getattr(run, "run_id", None)
+    partition_key = getattr(context, "partition_key", None)
+    try:
+        job_name = getattr(context, "job_name", None)
+    except DagsterInvalidPropertyError:
+        job_name = None
+
+    symbols = sorted(
+        day_df["symbol"].dropna().astype(str).str.strip().str.upper().unique().tolist()
+    )
+    symbol_count = len(symbols)
+    exception_only_universe = bool(symbols) and set(symbols).issubset(
+        RESEARCH_DAILY_PRICES_EXCEPTION_SYMBOLS
+    )
+    source_counts = {
+        str(source): int(count)
+        for source, count in day_df["source"].astype(str).value_counts().sort_index().items()
+    }
+    status = (
+        "FAIL"
+        if symbol_count < RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT or exception_only_universe
+        else "PASS"
+    )
+    details = {
+        "table": "silver.research_daily_prices",
+        "expected_partition_key": partition_key,
+        "symbol_count": symbol_count,
+        "minimum_symbol_count": RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT,
+        "exception_only_universe": exception_only_universe,
+        "exception_symbols": sorted(RESEARCH_DAILY_PRICES_EXCEPTION_SYMBOLS),
+        "source_counts": source_counts,
+        "symbols_preview": symbols[:20],
+    }
+    write_dq_log(
+        con=context.resources.duckdb,
+        check_name="dq_research_daily_prices_symbol_coverage",
+        severity="RED",
+        status=status,
+        measured_value=float(symbol_count),
+        threshold_value=float(RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT),
+        details=details,
+        run_id=str(run_id) if run_id else None,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
+    return {"status": status, "details": details}
+
+
 def _normalize_daily_prices_df(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
@@ -485,6 +546,13 @@ def silver_research_daily_prices(context: AssetExecutionContext) -> None:
             context.partition_key,
         )
         return
+
+    symbol_coverage_result = _log_research_daily_prices_symbol_coverage_check(context, day_df)
+    if symbol_coverage_result["status"] != "PASS":
+        raise ValueError(
+            "Research daily prices symbol coverage check failed for "
+            f"{context.partition_key}: {symbol_coverage_result['details']}"
+        )
 
     alpaca_rows = day_df["source"].eq("alpaca")
     has_corporate_actions = _table_exists(

@@ -98,6 +98,14 @@ Then run the streamlit app and you'll see sample data.
 streamlit run streamlit_app.py
 ```
 
+To launch Dagster locally, prefer the repo wrapper so Dagster uses a project-local instance instead of any broken global `~/.dagster` config:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-dagster-dev.ps1
+```
+
+This creates and uses `.dagster_home/` in the repository as `DAGSTER_HOME`.
+
 For environment variables and defaults, use:
 - [`docs/.env.sample`](docs/.env.sample)
 

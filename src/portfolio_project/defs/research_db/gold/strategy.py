@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 import os
@@ -20,6 +21,7 @@ from portfolio_project.defs.research_db.silver.research_prices import (
 )
 from portfolio_project.defs.research_db.silver.signals import silver_signals_daily
 from portfolio_project.defs.research_db.silver.strategy import (
+    STRATEGY_RUNS_COLUMNS,
     _ensure_table_contract,
     _quote_identifier,
     _safe_run_id,
@@ -211,6 +213,23 @@ def _active_strategies(con, context: AssetExecutionContext) -> list[StrategyConf
     return strategies
 
 
+def _ranking_method_for_strategy(con, strategy_id: str) -> str:
+    if not _table_exists(con, "silver", "strategy_definitions"):
+        return ""
+    row = con.execute(
+        """
+        SELECT ranking_method
+        FROM silver.strategy_definitions
+        WHERE strategy_id = ?
+        LIMIT 1
+        """,
+        [strategy_id],
+    ).fetchone()
+    if row is None or row[0] is None:
+        return ""
+    return str(row[0]).strip().lower()
+
+
 def _strategies_with_latest_run_ids(
     con,
     context: AssetExecutionContext,
@@ -382,6 +401,7 @@ def _build_rankings_for_strategy(
 
     for rebalance_date in rebalance_dates:
         parameters = _active_parameters_by_date(con, strategy.strategy_id, rebalance_date)
+        ranking_method = _ranking_method_for_strategy(con, strategy.strategy_id)
         signal_column = str(parameters.get("signal_column") or "momentum_12_1").strip()
         secondary_signal_column = str(parameters.get("secondary_signal_column") or "").strip()
         ranking_direction = str(parameters.get("ranking_direction") or "desc").strip().lower()
@@ -389,6 +409,7 @@ def _build_rankings_for_strategy(
         universe_name = str(strategy.config.get("universe") or "").strip().lower()
         selection_mode = str(strategy.config.get("selection_mode") or "").strip().lower()
         fixed_symbol = str(parameters.get("symbol") or strategy.benchmark_symbol).strip().upper()
+        max_pct_below_52w_high = parameters.get("max_pct_below_52w_high")
 
         if selection_mode == "fixed_symbol" or universe_name == "benchmark_only":
             candidate_rows = con.execute(
@@ -403,6 +424,22 @@ def _build_rankings_for_strategy(
                 """,
                 [rebalance_date, fixed_symbol],
             ).fetchall()
+        elif ranking_method == "random_selection":
+            sql = """
+                SELECT upper(trim(s.symbol)) AS symbol
+                FROM silver.signals_daily AS s
+                INNER JOIN silver.universe_membership_daily AS u
+                    ON CAST(u.member_date AS DATE) = CAST(s.date AS DATE)
+                   AND upper(trim(u.symbol)) = upper(trim(s.symbol))
+                WHERE CAST(s.date AS DATE) = ?
+            """
+            params = [rebalance_date]
+            min_avg_dollar_volume_21d = parameters.get("min_avg_dollar_volume_21d")
+            if min_avg_dollar_volume_21d is not None:
+                sql += " AND CAST(s.avg_dollar_volume_21d AS DOUBLE) >= ?"
+                params.append(float(min_avg_dollar_volume_21d))
+            sql += " ORDER BY symbol"
+            candidate_rows = con.execute(sql, params).fetchall()
         else:
             secondary_select_sql = ""
             secondary_not_null_sql = ""
@@ -440,29 +477,59 @@ def _build_rankings_for_strategy(
             if min_momentum_12_1 is not None:
                 sql += " AND CAST(s.momentum_12_1 AS DOUBLE) > ?"
                 params.append(float(min_momentum_12_1))
+            if max_pct_below_52w_high is not None:
+                sql += " AND CAST(s.pct_below_52w_high AS DOUBLE) <= ?"
+                params.append(float(max_pct_below_52w_high))
             candidate_rows = con.execute(sql, params).fetchall()
 
-        candidate_columns = (
-            ["symbol", "primary_score", "secondary_score"]
-            if secondary_signal_column
-            else ["symbol", "primary_score"]
-        )
-        candidate_df = pd.DataFrame(candidate_rows, columns=candidate_columns)
-        if candidate_df.empty:
-            continue
-
-        if secondary_signal_column and score_method == "zscore_sum":
-            def _zscore(series: pd.Series) -> pd.Series:
-                std = series.std(ddof=0)
-                if pd.isna(std) or std == 0:
-                    return pd.Series(0.0, index=series.index)
-                return (series - series.mean()) / std
-
-            candidate_df["score"] = _zscore(candidate_df["primary_score"]) + _zscore(
-                candidate_df["secondary_score"]
+        if ranking_method == "random_selection":
+            candidate_df = pd.DataFrame(candidate_rows, columns=["symbol"])
+            if candidate_df.empty:
+                continue
+            random_seed = int(parameters.get("random_seed") or 0)
+            candidate_df["score"] = candidate_df["symbol"].map(
+                lambda symbol: int.from_bytes(
+                    hashlib.sha256(
+                        f"{strategy.strategy_id}|{rebalance_date.isoformat()}|{random_seed}|{symbol}".encode(
+                            "utf-8"
+                        )
+                    ).digest()[:8],
+                    byteorder="big",
+                    signed=False,
+                )
+                / float(2**64 - 1)
             )
         else:
-            candidate_df["score"] = candidate_df["primary_score"]
+            candidate_columns = (
+                ["symbol", "primary_score", "secondary_score"]
+                if secondary_signal_column
+                else ["symbol", "primary_score"]
+            )
+            candidate_df = pd.DataFrame(candidate_rows, columns=candidate_columns)
+            if candidate_df.empty:
+                continue
+
+            if secondary_signal_column and score_method == "zscore_sum":
+                def _zscore(series: pd.Series) -> pd.Series:
+                    std = series.std(ddof=0)
+                    if pd.isna(std) or std == 0:
+                        return pd.Series(0.0, index=series.index)
+                    return (series - series.mean()) / std
+
+                candidate_df["score"] = _zscore(candidate_df["primary_score"]) + _zscore(
+                    candidate_df["secondary_score"]
+                )
+            elif secondary_signal_column and score_method == "ratio":
+                candidate_df = candidate_df[
+                    candidate_df["secondary_score"].notna() & candidate_df["secondary_score"].gt(0)
+                ].copy()
+                if candidate_df.empty:
+                    continue
+                candidate_df["score"] = (
+                    candidate_df["primary_score"] / candidate_df["secondary_score"]
+                )
+            else:
+                candidate_df["score"] = candidate_df["primary_score"]
 
         ascending = ranking_direction == "asc"
         candidate_df = candidate_df.sort_values(
@@ -574,10 +641,16 @@ def _ensure_strategy_run_rows(
         ]
     )
     _register_temp_df(con, "strategy_run_seed_df", run_rows)
+    target_columns = [column_name for column_name, _ in STRATEGY_RUNS_COLUMNS]
+    quoted_target_columns = ", ".join(_quote_identifier(column) for column in target_columns)
+    projected_seed_columns = ", ".join(
+        f"seed.{_quote_identifier(column)}" for column in target_columns
+    )
     con.execute(
-        """
+        f"""
         INSERT INTO silver.strategy_runs
-        SELECT seed.*
+        ({quoted_target_columns})
+        SELECT {projected_seed_columns}
         FROM strategy_run_seed_df
         AS seed
         WHERE NOT EXISTS (
@@ -1028,17 +1101,20 @@ def _load_distinct_trading_dates(
     *,
     start_date: date,
     end_date: date,
+    symbols: list[str] | None = None,
 ) -> list[date]:
-    rows = con.execute(
-        """
+    params: list[Any] = [PRICE_GLOB, start_date, end_date]
+    sql = """
         SELECT DISTINCT CAST(trade_date AS DATE) AS trade_date
         FROM read_parquet(?)
         WHERE CAST(trade_date AS DATE) >= ?
           AND CAST(trade_date AS DATE) <= ?
-        ORDER BY trade_date
-        """,
-        [PRICE_GLOB, start_date, end_date],
-    ).fetchall()
+    """
+    if symbols:
+        sql += "\n  AND upper(trim(symbol)) = ANY(?)"
+        params.append(symbols)
+    sql += "\nORDER BY trade_date"
+    rows = con.execute(sql, params).fetchall()
     return [row[0] for row in rows if row[0] is not None]
 
 
@@ -1095,6 +1171,7 @@ def _expected_return_dates_for_strategy(
         con,
         start_date=rebalance_dates[0],
         end_date=strategy.end_date or date(2999, 12, 31),
+        symbols=[strategy.benchmark_symbol.strip().upper()],
     )
     if not trading_dates:
         return []
@@ -1201,17 +1278,24 @@ def _build_returns_for_strategy(
         if benchmark_symbol in asset_return_wide.columns
         else pd.Series(dtype="float64")
     )
+    benchmark_trade_dates = (
+        sorted(pd.to_datetime(benchmark_returns.dropna().index).date.tolist())
+        if not benchmark_returns.empty
+        else []
+    )
+    if not benchmark_trade_dates:
+        return []
     daily_rows: list[dict[str, Any]] = []
     cumulative_wealth = 1.0
     peak_wealth = 1.0
 
     for period in periods:
-        for trade_date in asset_return_wide.index:
-            trade_day = pd.Timestamp(trade_date).date()
+        for trade_day in benchmark_trade_dates:
             if trade_day < period["effective_start"]:
                 continue
             if period["effective_end"] is not None and trade_day >= period["effective_end"]:
                 continue
+            trade_date = pd.Timestamp(trade_day)
             weights = period["weights"]
             weighted_returns = []
             for symbol, weight in weights.items():

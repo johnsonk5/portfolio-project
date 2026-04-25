@@ -50,6 +50,7 @@ def _signals_select_sql() -> str:
                 return_price,
                 lag(return_price, 1) OVER w AS lag_price_1,
                 lag(return_price, 5) OVER w AS lag_price_5,
+                lag(return_price, 10) OVER w AS lag_price_10,
                 lag(return_price, 21) OVER w AS lag_price_21,
                 lag(return_price, 63) OVER w AS lag_price_63,
                 lag(return_price, 126) OVER w AS lag_price_126,
@@ -128,6 +129,10 @@ def _signals_select_sql() -> str:
                 WHEN return_price IS NULL OR lag_price_5 IS NULL OR lag_price_5 = 0 THEN NULL
                 ELSE (return_price / lag_price_5) - 1
             END AS returns_5d,
+            CASE
+                WHEN return_price IS NULL OR lag_price_10 IS NULL OR lag_price_10 = 0 THEN NULL
+                ELSE (return_price / lag_price_10) - 1
+            END AS returns_10d,
             CASE
                 WHEN return_price IS NULL OR lag_price_21 IS NULL OR lag_price_21 = 0 THEN NULL
                 ELSE (return_price / lag_price_21) - 1
@@ -215,6 +220,7 @@ def silver_signals_daily(context: AssetExecutionContext) -> None:
         """,
         [prices_glob, SIGNALS_SYMBOL_BUCKETS, 0, SIGNAL_VERSION],
     )
+
     for bucket_index in range(SIGNALS_SYMBOL_BUCKETS):
         context.log.info(
             "Building silver.signals_daily bucket %s/%s",

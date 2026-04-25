@@ -86,9 +86,28 @@ REQUIRED_PARAMETER_FIELDS = [
 
 REQUIRED_PARAMETERS_BY_RANKING_METHOD: dict[str, set[str]] = {
     "single_asset_hold": {"symbol"},
+    "avg_dollar_volume_63d_desc": {"signal_column", "ranking_direction"},
     "momentum_12_1_desc": {"signal_column", "ranking_direction"},
     "realized_vol_21d_asc": {"signal_column", "ranking_direction"},
     "returns_5d_asc": {"signal_column", "ranking_direction"},
+    "composite_realized_vol_21d_63d_asc": {
+        "signal_column",
+        "secondary_signal_column",
+        "score_method",
+        "ranking_direction",
+    },
+    "composite_returns_5d_10d_asc": {
+        "signal_column",
+        "secondary_signal_column",
+        "score_method",
+        "ranking_direction",
+    },
+    "momentum_vol_ratio_desc": {
+        "signal_column",
+        "secondary_signal_column",
+        "score_method",
+        "ranking_direction",
+    },
     "composite_momentum_below_52w_high_desc": {
         "signal_column",
         "secondary_signal_column",
@@ -96,12 +115,13 @@ REQUIRED_PARAMETERS_BY_RANKING_METHOD: dict[str, set[str]] = {
         "ranking_direction",
         "min_momentum_12_1",
     },
+    "random_selection": {"random_seed"},
 }
 
 SUPPORTED_REBALANCE_FREQUENCIES = {"daily", "weekly", "monthly"}
 SUPPORTED_WEIGHTING_METHODS = {"equal", "rank", "volatility"}
 SUPPORTED_RANKING_DIRECTIONS = {"asc", "desc"}
-SUPPORTED_SCORE_METHODS = {"zscore_sum"}
+SUPPORTED_SCORE_METHODS = {"ratio", "zscore_sum"}
 
 
 def _quote_identifier(identifier: str) -> str:
@@ -271,6 +291,11 @@ def _validate_parameter_value_ranges(strategy: dict[str, Any]) -> None:
                 raise ValueError(
                     f"Strategy {strategy_id} parameter min_momentum_12_1 must be >= 0."
                 )
+            if parameter_name == "max_pct_below_52w_high" and not 0 <= float(value) <= 1:
+                raise ValueError(
+                    f"Strategy {strategy_id} parameter max_pct_below_52w_high must be between "
+                    "0 and 1."
+                )
             if parameter_name == "rebalance_buffer_bps" and not 0 <= int(value) <= 10000:
                 raise ValueError(
                     f"Strategy {strategy_id} parameter rebalance_buffer_bps must be between "
@@ -279,6 +304,10 @@ def _validate_parameter_value_ranges(strategy: dict[str, Any]) -> None:
 
     expected_values_by_method: dict[str, dict[str, Any]] = {
         "single_asset_hold": {},
+        "avg_dollar_volume_63d_desc": {
+            "signal_column": "avg_dollar_volume_63d",
+            "ranking_direction": "desc",
+        },
         "momentum_12_1_desc": {
             "signal_column": "momentum_12_1",
             "ranking_direction": "desc",
@@ -290,6 +319,24 @@ def _validate_parameter_value_ranges(strategy: dict[str, Any]) -> None:
         "returns_5d_asc": {
             "signal_column": "returns_5d",
             "ranking_direction": "asc",
+        },
+        "composite_realized_vol_21d_63d_asc": {
+            "signal_column": "realized_vol_21d",
+            "secondary_signal_column": "realized_vol_63d",
+            "score_method": "zscore_sum",
+            "ranking_direction": "asc",
+        },
+        "composite_returns_5d_10d_asc": {
+            "signal_column": "returns_5d",
+            "secondary_signal_column": "returns_1d",
+            "score_method": "zscore_sum",
+            "ranking_direction": "asc",
+        },
+        "momentum_vol_ratio_desc": {
+            "signal_column": "momentum_12_1",
+            "secondary_signal_column": "realized_vol_21d",
+            "score_method": "ratio",
+            "ranking_direction": "desc",
         },
         "composite_momentum_below_52w_high_desc": {
             "signal_column": "momentum_12_1",
