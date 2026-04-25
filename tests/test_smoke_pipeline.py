@@ -33,7 +33,6 @@ from portfolio_project.defs.research_db.silver.universe import (
     silver_universe_membership_events,
 )
 
-
 RESEARCH_SMOKE_STRATEGY_YAML = """
 strategies:
   - strategy_id: benchmark_spy_buy_and_hold
