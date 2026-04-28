@@ -7,6 +7,9 @@ from typing import Optional
 
 import duckdb
 
+from portfolio_project.defs.portfolio_db.observability.alerts import (
+    send_red_observability_alerts,
+)
 from portfolio_project.defs.portfolio_db.observability.observability_modules import (
     ensure_data_quality_table,
 )
@@ -180,6 +183,15 @@ def _write_data_quality_rows(con, rows: list[dict]) -> None:
                 row["logged_ts"],
             ],
         )
+
+
+def _alert_on_data_quality_rows(context, rows: list[dict]) -> None:
+    events = [{**row, "event_type": "data_quality"} for row in rows]
+    try:
+        send_red_observability_alerts(events, logger=getattr(context, "log", None))
+    except Exception as exc:
+        if hasattr(context, "log"):
+            context.log.warning("RED data quality email alert failed: %s", exc)
 
 
 def _check_daily_prices(
@@ -1371,8 +1383,10 @@ def write_data_quality_checks(context) -> None:
             con.commit()
         except Exception:
             pass
+        _alert_on_data_quality_rows(context, rows)
         return
 
     for con in _with_duckdb_connection():
         rows = _run_checks(con)
         _write_data_quality_rows(con, rows)
+        _alert_on_data_quality_rows(context, rows)

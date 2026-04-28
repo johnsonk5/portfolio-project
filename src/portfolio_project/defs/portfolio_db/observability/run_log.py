@@ -15,6 +15,9 @@ from dagster import (
     success_hook,
 )
 
+from portfolio_project.defs.portfolio_db.observability.alerts import (
+    send_red_observability_alerts,
+)
 from portfolio_project.defs.portfolio_db.observability.data_quality import write_data_quality_checks
 from portfolio_project.defs.resources.duckdb import (
     _acquire_duckdb_lock,
@@ -426,6 +429,17 @@ def _write_freshness_check_rows(con, rows: list[dict]) -> None:
         )
 
 
+def _alert_on_freshness_rows(context, rows: list[dict]) -> None:
+    events = [{**row, "event_type": "freshness"} for row in rows]
+    try:
+        send_red_observability_alerts(events, logger=getattr(context, "log", None))
+    except Exception as exc:
+        try:
+            context.log.warning("RED freshness email alert failed: %s", exc)
+        except Exception:
+            pass
+
+
 def _is_us_trading_day(partition_key: str) -> bool:
     try:
         day = datetime.strptime(partition_key, "%Y-%m-%d").date()
@@ -480,11 +494,11 @@ def _is_us_trading_day(partition_key: str) -> bool:
     def _fallback_us_market_holidays(year: int) -> set[date]:
         holidays = {
             _observed_fixed_holiday(year, 1, 1),
-            _nth_weekday_of_month(year, 1, 0, 3),   # Martin Luther King Jr. Day
-            _nth_weekday_of_month(year, 2, 0, 3),   # Presidents Day
+            _nth_weekday_of_month(year, 1, 0, 3),  # Martin Luther King Jr. Day
+            _nth_weekday_of_month(year, 2, 0, 3),  # Presidents Day
             _easter_sunday(year) - timedelta(days=2),  # Good Friday
-            _last_weekday_of_month(year, 5, 0),     # Memorial Day
-            _nth_weekday_of_month(year, 9, 0, 1),   # Labor Day
+            _last_weekday_of_month(year, 5, 0),  # Memorial Day
+            _nth_weekday_of_month(year, 9, 0, 1),  # Labor Day
             _nth_weekday_of_month(year, 11, 3, 4),  # Thanksgiving
             _observed_fixed_holiday(year, 12, 25),
         }
@@ -1422,9 +1436,7 @@ def _check_research_universe_freshness(
                 float(current_symbol_count) if partition_key in counts_lookup else None
             ),
             "threshold_value": (
-                float(absolute_min_symbol_count)
-                if insufficient_history_status == "FAIL"
-                else None
+                float(absolute_min_symbol_count) if insufficient_history_status == "FAIL" else None
             ),
             "details_json": json.dumps(
                 {
@@ -1653,6 +1665,7 @@ def _write_freshness_checks(context) -> None:
         for owned_con in _with_duckdb_connection():
             check_rows = _run_checks_with_isolation(owned_con)
             _write_freshness_check_rows(owned_con, check_rows)
+            _alert_on_freshness_rows(context, check_rows)
         return
 
     check_rows = _run_checks_with_isolation(con)
@@ -1661,6 +1674,7 @@ def _write_freshness_checks(context) -> None:
         con.commit()
     except Exception:
         pass
+    _alert_on_freshness_rows(context, check_rows)
 
 
 def _write_run_log(context, status: str, error_message: Optional[str] = None) -> None:
@@ -1880,6 +1894,32 @@ def _failure_event_message(context) -> str | None:
     return getattr(failure_event, "message", None)
 
 
+def _send_pipeline_failure_alert(context, error_message: Optional[str]) -> None:
+    run = _get_run_from_context(context)
+    run_id = getattr(run, "run_id", None) or getattr(context, "run_id", None)
+    job_name = getattr(run, "job_name", None) or getattr(context, "job_name", None)
+    tags = run.tags or {} if run else {}
+    partition_key = tags.get("dagster/partition")
+    events = [
+        {
+            "event_type": "pipeline_failure",
+            "severity": "RED",
+            "status": "FAILURE",
+            "run_id": str(run_id) if run_id else None,
+            "job_name": job_name,
+            "partition_key": partition_key,
+            "error_message": error_message,
+        }
+    ]
+    try:
+        send_red_observability_alerts(events, logger=getattr(context, "log", None))
+    except Exception as exc:
+        try:
+            context.log.warning("RED pipeline failure email alert failed: %s", exc)
+        except Exception:
+            pass
+
+
 @failure_hook(required_resource_keys={"duckdb"})
 def dagster_run_log_failure(context) -> None:
     error_message = _failure_event_message(context)
@@ -1888,6 +1928,7 @@ def dagster_run_log_failure(context) -> None:
     except Exception as exc:
         context.log.warning("Run log write failed: %s", exc)
         raise RuntimeError(f"Observability failure: run_log_write_failed: {exc}") from exc
+    _send_pipeline_failure_alert(context, error_message)
 
 
 @run_status_sensor(
@@ -1915,3 +1956,4 @@ def dagster_run_log_failure_sensor(context) -> None:
     except Exception as exc:
         context.log.warning("Run log write failed: %s", exc)
         raise RuntimeError(f"Observability failure: run_log_write_failed: {exc}") from exc
+    _send_pipeline_failure_alert(context, error_message)
