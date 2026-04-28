@@ -108,6 +108,7 @@ DQ checks run on successful runs and write to `observability.data_quality_checks
 ### Important Behavior
 - DQ rows are inserted per evaluation event; they are not globally replaced per `run_id` in the current writer path.
 - A unique `check_id` is stored per DQ row.
+- RED DQ email alerts are sent only when a `job_name` + `partition_key` + `check_name` issue first becomes actionable. Repeated failures of the same active issue are logged but do not send another email until a non-actionable result, such as `PASS`, clears the prior alert state.
 
 ## DuckDB Concurrency Safety
 
