@@ -8,8 +8,33 @@ Reliability is handled with three layers:
 - Run observability (`run_log`, `run_asset_log`).
 - Freshness checks (`data_freshness_checks`).
 - Data quality checks (`data_quality_checks`).
+- Email alerts for RED observability events.
 
 All observability tables are written to the portfolio DuckDB (`portfolio.duckdb`), even for research workflows that read and write data in `research.duckdb`.
+
+## Email Alerts
+
+Email alerting is opt-in and sends one plain-text email when a RED observability event is recorded.
+
+### Alert Coverage
+- Pipeline failures from Dagster failure hooks and failure sensors.
+- Freshness check rows with `severity = 'RED'` and `status` in `FAIL`, `SKIPPED`, or `WARN`.
+- Data quality check rows with `severity = 'RED'` and `status` in `FAIL`, `SKIPPED`, or `WARN`.
+
+Email delivery failures are logged as warnings and do not fail the pipeline run.
+
+### Email Config
+- `PORTFOLIO_ALERT_EMAIL_TO`: required recipient list. Use commas or semicolons for multiple recipients.
+- `PORTFOLIO_ALERT_EMAIL_FROM`: sender address. Defaults to `PORTFOLIO_ALERT_SMTP_USERNAME` when omitted.
+- `PORTFOLIO_ALERT_SMTP_HOST`: required SMTP hostname.
+- `PORTFOLIO_ALERT_SMTP_PORT`: SMTP port, default `587`.
+- `PORTFOLIO_ALERT_SMTP_USERNAME`: optional SMTP username.
+- `PORTFOLIO_ALERT_SMTP_PASSWORD`: optional SMTP password.
+- `PORTFOLIO_ALERT_SMTP_STARTTLS`: whether to call STARTTLS, default `true`.
+- `PORTFOLIO_ALERT_EMAIL_ENABLED`: optional kill switch, default `true`.
+- `PORTFOLIO_ALERT_EMAIL_SUBJECT_PREFIX`: subject prefix, default `[Portfolio Alert]`.
+
+If `PORTFOLIO_ALERT_EMAIL_TO`, `PORTFOLIO_ALERT_EMAIL_FROM` or `PORTFOLIO_ALERT_SMTP_USERNAME`, and `PORTFOLIO_ALERT_SMTP_HOST` are not configured, alerting is disabled.
 
 ## Run Observability
 
