@@ -10,7 +10,10 @@ from portfolio_project.defs.portfolio_db.bronze.news import bronze_yahoo_news
 from portfolio_project.defs.portfolio_db.silver.assets import silver_alpaca_assets
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
-SILVER_NEWS_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
+SILVER_NEWS_PARTITIONS = DailyPartitionsDefinition(
+    start_date=PARTITIONS_START_DATE,
+    end_offset=1,
+)
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 DEFAULT_PUBLISHER_WEIGHT = float(os.getenv("DEFAULT_PUBLISHER_WEIGHT", "0.05"))
 TRANCO_LOOKUP_DAYS = int(os.getenv("TRANCO_LOOKUP_DAYS", "30"))

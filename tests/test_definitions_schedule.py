@@ -14,6 +14,9 @@ from portfolio_project.definitions import (
     research_daily_prices_schedule,
     weekly_digest_schedule,
 )
+from portfolio_project.defs.portfolio_db.bronze.news import BRONZE_NEWS_PARTITIONS
+from portfolio_project.defs.portfolio_db.gold.news import GOLD_NEWS_PARTITIONS
+from portfolio_project.defs.portfolio_db.silver.news import SILVER_NEWS_PARTITIONS
 
 
 def test_previous_trading_day_weekday_and_weekend_logic() -> None:
@@ -39,6 +42,12 @@ def test_daily_news_schedule_uses_same_day_partition() -> None:
     request = _daily_news_schedule_fn(context)
     assert request.partition_key == "2026-02-17"
     assert request.run_key == "2026-02-17"
+
+
+def test_daily_news_partitions_expose_same_day_schedule_target() -> None:
+    assert BRONZE_NEWS_PARTITIONS.end_offset == 1
+    assert SILVER_NEWS_PARTITIONS.end_offset == 1
+    assert GOLD_NEWS_PARTITIONS.end_offset == 1
 
 
 def test_research_daily_prices_schedule_uses_previous_trading_day_partition() -> None:

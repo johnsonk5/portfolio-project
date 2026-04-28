@@ -7,7 +7,10 @@ from dagster import AssetExecutionContext, DailyPartitionsDefinition, asset
 from portfolio_project.defs.portfolio_db.silver.news import silver_news
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
-GOLD_NEWS_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
+GOLD_NEWS_PARTITIONS = DailyPartitionsDefinition(
+    start_date=PARTITIONS_START_DATE,
+    end_offset=1,
+)
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 SENTIMENT_BATCH_SIZE = int(os.getenv("NEWS_SENTIMENT_BATCH_SIZE", "32"))
 _SENTIMENT_PIPELINE = None

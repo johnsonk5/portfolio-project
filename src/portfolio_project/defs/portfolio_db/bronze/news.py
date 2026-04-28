@@ -18,7 +18,10 @@ from dagster import (
 )
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
-BRONZE_NEWS_PARTITIONS = DailyPartitionsDefinition(start_date=PARTITIONS_START_DATE)
+BRONZE_NEWS_PARTITIONS = DailyPartitionsDefinition(
+    start_date=PARTITIONS_START_DATE,
+    end_offset=1,
+)
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 TICKERS_ENV = "ALPACA_TICKERS"
 YAHOO_SEARCH_URL = "https://query1.finance.yahoo.com/v1/finance/search"
