@@ -107,6 +107,17 @@ Ingest monthly Tranco snapshot for publisher weighting.
 ### Schedule
 - `tranco_monthly_schedule`: `0 18 1 * *` America/New_York.
 
+## `weekly_digest_job`
+
+### Purpose
+Send a weekly plain-text email with run stats, market KPIs, stocks far below their 52-week highs, and five random recent news stories.
+
+### Flow
+- `weekly_digest_email`
+
+### Schedule
+- `weekly_digest_schedule`: `0 8 * * 1` America/New_York.
+
 ## `asset_status_updates_job`
 
 ### Purpose

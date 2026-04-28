@@ -24,6 +24,7 @@ from portfolio_project.defs.portfolio_db.demo.seed_data import seed_demo_data
 from portfolio_project.defs.portfolio_db.gold.activity import gold_activity
 from portfolio_project.defs.portfolio_db.gold.news import gold_headlines
 from portfolio_project.defs.portfolio_db.gold.prices import gold_alpaca_prices
+from portfolio_project.defs.portfolio_db.observability.alerts import weekly_digest_email
 from portfolio_project.defs.portfolio_db.observability.run_log import (
     _is_us_trading_day,
     dagster_run_log_failure,
@@ -229,6 +230,14 @@ sample_demo_seed_job = define_asset_job(
     hooks={dagster_run_log_success, dagster_run_log_failure},
 )
 
+weekly_digest_job = define_asset_job(
+    name="weekly_digest_job",
+    selection=AssetSelection.assets(
+        weekly_digest_email,
+    ),
+    hooks={dagster_run_log_success, dagster_run_log_failure},
+)
+
 sp500_weekly_schedule = ScheduleDefinition(
     name="sp500_weekly_schedule",
     cron_schedule="0 17 * * 5",
@@ -367,6 +376,13 @@ tranco_monthly_schedule = ScheduleDefinition(
     job=tranco_update_job,
 )
 
+weekly_digest_schedule = ScheduleDefinition(
+    name="weekly_digest_schedule",
+    cron_schedule="0 8 * * 1",
+    execution_timezone="America/New_York",
+    job=weekly_digest_job,
+)
+
 defs = Definitions(
     assets=[
         bronze_alpaca_bars,
@@ -405,6 +421,7 @@ defs = Definitions(
         gold_activity,
         bronze_sp500_companies,
         silver_sp500_companies,
+        weekly_digest_email,
     ],
     jobs=[
         daily_prices_job,
@@ -418,6 +435,7 @@ defs = Definitions(
         sp500_update_job,
         tranco_update_job,
         sample_demo_seed_job,
+        weekly_digest_job,
     ],
     schedules=[
         daily_prices_schedule,
@@ -428,6 +446,7 @@ defs = Definitions(
         wikipedia_daily_schedule,
         sp500_weekly_schedule,
         tranco_monthly_schedule,
+        weekly_digest_schedule,
     ],
     resources={
         "alpaca": alpaca_resource,

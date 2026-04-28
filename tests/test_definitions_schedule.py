@@ -12,6 +12,7 @@ from portfolio_project.definitions import (
     defs,
     monthly_factors_schedule,
     research_daily_prices_schedule,
+    weekly_digest_schedule,
 )
 
 
@@ -91,6 +92,17 @@ def test_research_daily_prices_schedule_metadata() -> None:
     assert research_daily_prices_schedule.job.name == "research_daily_prices_job"
 
 
+def test_weekly_digest_schedule_metadata() -> None:
+    assert weekly_digest_schedule.cron_schedule == "0 8 * * 1"
+    assert weekly_digest_schedule.execution_timezone == "America/New_York"
+    assert weekly_digest_schedule.job.name == "weekly_digest_job"
+
+
 def test_research_daily_prices_job_resolves_from_definitions() -> None:
     job_def = defs.get_job_def("research_daily_prices_job")
     assert job_def.name == "research_daily_prices_job"
+
+
+def test_weekly_digest_job_resolves_from_definitions() -> None:
+    job_def = defs.get_job_def("weekly_digest_job")
+    assert job_def.name == "weekly_digest_job"

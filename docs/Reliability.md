@@ -8,13 +8,14 @@ Reliability is handled with three layers:
 - Run observability (`run_log`, `run_asset_log`).
 - Freshness checks (`data_freshness_checks`).
 - Data quality checks (`data_quality_checks`).
-- Email alerts for RED observability events.
+- Email alerts for RED observability events and the weekly digest.
 
 All observability tables are written to the portfolio DuckDB (`portfolio.duckdb`), even for research workflows that read and write data in `research.duckdb`.
 
 ## Email Alerts
 
 Email alerting is opt-in and sends one plain-text email when a RED observability event is recorded.
+The weekly digest uses the same SMTP configuration and is sent by `weekly_digest_schedule`.
 
 ### Alert Coverage
 - Pipeline failures from Dagster failure hooks and failure sensors.
@@ -35,6 +36,14 @@ Email delivery failures are logged as warnings and do not fail the pipeline run.
 - `PORTFOLIO_ALERT_EMAIL_SUBJECT_PREFIX`: subject prefix, default `[Portfolio Alert]`.
 
 If `PORTFOLIO_ALERT_EMAIL_TO`, `PORTFOLIO_ALERT_EMAIL_FROM` or `PORTFOLIO_ALERT_SMTP_USERNAME`, and `PORTFOLIO_ALERT_SMTP_HOST` are not configured, alerting is disabled.
+
+### Weekly Digest
+- Schedule: `weekly_digest_schedule`, Mondays at `0 8 * * 1` America/New_York.
+- Delivery: plain-text email through the same `PORTFOLIO_ALERT_*` SMTP settings.
+- Run stats: total/success/failed runs, average duration, and mutation counts for the last 7 days.
+- Market KPIs: index ETF performance when available, market breadth, trend versus 50d/200d moving averages, and median realized volatility.
+- `Discounts`: latest symbols sorted by distance below their 52-week high, with recent returns, momentum, and volatility.
+- Random News: five random recent rows from `gold.headlines`; this is intentionally simple until source ranking is added.
 
 ## Run Observability
 
