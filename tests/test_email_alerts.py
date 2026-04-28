@@ -1,4 +1,7 @@
+from datetime import datetime, timezone
 from email.message import EmailMessage
+
+import duckdb
 
 from portfolio_project.defs.portfolio_db.observability import alerts
 from portfolio_project.defs.portfolio_db.observability.alerts import (
@@ -7,6 +10,10 @@ from portfolio_project.defs.portfolio_db.observability.alerts import (
     is_red_observability_event,
     load_email_alert_config,
     send_red_observability_alerts,
+)
+from portfolio_project.defs.portfolio_db.observability.data_quality import (
+    _filter_new_data_quality_alert_rows,
+    _write_data_quality_rows,
 )
 
 
@@ -22,6 +29,28 @@ def _config() -> EmailAlertConfig:
         recipients=("ops@example.com",),
         subject_prefix="[Test]",
     )
+
+
+def _dq_row(
+    *,
+    run_id: str,
+    status: str = "FAIL",
+    severity: str = "RED",
+    logged_ts: datetime | None = None,
+) -> dict:
+    return {
+        "check_id": f"check-{run_id}",
+        "run_id": run_id,
+        "job_name": "daily_prices_job",
+        "partition_key": "2026-02-13",
+        "check_name": "dq_silver_prices_ranges",
+        "severity": severity,
+        "status": status,
+        "measured_value": 2.0,
+        "threshold_value": 0.0,
+        "details_json": "{}",
+        "logged_ts": logged_ts or datetime.now(timezone.utc),
+    }
 
 
 def test_load_email_alert_config_uses_recipient_env(monkeypatch) -> None:
@@ -132,3 +161,49 @@ def test_send_red_observability_alerts_noops_when_disabled(monkeypatch) -> None:
     )
 
     assert count == 0
+
+
+def test_data_quality_alert_filter_suppresses_repeated_active_issue() -> None:
+    con = duckdb.connect(":memory:")
+    _write_data_quality_rows(
+        con,
+        [
+            _dq_row(
+                run_id="run-1",
+                logged_ts=datetime(2026, 2, 13, 14, 0, tzinfo=timezone.utc),
+            )
+        ],
+    )
+
+    repeated_failure = _dq_row(
+        run_id="run-2",
+        logged_ts=datetime(2026, 2, 13, 14, 5, tzinfo=timezone.utc),
+    )
+
+    assert _filter_new_data_quality_alert_rows(con, [repeated_failure]) == []
+
+
+def test_data_quality_alert_filter_alerts_after_recovery() -> None:
+    con = duckdb.connect(":memory:")
+    _write_data_quality_rows(
+        con,
+        [
+            _dq_row(
+                run_id="run-1",
+                status="FAIL",
+                logged_ts=datetime(2026, 2, 13, 14, 0, tzinfo=timezone.utc),
+            ),
+            _dq_row(
+                run_id="run-2",
+                status="PASS",
+                logged_ts=datetime(2026, 2, 13, 14, 5, tzinfo=timezone.utc),
+            ),
+        ],
+    )
+    new_failure = _dq_row(
+        run_id="run-3",
+        status="FAIL",
+        logged_ts=datetime(2026, 2, 13, 14, 10, tzinfo=timezone.utc),
+    )
+
+    assert _filter_new_data_quality_alert_rows(con, [new_failure]) == [new_failure]

@@ -8,6 +8,7 @@ from typing import Optional
 import duckdb
 
 from portfolio_project.defs.portfolio_db.observability.alerts import (
+    is_red_observability_event,
     send_red_observability_alerts,
 )
 from portfolio_project.defs.portfolio_db.observability.observability_modules import (
@@ -183,6 +184,50 @@ def _write_data_quality_rows(con, rows: list[dict]) -> None:
                 row["logged_ts"],
             ],
         )
+
+
+def _data_quality_issue_key(row: dict) -> tuple[object, object, object]:
+    return (row.get("job_name"), row.get("partition_key"), row.get("check_name"))
+
+
+def _latest_prior_data_quality_state(con, row: dict) -> tuple[str | None, str | None] | None:
+    result = con.execute(
+        """
+        SELECT severity, status
+        FROM observability.data_quality_checks
+        WHERE job_name IS NOT DISTINCT FROM ?
+          AND partition_key IS NOT DISTINCT FROM ?
+          AND check_name IS NOT DISTINCT FROM ?
+        ORDER BY logged_ts DESC
+        LIMIT 1
+        """,
+        [row.get("job_name"), row.get("partition_key"), row.get("check_name")],
+    ).fetchone()
+    if result is None:
+        return None
+    return result[0], result[1]
+
+
+def _filter_new_data_quality_alert_rows(con, rows: list[dict]) -> list[dict]:
+    ensure_data_quality_table(con)
+    alert_rows: list[dict] = []
+    alerted_issue_keys = set()
+    for row in rows:
+        if not is_red_observability_event(row):
+            continue
+        issue_key = _data_quality_issue_key(row)
+        if issue_key in alerted_issue_keys:
+            continue
+        prior_state = _latest_prior_data_quality_state(con, row)
+        if prior_state is not None:
+            prior_severity, prior_status = prior_state
+            if is_red_observability_event(
+                {"severity": prior_severity, "status": prior_status}
+            ):
+                continue
+        alert_rows.append(row)
+        alerted_issue_keys.add(issue_key)
+    return alert_rows
 
 
 def _alert_on_data_quality_rows(context, rows: list[dict]) -> None:
@@ -1378,15 +1423,17 @@ def write_data_quality_checks(context) -> None:
     if resources is not None and hasattr(resources, "duckdb"):
         con = resources.duckdb
         rows = _run_checks(con)
+        alert_rows = _filter_new_data_quality_alert_rows(con, rows)
         _write_data_quality_rows(con, rows)
         try:
             con.commit()
         except Exception:
             pass
-        _alert_on_data_quality_rows(context, rows)
+        _alert_on_data_quality_rows(context, alert_rows)
         return
 
     for con in _with_duckdb_connection():
         rows = _run_checks(con)
+        alert_rows = _filter_new_data_quality_alert_rows(con, rows)
         _write_data_quality_rows(con, rows)
-        _alert_on_data_quality_rows(context, rows)
+        _alert_on_data_quality_rows(context, alert_rows)
