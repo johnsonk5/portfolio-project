@@ -6,6 +6,8 @@ import duckdb
 import pandas as pd
 import streamlit as st
 
+from portfolio_project.components.notification_center import render_notification_center
+
 st.set_page_config(
     page_title="Deep Dive",
     page_icon="DD",
@@ -67,6 +69,7 @@ html, body, [class*="css"] {
 """
 
 st.markdown(CSS, unsafe_allow_html=True)
+render_notification_center()
 
 st.title("Deep Dive")
 st.caption("Focus on one asset with price action and headline sentiment context.")

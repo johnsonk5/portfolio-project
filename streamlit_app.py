@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from portfolio_project.components.hover_bar import hover_bar_chart, hover_grouped_bar_chart
+from portfolio_project.components.notification_center import render_notification_center
 
 st.set_page_config(
     page_title="Market Vibecheck",
@@ -183,6 +184,7 @@ html, body, [class*="css"]  {
 """
 
 st.markdown(CSS, unsafe_allow_html=True)
+render_notification_center()
 
 QUOTES = [
     '"Well then buy it...well then sell it, I don\'t know... *vomits*" - Eric Andre',
