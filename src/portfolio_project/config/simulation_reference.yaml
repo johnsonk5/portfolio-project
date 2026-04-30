@@ -8,6 +8,9 @@ simulation_types:
   commission_model: none
   lookahead_safe_flag: false
   is_active: true
+  default_flag: false
+  notes: null
+  slippage_params: null
 - simulation_type_id: 2
   simulation_type_code: next_open_no_cost
   description: Next-session open-fill simulation with no explicit trading costs.
@@ -17,15 +20,21 @@ simulation_types:
   commission_model: none
   lookahead_safe_flag: true
   is_active: true
+  default_flag: false
+  notes: null
+  slippage_params: null
 - simulation_type_id: 3
-  simulation_type_code: open_fixed_bps
-  description: Open-fill simulation with a fixed basis-point slippage assumption.
-  fill_price_basis: open
+  simulation_type_code: next_open_fixed_5bps
+  description: Next-session open-fill simulation with fixed 5 bps slippage per trade.
+  fill_price_basis: next_open
   slippage_model: fixed_bps
   slippage_bps: 5
   commission_model: none
   lookahead_safe_flag: true
   is_active: true
+  default_flag: true
+  notes: null
+  slippage_params: null
 - simulation_type_id: 4
   simulation_type_code: vwap_volatility_slippage
   description: VWAP-fill simulation using a volatility-based slippage model.
@@ -35,6 +44,24 @@ simulation_types:
   commission_model: none
   lookahead_safe_flag: true
   is_active: true
+  default_flag: false
+  notes: null
+  slippage_params:
+    volatility_window_days: 21
+    base_bps: 2
+    volatility_multiplier: 0.10
+- simulation_type_id: 5
+  simulation_type_code: next_open_fixed_10bps
+  description: Next-session open-fill simulation with fixed 10 bps slippage per trade.
+  fill_price_basis: next_open
+  slippage_model: fixed_bps
+  slippage_bps: 10
+  commission_model: none
+  lookahead_safe_flag: true
+  is_active: true
+  default_flag: false
+  notes: Conservative baseline for higher-turnover strategies.
+  slippage_params: null
 
 run_types:
 - run_type_code: backtest

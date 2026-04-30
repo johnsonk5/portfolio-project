@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,9 @@ SIMULATION_TYPES_COLUMNS: list[tuple[str, str]] = [
     ("commission_model", "VARCHAR"),
     ("lookahead_safe_flag", "BOOLEAN"),
     ("is_active", "BOOLEAN"),
+    ("default_flag", "BOOLEAN"),
+    ("notes", "VARCHAR"),
+    ("slippage_params_json", "VARCHAR"),
 ]
 
 RUN_TYPES_COLUMNS: list[tuple[str, str]] = [
@@ -42,6 +46,7 @@ REQUIRED_SIMULATION_TYPE_FIELDS = [
     "commission_model",
     "lookahead_safe_flag",
     "is_active",
+    "default_flag",
 ]
 
 REQUIRED_RUN_TYPE_FIELDS = [
@@ -81,6 +86,7 @@ def _simulation_type_records(catalog: dict[str, Any]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     seen_ids: set[int] = set()
     seen_codes: set[str] = set()
+    default_codes: list[str] = []
 
     for raw_record in simulation_types:
         if not isinstance(raw_record, dict):
@@ -96,6 +102,8 @@ def _simulation_type_records(catalog: dict[str, Any]) -> list[dict[str, Any]]:
         fill_price_basis = str(raw_record["fill_price_basis"]).strip().lower()
         slippage_model = str(raw_record["slippage_model"]).strip().lower()
         slippage_bps = float(raw_record["slippage_bps"])
+        default_flag = bool(raw_record["default_flag"])
+        slippage_params = raw_record.get("slippage_params")
 
         if simulation_type_id in seen_ids:
             raise ValueError(
@@ -122,6 +130,18 @@ def _simulation_type_records(catalog: dict[str, Any]) -> list[dict[str, Any]]:
                 f"Simulation type {simulation_type_code} slippage_bps must be greater than "
                 "or equal to 0."
             )
+        if slippage_params is not None and not isinstance(slippage_params, dict):
+            raise ValueError(
+                f"Simulation type {simulation_type_code} slippage_params must be a mapping "
+                "when provided."
+            )
+        if slippage_model == "volatility_based" and not slippage_params:
+            raise ValueError(
+                f"Simulation type {simulation_type_code} requires slippage_params for "
+                "volatility_based slippage."
+            )
+        if default_flag:
+            default_codes.append(simulation_type_code)
 
         seen_ids.add(simulation_type_id)
         seen_codes.add(simulation_type_code)
@@ -136,7 +156,18 @@ def _simulation_type_records(catalog: dict[str, Any]) -> list[dict[str, Any]]:
                 "commission_model": str(raw_record["commission_model"]).strip().lower(),
                 "lookahead_safe_flag": bool(raw_record["lookahead_safe_flag"]),
                 "is_active": bool(raw_record["is_active"]),
+                "default_flag": default_flag,
+                "notes": raw_record.get("notes"),
+                "slippage_params_json": (
+                    json.dumps(slippage_params, sort_keys=True) if slippage_params else None
+                ),
             }
+        )
+
+    if len(default_codes) != 1:
+        raise ValueError(
+            "simulation_reference.yaml must define exactly one default simulation type; found "
+            f"{len(default_codes)}."
         )
 
     return records

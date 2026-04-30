@@ -17,8 +17,11 @@ simulation_types:
     commission_model: none
     lookahead_safe_flag: false
     is_active: true
+    default_flag: false
+    notes: null
+    slippage_params: null
   - simulation_type_id: 2
-    simulation_type_code: next_open_fixed_bps
+    simulation_type_code: next_open_fixed_5bps
     description: Next-open fill with fixed slippage.
     fill_price_basis: next_open
     slippage_model: fixed_bps
@@ -26,6 +29,9 @@ simulation_types:
     commission_model: none
     lookahead_safe_flag: true
     is_active: true
+    default_flag: true
+    notes: null
+    slippage_params: null
 run_types:
   - run_type_code: backtest
     description: Historical replay.
@@ -74,14 +80,28 @@ def test_simulation_reference_assets_seed_ref_tables_from_yaml(
             slippage_model,
             slippage_bps,
             lookahead_safe_flag,
-            is_active
+            is_active,
+            default_flag,
+            notes,
+            slippage_params_json
         FROM ref.simulation_types
         ORDER BY simulation_type_id
         """
     ).fetchall()
     assert simulation_rows == [
-        (1, "close_no_cost", "close", "none", 0.0, False, True),
-        (2, "next_open_fixed_bps", "next_open", "fixed_bps", 5.0, True, True),
+        (1, "close_no_cost", "close", "none", 0.0, False, True, False, None, None),
+        (
+            2,
+            "next_open_fixed_5bps",
+            "next_open",
+            "fixed_bps",
+            5.0,
+            True,
+            True,
+            True,
+            None,
+            None,
+        ),
     ]
 
     run_type_rows = con.execute(
@@ -114,6 +134,9 @@ simulation_types:
     commission_model: none
     lookahead_safe_flag: true
     is_active: true
+    default_flag: true
+    notes: null
+    slippage_params: null
 run_types:
   - run_type_code: backtest
     description: Historical replay.
@@ -143,6 +166,9 @@ simulation_types:
     commission_model: none
     lookahead_safe_flag: false
     is_active: true
+    default_flag: true
+    notes: null
+    slippage_params: null
 run_types:
   - run_type_code: backtest
     description: Historical replay.

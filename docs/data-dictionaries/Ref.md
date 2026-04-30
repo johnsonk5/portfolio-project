@@ -15,6 +15,9 @@
 | `commission_model` | `object` | Commission model code or label. |
 | `lookahead_safe_flag` | `bool` | Whether the fill convention avoids same-bar lookahead. |
 | `is_active` | `bool` | Active simulation type flag. |
+| `default_flag` | `bool` | Whether this simulation type is the default baseline. |
+| `notes` | `object` | Optional implementation or usage notes. |
+| `slippage_params_json` | `object` | JSON-serialized parameters for complex slippage models. |
 
 ## `ref.run_types`
 
