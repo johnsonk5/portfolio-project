@@ -1,0 +1,51 @@
+simulation_types:
+- simulation_type_id: 1
+  simulation_type_code: close_no_cost
+  description: Same-day close-fill backtest with no explicit trading costs.
+  fill_price_basis: close
+  slippage_model: none
+  slippage_bps: 0
+  commission_model: none
+  lookahead_safe_flag: false
+  is_active: true
+- simulation_type_id: 2
+  simulation_type_code: next_open_no_cost
+  description: Next-session open-fill simulation with no explicit trading costs.
+  fill_price_basis: next_open
+  slippage_model: none
+  slippage_bps: 0
+  commission_model: none
+  lookahead_safe_flag: true
+  is_active: true
+- simulation_type_id: 3
+  simulation_type_code: open_fixed_bps
+  description: Open-fill simulation with a fixed basis-point slippage assumption.
+  fill_price_basis: open
+  slippage_model: fixed_bps
+  slippage_bps: 5
+  commission_model: none
+  lookahead_safe_flag: true
+  is_active: true
+- simulation_type_id: 4
+  simulation_type_code: vwap_volatility_slippage
+  description: VWAP-fill simulation using a volatility-based slippage model.
+  fill_price_basis: vwap
+  slippage_model: volatility_based
+  slippage_bps: 0
+  commission_model: none
+  lookahead_safe_flag: true
+  is_active: true
+
+run_types:
+- run_type_code: backtest
+  description: Historical replay using fixed inputs and persisted research data.
+  is_active: true
+- run_type_code: simulation
+  description: Forward-looking dry run that does not route orders.
+  is_active: true
+- run_type_code: paper
+  description: Paper-trading run against broker sandbox infrastructure.
+  is_active: true
+- run_type_code: live
+  description: Live run that may route real orders through broker infrastructure.
+  is_active: true
