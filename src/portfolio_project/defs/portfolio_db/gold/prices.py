@@ -2,6 +2,7 @@ import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
 from dagster import (
     AssetExecutionContext,
     DailyPartitionsDefinition,
@@ -11,6 +12,9 @@ from dagster import (
 from portfolio_project.defs.portfolio_db.silver.assets import silver_alpaca_assets
 from portfolio_project.defs.portfolio_db.silver.prices import (
     silver_alpaca_prices_parquet,
+)
+from portfolio_project.defs.research_db.silver.corporate_actions import (
+    silver_alpaca_corporate_actions,
 )
 
 PARTITIONS_START_DATE = os.getenv("ALPACA_PARTITIONS_START_DATE", "2020-01-01")
@@ -41,6 +45,17 @@ def _silver_paths_for_day(trade_date: date) -> list[str]:
     paths: list[str] = []
     for symbol_dir in day_dir.glob("symbol=*"):
         for candidate in symbol_dir.glob("*.parquet"):
+            try:
+                if candidate.stat().st_size < 8:
+                    continue
+                with candidate.open("rb") as file_obj:
+                    starts_with_magic = file_obj.read(4) == b"PAR1"
+                    file_obj.seek(-4, os.SEEK_END)
+                    ends_with_magic = file_obj.read(4) == b"PAR1"
+                if not starts_with_magic or not ends_with_magic:
+                    continue
+            except OSError:
+                continue
             paths.append(candidate.as_posix())
     return sorted(paths)
 
@@ -57,6 +72,7 @@ def _ensure_gold_table(con) -> None:
             high DOUBLE,
             low DOUBLE,
             close DOUBLE,
+            adjusted_close DOUBLE,
             volume BIGINT,
             trade_count BIGINT,
             vwap DOUBLE,
@@ -75,7 +91,83 @@ def _ensure_gold_table(con) -> None:
         )
         """
     )
+    con.execute("ALTER TABLE gold.prices ADD COLUMN IF NOT EXISTS adjusted_close DOUBLE")
     con.execute("ALTER TABLE gold.prices ADD COLUMN IF NOT EXISTS sentiment_score DOUBLE")
+
+
+def _empty_adjustment_factors_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "asset_id": pd.Series(dtype="int64"),
+            "symbol": pd.Series(dtype="str"),
+            "split_adjustment_factor": pd.Series(dtype="float64"),
+        }
+    )
+
+
+def _fetch_split_adjustment_factors(
+    context: AssetExecutionContext,
+    partition_date: date,
+) -> pd.DataFrame:
+    research_con = context.resources.research_duckdb
+    if not _table_exists(research_con, "silver", "alpaca_corporate_actions"):
+        return _empty_adjustment_factors_df()
+
+    has_action_type = (
+        research_con.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'silver'
+              AND table_name = 'alpaca_corporate_actions'
+              AND column_name = 'action_type'
+            LIMIT 1
+            """
+        ).fetchone()
+        is not None
+    )
+    action_type_filter = ""
+    if has_action_type:
+        action_type_filter = "AND action_type IN ('forward_splits', 'reverse_splits')"
+
+    factor_df = research_con.execute(
+        f"""
+        SELECT
+            upper(trim(symbol)) AS symbol,
+            exp(sum(ln(old_rate / new_rate))) AS split_adjustment_factor
+        FROM silver.alpaca_corporate_actions
+        WHERE effective_date > ?
+          {action_type_filter}
+          AND symbol IS NOT NULL
+          AND trim(symbol) <> ''
+          AND old_rate IS NOT NULL
+          AND new_rate IS NOT NULL
+          AND old_rate > 0
+          AND new_rate > 0
+        GROUP BY upper(trim(symbol))
+        """,
+        [partition_date],
+    ).fetch_df()
+    if factor_df.empty:
+        return _empty_adjustment_factors_df()
+
+    assets_df = context.resources.duckdb.execute(
+        """
+        SELECT min(asset_id) AS asset_id, upper(trim(symbol)) AS symbol
+        FROM silver.assets
+        WHERE is_active = TRUE
+          AND symbol IS NOT NULL
+          AND trim(symbol) <> ''
+        GROUP BY upper(trim(symbol))
+        """
+    ).fetch_df()
+    if assets_df.empty:
+        return _empty_adjustment_factors_df()
+
+    adjustment_df = assets_df.merge(factor_df, on="symbol", how="inner")
+    if adjustment_df.empty:
+        return _empty_adjustment_factors_df()
+    return adjustment_df[["asset_id", "symbol", "split_adjustment_factor"]]
 
 
 def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -> tuple[int, int]:
@@ -102,6 +194,9 @@ def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -
             partition_date,
         )
         return 0, 0
+
+    adjustment_df = _fetch_split_adjustment_factors(context, partition_date)
+    con.register("gold_price_adjustment_factors_df", adjustment_df)
 
     if sentiment_enabled:
         sentiment_cte = """
@@ -207,8 +302,18 @@ def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -
               AND asset_id IN (SELECT asset_id FROM target_assets)
             GROUP BY asset_id, symbol, CAST(timestamp AS DATE)
         ),
+        daily_adjusted_prices AS (
+            SELECT
+                daily_prices.*,
+                daily_prices.close * coalesce(adj.split_adjustment_factor, 1.0)
+                    AS adjusted_close
+            FROM daily_prices
+            LEFT JOIN gold_price_adjustment_factors_df AS adj
+                ON adj.asset_id = daily_prices.asset_id
+               AND adj.symbol = daily_prices.symbol
+        ),
         history_prices AS (
-            SELECT asset_id, symbol, trade_date, close
+            SELECT asset_id, symbol, trade_date, coalesce(adjusted_close, close) AS close
             FROM gold.prices
             WHERE trade_date >= ?
               AND trade_date < ?
@@ -217,8 +322,8 @@ def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -
         returns_base AS (
             SELECT * FROM history_prices
             UNION ALL
-            SELECT asset_id, symbol, trade_date, close
-            FROM daily_prices
+            SELECT asset_id, symbol, trade_date, adjusted_close AS close
+            FROM daily_adjusted_prices
         ),
         returns_features AS (
             SELECT
@@ -273,6 +378,7 @@ def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -
                 d.high,
                 d.low,
                 d.close,
+                d.adjusted_close,
                 d.volume,
                 d.trade_count,
                 d.vwap,
@@ -296,7 +402,7 @@ def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -
                     WHEN v.sma_200 IS NULL OR v.sma_200 = 0 THEN NULL
                     ELSE d.close / v.sma_200 - 1
                 END AS dist_sma_200
-            FROM daily_prices d
+            FROM daily_adjusted_prices d
             LEFT JOIN vol_features v
                 ON v.asset_id = d.asset_id
                AND v.symbol = d.symbol
@@ -324,6 +430,7 @@ def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -
             high,
             low,
             close,
+            adjusted_close,
             volume,
             trade_count,
             vwap,
@@ -368,9 +475,9 @@ def _upsert_gold_for_day(context: AssetExecutionContext, partition_date: date) -
 
 @asset(
     name="gold_alpaca_prices",
-    deps=[silver_alpaca_assets, silver_alpaca_prices_parquet],
+    deps=[silver_alpaca_assets, silver_alpaca_prices_parquet, silver_alpaca_corporate_actions],
     partitions_def=GOLD_PARTITIONS,
-    required_resource_keys={"duckdb"},
+    required_resource_keys={"duckdb", "research_duckdb"},
 )
 def gold_alpaca_prices(context: AssetExecutionContext) -> None:
     """

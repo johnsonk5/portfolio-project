@@ -6,6 +6,7 @@ import pandas as pd
 from dagster import DagsterEventType
 
 from portfolio_project.defs.portfolio_db.observability.run_log import (
+    _check_prices_freshness,
     _check_research_prices_freshness,
     _check_research_universe_freshness,
     _collect_materialization_asset_metrics,
@@ -13,6 +14,7 @@ from portfolio_project.defs.portfolio_db.observability.run_log import (
     _failure_event_message,
     _is_us_trading_day,
     _metadata_int,
+    _should_run_post_run_checks,
 )
 
 
@@ -47,6 +49,17 @@ def test_failure_event_message_handles_missing_attribute() -> None:
 def test_failure_event_message_reads_event_message_when_present() -> None:
     context = SimpleNamespace(failure_event=SimpleNamespace(message="boom"))
     assert _failure_event_message(context) == "boom"
+
+
+def test_post_run_checks_only_run_for_daily_prices_terminal_asset() -> None:
+    context = SimpleNamespace(
+        run=SimpleNamespace(job_name="daily_prices_job"),
+        op=SimpleNamespace(name="silver_alpaca_prices_parquet"),
+    )
+    assert _should_run_post_run_checks(context) is False
+
+    context.op = SimpleNamespace(name="gold_alpaca_prices")
+    assert _should_run_post_run_checks(context) is True
 
 
 def test_collect_materialization_metrics_aggregates_expected_totals() -> None:
@@ -212,6 +225,47 @@ def _write_research_partition_symbols(tmp_path, partition_key: str, symbols: lis
     ).to_parquet(out_path, index=False)
 
 
+def _write_price_partitions(tmp_path, partition_key: str, symbols: list[str]) -> None:
+    for symbol in symbols:
+        out_path = (
+            tmp_path
+            / "silver"
+            / "prices"
+            / f"date={partition_key}"
+            / f"symbol={symbol}"
+            / "prices0.parquet"
+        )
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(
+            {
+                "symbol": [symbol],
+                "timestamp": [f"{partition_key} 00:00:00"],
+                "open": [1.0],
+                "high": [1.0],
+                "low": [1.0],
+                "close": [1.0],
+                "volume": [100],
+                "trade_date": [partition_key],
+            }
+        ).to_parquet(out_path, index=False)
+
+
+def _write_assets(con, symbols: list[str]) -> None:
+    con.execute("CREATE SCHEMA IF NOT EXISTS silver")
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE silver.assets (
+            symbol VARCHAR,
+            is_active BOOLEAN
+        )
+        """
+    )
+    con.executemany(
+        "INSERT INTO silver.assets (symbol, is_active) VALUES (?, TRUE)",
+        [(symbol,) for symbol in symbols],
+    )
+
+
 def _write_universe_counts(con, counts_by_date: dict[str, int]) -> None:
     con.execute("CREATE SCHEMA IF NOT EXISTS silver")
     con.execute(
@@ -242,6 +296,60 @@ def _write_universe_counts(con, counts_by_date: dict[str, int]) -> None:
                 """,
                 [member_date, f"SYM{rank:04d}", rank, float(symbol_count - rank + 1), "test"],
             )
+
+
+def test_prices_freshness_passes_at_minimum_active_symbol_coverage(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PORTFOLIO_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("PRICES_ACTIVE_SYMBOL_COVERAGE_MIN_RATIO", "0.95")
+    partition_key = "2026-02-13"
+    active_symbols = [f"SYM{i:03d}" for i in range(100)]
+    _write_price_partitions(tmp_path, partition_key, active_symbols[:95])
+    con = duckdb.connect(":memory:")
+    _write_assets(con, active_symbols)
+
+    rows = _check_prices_freshness(con, "run-prices-1", "daily_prices_job", partition_key)
+
+    row = rows[0]
+    assert row["status"] == "PASS"
+    assert row["measured_value"] == 0.95
+    assert row["threshold_value"] == 0.95
+    details = json.loads(row["details_json"])
+    assert details["active_symbol_count"] == 100
+    assert details["symbols_with_prices"] == 95
+    assert details["coverage_ratio"] == 0.95
+    assert details["minimum_coverage_ratio"] == 0.95
+    assert details["missing_symbol_count"] == 5
+    assert details["missing_symbol_samples"] == [
+        "SYM095",
+        "SYM096",
+        "SYM097",
+        "SYM098",
+        "SYM099",
+    ]
+
+
+def test_prices_freshness_fails_below_minimum_active_symbol_coverage(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PORTFOLIO_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("PRICES_ACTIVE_SYMBOL_COVERAGE_MIN_RATIO", "0.95")
+    partition_key = "2026-02-13"
+    active_symbols = [f"SYM{i:03d}" for i in range(100)]
+    _write_price_partitions(tmp_path, partition_key, active_symbols[:94])
+    con = duckdb.connect(":memory:")
+    _write_assets(con, active_symbols)
+
+    rows = _check_prices_freshness(con, "run-prices-2", "daily_prices_job", partition_key)
+
+    row = rows[0]
+    assert row["status"] == "FAIL"
+    assert row["measured_value"] == 0.94
+    assert row["threshold_value"] == 0.95
+    details = json.loads(row["details_json"])
+    assert details["active_symbol_count"] == 100
+    assert details["symbols_with_prices"] == 94
+    assert details["coverage_ratio"] == 0.94
+    assert details["minimum_coverage_ratio"] == 0.95
+    assert details["missing_symbol_count"] == 6
+    assert details["missing_symbol_samples"][:2] == ["SYM094", "SYM095"]
 
 
 def test_research_price_freshness_fails_when_expected_latest_partition_is_missing(

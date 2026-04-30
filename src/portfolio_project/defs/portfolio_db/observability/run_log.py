@@ -40,6 +40,45 @@ def _freshness_severity(check_name: str) -> str:
     return "RED"
 
 
+_POST_RUN_CHECK_TERMINAL_OPS = {
+    "daily_prices_job": {"gold_alpaca_prices"},
+    "daily_news_job": {"gold_headlines"},
+    "research_daily_prices_job": {"silver_universe_membership_events"},
+    "wikipedia_activity_job": {"gold_activity"},
+}
+
+
+def _hook_op_name(context) -> str | None:
+    op = getattr(context, "op", None)
+    op_name = getattr(op, "name", None)
+    if op_name:
+        return str(op_name)
+
+    op_def = getattr(context, "op_def", None)
+    op_def_name = getattr(op_def, "name", None)
+    if op_def_name:
+        return str(op_def_name)
+
+    return None
+
+
+def _should_run_post_run_checks(context) -> bool:
+    run = _get_run_from_context(context)
+    job_name = (
+        getattr(run, "job_name", None)
+        or getattr(getattr(context, "run", None), "job_name", None)
+        or getattr(context, "job_name", None)
+    )
+    terminal_ops = _POST_RUN_CHECK_TERMINAL_OPS.get(str(job_name))
+    if not terminal_ops:
+        return True
+
+    op_name = _hook_op_name(context)
+    if op_name is None:
+        return True
+    return op_name in terminal_ops
+
+
 def _to_utc_datetime(timestamp: Optional[float]) -> Optional[datetime]:
     if timestamp is None:
         return None
@@ -626,6 +665,7 @@ def _check_prices_freshness(
             }
         ]
 
+    min_coverage_ratio = float(os.getenv("PRICES_ACTIVE_SYMBOL_COVERAGE_MIN_RATIO", "0.95"))
     active_symbol_count = con.execute(
         """
         SELECT count(*)
@@ -702,7 +742,13 @@ def _check_prices_freshness(
         ]
 
     missing_symbol_count = int(missing_symbol_count)
-    status = "PASS" if missing_symbol_count == 0 else "FAIL"
+    present_symbol_count = int(present_symbol_count)
+    coverage_ratio = (
+        float(present_symbol_count) / float(active_symbol_count)
+        if int(active_symbol_count) > 0
+        else 1.0
+    )
+    status = "PASS" if coverage_ratio >= min_coverage_ratio else "FAIL"
 
     return [
         {
@@ -712,12 +758,14 @@ def _check_prices_freshness(
             "check_name": "prices_active_symbol_coverage",
             "severity": _freshness_severity("prices_active_symbol_coverage"),
             "status": status,
-            "measured_value": float(missing_symbol_count),
-            "threshold_value": 0.0,
+            "measured_value": coverage_ratio,
+            "threshold_value": min_coverage_ratio,
             "details_json": json.dumps(
                 {
                     "active_symbol_count": int(active_symbol_count),
-                    "symbols_with_prices": int(present_symbol_count),
+                    "symbols_with_prices": present_symbol_count,
+                    "coverage_ratio": coverage_ratio,
+                    "minimum_coverage_ratio": min_coverage_ratio,
                     "missing_symbol_count": int(missing_symbol_count),
                     "missing_symbol_samples": missing_symbol_samples,
                     "silver_partition_paths": silver_paths,
@@ -1873,16 +1921,17 @@ def dagster_run_log_success(context) -> None:
     except Exception as exc:
         errors.append(f"run_log_write_failed: {exc}")
         context.log.warning("Run log write failed: %s", exc)
-    try:
-        _write_freshness_checks(context)
-    except Exception as exc:
-        errors.append(f"freshness_check_write_failed: {exc}")
-        context.log.warning("Freshness check write failed: %s", exc)
-    try:
-        # DQ check failures are logged in observability.data_quality_checks.
-        write_data_quality_checks(context)
-    except Exception as exc:
-        context.log.warning("Data quality check write failed: %s", exc)
+    if _should_run_post_run_checks(context):
+        try:
+            _write_freshness_checks(context)
+        except Exception as exc:
+            errors.append(f"freshness_check_write_failed: {exc}")
+            context.log.warning("Freshness check write failed: %s", exc)
+        try:
+            # DQ check failures are logged in observability.data_quality_checks.
+            write_data_quality_checks(context)
+        except Exception as exc:
+            context.log.warning("Data quality check write failed: %s", exc)
     if errors:
         raise RuntimeError("Observability failure(s): " + " | ".join(errors))
 

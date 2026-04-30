@@ -188,6 +188,7 @@ def test_daily_prices_path_materializes_with_three_tickers(tmp_path: Path) -> No
     _write_fixture_bronze_bars(data_root, partition_key, symbols)
 
     con = duckdb.connect(":memory:")
+    research_con = duckdb.connect(":memory:")
     con.execute("CREATE SCHEMA silver")
     con.execute(
         """
@@ -213,8 +214,9 @@ def test_daily_prices_path_materializes_with_three_tickers(tmp_path: Path) -> No
             gold_alpaca_prices,
             SourceAsset(AssetKey("bronze_alpaca_bars")),
             SourceAsset(AssetKey("silver_alpaca_assets")),
+            SourceAsset(AssetKey(["silver", "alpaca_corporate_actions"])),
         ],
-        resources={"duckdb": con},
+        resources={"duckdb": con, "research_duckdb": research_con},
         partition_key=partition_key,
     )
 
@@ -381,6 +383,7 @@ def test_gold_prices_computes_vwap_returns_and_sentiment(tmp_path: Path) -> None
     _write_fixture_silver_prices(data_root, partition_key, "AAPL", silver_df)
 
     con = duckdb.connect(":memory:")
+    research_con = duckdb.connect(":memory:")
     con.execute("CREATE SCHEMA silver")
     con.execute(
         """
@@ -441,15 +444,16 @@ def test_gold_prices_computes_vwap_returns_and_sentiment(tmp_path: Path) -> None
             gold_alpaca_prices,
             SourceAsset(AssetKey("silver_alpaca_assets")),
             SourceAsset(AssetKey("silver_alpaca_prices_parquet")),
+            SourceAsset(AssetKey(["silver", "alpaca_corporate_actions"])),
         ],
-        resources={"duckdb": con},
+        resources={"duckdb": con, "research_duckdb": research_con},
         partition_key=partition_key,
     )
     assert result.success
 
     row = con.execute(
         """
-        SELECT close, vwap, returns_1d, sentiment_score
+        SELECT close, adjusted_close, vwap, returns_1d, sentiment_score
         FROM gold.prices
         WHERE asset_id = 1 AND trade_date = ?
         """,
@@ -457,9 +461,174 @@ def test_gold_prices_computes_vwap_returns_and_sentiment(tmp_path: Path) -> None
     ).fetchone()
     assert row is not None
     assert row[0] == pytest.approx(102.0)
-    assert row[1] == pytest.approx((100.0 * 10 + 102.0 * 20) / 30.0)
-    assert row[2] == pytest.approx(0.02)
-    assert row[3] == pytest.approx(1.0 / 3.0)
+    assert row[1] == pytest.approx(102.0)
+    assert row[2] == pytest.approx((100.0 * 10 + 102.0 * 20) / 30.0)
+    assert row[3] == pytest.approx(0.02)
+    assert row[4] == pytest.approx(1.0 / 3.0)
+
+
+@pytest.mark.smoke
+def test_gold_prices_uses_corporate_actions_for_adjusted_close(tmp_path: Path) -> None:
+    partition_key = "2026-02-13"
+    data_root = tmp_path / "data"
+    gold_prices_module.DATA_ROOT = data_root
+
+    silver_df = pd.DataFrame(
+        {
+            "asset_id": [1],
+            "symbol": ["AAPL"],
+            "timestamp": [datetime(2026, 2, 13, 21, 0, tzinfo=timezone.utc)],
+            "open": [99.0],
+            "high": [101.0],
+            "low": [98.0],
+            "close": [100.0],
+            "volume": [1000],
+            "trade_count": [10],
+            "vwap": [100.0],
+            "ingested_ts": [datetime.now(timezone.utc)],
+        }
+    )
+    _write_fixture_silver_prices(data_root, partition_key, "AAPL", silver_df)
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA silver")
+    con.execute(
+        """
+        CREATE TABLE silver.assets (
+            asset_id BIGINT,
+            symbol VARCHAR,
+            is_active BOOLEAN
+        )
+        """
+    )
+    con.execute("INSERT INTO silver.assets (asset_id, symbol, is_active) VALUES (1, 'AAPL', TRUE)")
+
+    gold_prices_module._ensure_gold_table(con)
+    con.execute(
+        """
+        INSERT INTO gold.prices (
+            asset_id, symbol, trade_date, open, high, low, close, adjusted_close, volume,
+            trade_count, vwap, dollar_volume, returns_1d, returns_5d, returns_21d,
+            realized_vol_21d, momentum_12_1, pct_below_52w_high, sma_50, sma_200,
+            dist_sma_50, dist_sma_200, sentiment_score
+        )
+        VALUES (
+            1, 'AAPL', '2026-02-12', 79, 81, 78, 80, 10, 1000, 10, 80, 80000,
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+        )
+        """
+    )
+
+    research_con = duckdb.connect(":memory:")
+    research_con.execute("CREATE SCHEMA silver")
+    research_con.execute(
+        """
+        CREATE TABLE silver.alpaca_corporate_actions (
+            symbol VARCHAR,
+            action_type VARCHAR,
+            effective_date DATE,
+            old_rate DOUBLE,
+            new_rate DOUBLE
+        )
+        """
+    )
+    research_con.execute(
+        """
+        INSERT INTO silver.alpaca_corporate_actions VALUES
+            ('AAPL', 'forward_splits', '2026-03-01', 1.0, 2.0)
+        """
+    )
+
+    result = materialize(
+        assets=[
+            gold_alpaca_prices,
+            SourceAsset(AssetKey("silver_alpaca_assets")),
+            SourceAsset(AssetKey("silver_alpaca_prices_parquet")),
+            SourceAsset(AssetKey(["silver", "alpaca_corporate_actions"])),
+        ],
+        resources={"duckdb": con, "research_duckdb": research_con},
+        partition_key=partition_key,
+    )
+    assert result.success
+
+    row = con.execute(
+        """
+        SELECT close, adjusted_close, returns_1d
+        FROM gold.prices
+        WHERE asset_id = 1 AND trade_date = ?
+        """,
+        [partition_key],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == pytest.approx(100.0)
+    assert row[1] == pytest.approx(50.0)
+    assert row[2] == pytest.approx(4.0)
+
+
+@pytest.mark.smoke
+def test_gold_prices_skips_zero_byte_silver_parquet(tmp_path: Path) -> None:
+    partition_key = "2026-02-13"
+    data_root = tmp_path / "data"
+    gold_prices_module.DATA_ROOT = data_root
+
+    valid_df = pd.DataFrame(
+        {
+            "asset_id": [1],
+            "symbol": ["AAPL"],
+            "timestamp": [datetime(2026, 2, 13, 21, 0, tzinfo=timezone.utc)],
+            "open": [99.0],
+            "high": [101.0],
+            "low": [98.0],
+            "close": [100.0],
+            "volume": [1000],
+            "trade_count": [10],
+            "vwap": [100.0],
+            "ingested_ts": [datetime.now(timezone.utc)],
+        }
+    )
+    _write_fixture_silver_prices(data_root, partition_key, "AAPL", valid_df)
+    corrupt_path = (
+        data_root / "silver" / "prices" / f"date={partition_key}" / "symbol=PYPL" / "prices.parquet"
+    )
+    corrupt_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_path.write_bytes(b"")
+
+    con = duckdb.connect(":memory:")
+    research_con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA silver")
+    con.execute(
+        """
+        CREATE TABLE silver.assets (
+            asset_id BIGINT,
+            symbol VARCHAR,
+            is_active BOOLEAN
+        )
+        """
+    )
+    con.execute("INSERT INTO silver.assets VALUES (1, 'AAPL', TRUE), (2, 'PYPL', TRUE)")
+
+    result = materialize(
+        assets=[
+            gold_alpaca_prices,
+            SourceAsset(AssetKey("silver_alpaca_assets")),
+            SourceAsset(AssetKey("silver_alpaca_prices_parquet")),
+            SourceAsset(AssetKey(["silver", "alpaca_corporate_actions"])),
+        ],
+        resources={"duckdb": con, "research_duckdb": research_con},
+        partition_key=partition_key,
+    )
+    assert result.success
+
+    rows = con.execute(
+        """
+        SELECT symbol, close
+        FROM gold.prices
+        WHERE trade_date = ?
+        ORDER BY symbol
+        """,
+        [partition_key],
+    ).fetchall()
+    assert rows == [("AAPL", pytest.approx(100.0))]
 
 
 @pytest.mark.smoke
@@ -620,7 +789,8 @@ def test_gold_prices_upsert_rolls_back_on_insert_error(tmp_path: Path) -> None:
         [partition_key],
     )
 
-    context = build_asset_context(resources={"duckdb": con})
+    research_con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"duckdb": con, "research_duckdb": research_con})
 
     with pytest.raises(Exception):
         gold_prices_module._upsert_gold_for_day(context, partition_date)
