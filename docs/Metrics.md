@@ -14,13 +14,13 @@ Daily per-asset metrics.
 - `dollar_volume`: `close * volume`.
 
 ### Return Metrics
-- `returns_1d = close_t / close_t-1 - 1`
-- `returns_5d = close_t / close_t-5 - 1`
-- `returns_21d = close_t / close_t-21 - 1`
+- `returns_1d = adjusted_close_t / adjusted_close_t-1 - 1` when adjusted close is available, otherwise close.
+- `returns_5d = adjusted_close_t / adjusted_close_t-5 - 1` when adjusted close is available, otherwise close.
+- `returns_21d = adjusted_close_t / adjusted_close_t-21 - 1` when adjusted close is available, otherwise close.
 
 ### Trend and Risk Metrics
 - `realized_vol_21d`: rolling 21-observation stddev of `returns_1d`, annualized by `sqrt(252)`.
-- `momentum_12_1 = close_t-21 / close_t-252 - 1`
+- `momentum_12_1 = adjusted_close_t-21 / adjusted_close_t-252 - 1` when adjusted close is available, otherwise close.
 - `pct_below_52w_high = (rolling_252d_high - close_t) / rolling_252d_high`
 - `sma_50`: rolling 50-day average of close.
 - `sma_200`: rolling 200-day average of close.

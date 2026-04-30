@@ -11,6 +11,7 @@
 | `high` | `float` | Daily high price. |
 | `low` | `float` | Daily low price. |
 | `close` | `float` | Daily close price. |
+| `adjusted_close` | `float` | Split-adjusted daily close using known Alpaca split corporate actions. |
 | `volume` | `int` | Daily volume. |
 | `trade_count` | `int` | Daily trade count (if provided). |
 | `vwap` | `float` | Daily volume-weighted average price (if provided). |

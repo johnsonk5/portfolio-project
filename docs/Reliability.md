@@ -60,7 +60,7 @@ If `PORTFOLIO_ALERT_EMAIL_TO`, `PORTFOLIO_ALERT_EMAIL_FROM` or `PORTFOLIO_ALERT_
 Freshness checks run on successful runs and write to `observability.data_freshness_checks`.
 
 ### Current Coverage
-- `daily_prices_job`: `prices_active_symbol_coverage`.
+- `daily_prices_job`: `prices_active_symbol_coverage`, requiring at least 95% of active `silver.assets` symbols to have prices for the target trading day by default. Override with `PRICES_ACTIVE_SYMBOL_COVERAGE_MIN_RATIO`.
 - `research_daily_prices_job`:
   - `research_daily_prices_latest_trading_date_present`.
   - `research_daily_prices_partition_row_count_vs_recent_median`.
