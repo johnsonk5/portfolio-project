@@ -10,6 +10,11 @@ Build daily prices and factors for active symbols.
 ### Flow
 - `bronze_alpaca_bars` -> `silver_alpaca_prices_parquet` -> `gold_alpaca_prices`
 
+`gold_alpaca_prices` reads `silver.alpaca_corporate_actions` when available to compute
+split-adjusted close. Refresh corporate actions through `research_daily_prices_job` or
+`scripts/backfill_portfolio_adjusted_close.py`; they are not materialized inside
+`daily_prices_job` because the research corporate-action asset uses a different partition range.
+
 ## Research Daily Prices Assets
 
 ### Purpose
@@ -106,6 +111,17 @@ Ingest monthly Tranco snapshot for publisher weighting.
 
 ### Schedule
 - `tranco_monthly_schedule`: `0 18 1 * *` America/New_York.
+
+## `weekly_digest_job`
+
+### Purpose
+Send a weekly plain-text email with run stats, market KPIs, stocks far below their 52-week highs, and five random recent news stories.
+
+### Flow
+- `weekly_digest_email`
+
+### Schedule
+- `weekly_digest_schedule`: `0 8 * * 1` America/New_York.
 
 ## `asset_status_updates_job`
 

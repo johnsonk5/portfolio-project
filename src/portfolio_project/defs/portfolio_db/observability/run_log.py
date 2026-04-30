@@ -15,6 +15,9 @@ from dagster import (
     success_hook,
 )
 
+from portfolio_project.defs.portfolio_db.observability.alerts import (
+    send_red_observability_alerts,
+)
 from portfolio_project.defs.portfolio_db.observability.data_quality import write_data_quality_checks
 from portfolio_project.defs.resources.duckdb import (
     _acquire_duckdb_lock,
@@ -35,6 +38,45 @@ def _freshness_severity(check_name: str) -> str:
     }:
         return "YELLOW"
     return "RED"
+
+
+_POST_RUN_CHECK_TERMINAL_OPS = {
+    "daily_prices_job": {"gold_alpaca_prices"},
+    "daily_news_job": {"gold_headlines"},
+    "research_daily_prices_job": {"silver_universe_membership_events"},
+    "wikipedia_activity_job": {"gold_activity"},
+}
+
+
+def _hook_op_name(context) -> str | None:
+    op = getattr(context, "op", None)
+    op_name = getattr(op, "name", None)
+    if op_name:
+        return str(op_name)
+
+    op_def = getattr(context, "op_def", None)
+    op_def_name = getattr(op_def, "name", None)
+    if op_def_name:
+        return str(op_def_name)
+
+    return None
+
+
+def _should_run_post_run_checks(context) -> bool:
+    run = _get_run_from_context(context)
+    job_name = (
+        getattr(run, "job_name", None)
+        or getattr(getattr(context, "run", None), "job_name", None)
+        or getattr(context, "job_name", None)
+    )
+    terminal_ops = _POST_RUN_CHECK_TERMINAL_OPS.get(str(job_name))
+    if not terminal_ops:
+        return True
+
+    op_name = _hook_op_name(context)
+    if op_name is None:
+        return True
+    return op_name in terminal_ops
 
 
 def _to_utc_datetime(timestamp: Optional[float]) -> Optional[datetime]:
@@ -426,6 +468,17 @@ def _write_freshness_check_rows(con, rows: list[dict]) -> None:
         )
 
 
+def _alert_on_freshness_rows(context, rows: list[dict]) -> None:
+    events = [{**row, "event_type": "freshness"} for row in rows]
+    try:
+        send_red_observability_alerts(events, logger=getattr(context, "log", None))
+    except Exception as exc:
+        try:
+            context.log.warning("RED freshness email alert failed: %s", exc)
+        except Exception:
+            pass
+
+
 def _is_us_trading_day(partition_key: str) -> bool:
     try:
         day = datetime.strptime(partition_key, "%Y-%m-%d").date()
@@ -480,11 +533,11 @@ def _is_us_trading_day(partition_key: str) -> bool:
     def _fallback_us_market_holidays(year: int) -> set[date]:
         holidays = {
             _observed_fixed_holiday(year, 1, 1),
-            _nth_weekday_of_month(year, 1, 0, 3),   # Martin Luther King Jr. Day
-            _nth_weekday_of_month(year, 2, 0, 3),   # Presidents Day
+            _nth_weekday_of_month(year, 1, 0, 3),  # Martin Luther King Jr. Day
+            _nth_weekday_of_month(year, 2, 0, 3),  # Presidents Day
             _easter_sunday(year) - timedelta(days=2),  # Good Friday
-            _last_weekday_of_month(year, 5, 0),     # Memorial Day
-            _nth_weekday_of_month(year, 9, 0, 1),   # Labor Day
+            _last_weekday_of_month(year, 5, 0),  # Memorial Day
+            _nth_weekday_of_month(year, 9, 0, 1),  # Labor Day
             _nth_weekday_of_month(year, 11, 3, 4),  # Thanksgiving
             _observed_fixed_holiday(year, 12, 25),
         }
@@ -612,6 +665,7 @@ def _check_prices_freshness(
             }
         ]
 
+    min_coverage_ratio = float(os.getenv("PRICES_ACTIVE_SYMBOL_COVERAGE_MIN_RATIO", "0.95"))
     active_symbol_count = con.execute(
         """
         SELECT count(*)
@@ -688,7 +742,13 @@ def _check_prices_freshness(
         ]
 
     missing_symbol_count = int(missing_symbol_count)
-    status = "PASS" if missing_symbol_count == 0 else "FAIL"
+    present_symbol_count = int(present_symbol_count)
+    coverage_ratio = (
+        float(present_symbol_count) / float(active_symbol_count)
+        if int(active_symbol_count) > 0
+        else 1.0
+    )
+    status = "PASS" if coverage_ratio >= min_coverage_ratio else "FAIL"
 
     return [
         {
@@ -698,12 +758,14 @@ def _check_prices_freshness(
             "check_name": "prices_active_symbol_coverage",
             "severity": _freshness_severity("prices_active_symbol_coverage"),
             "status": status,
-            "measured_value": float(missing_symbol_count),
-            "threshold_value": 0.0,
+            "measured_value": coverage_ratio,
+            "threshold_value": min_coverage_ratio,
             "details_json": json.dumps(
                 {
                     "active_symbol_count": int(active_symbol_count),
-                    "symbols_with_prices": int(present_symbol_count),
+                    "symbols_with_prices": present_symbol_count,
+                    "coverage_ratio": coverage_ratio,
+                    "minimum_coverage_ratio": min_coverage_ratio,
                     "missing_symbol_count": int(missing_symbol_count),
                     "missing_symbol_samples": missing_symbol_samples,
                     "silver_partition_paths": silver_paths,
@@ -1422,9 +1484,7 @@ def _check_research_universe_freshness(
                 float(current_symbol_count) if partition_key in counts_lookup else None
             ),
             "threshold_value": (
-                float(absolute_min_symbol_count)
-                if insufficient_history_status == "FAIL"
-                else None
+                float(absolute_min_symbol_count) if insufficient_history_status == "FAIL" else None
             ),
             "details_json": json.dumps(
                 {
@@ -1653,6 +1713,7 @@ def _write_freshness_checks(context) -> None:
         for owned_con in _with_duckdb_connection():
             check_rows = _run_checks_with_isolation(owned_con)
             _write_freshness_check_rows(owned_con, check_rows)
+            _alert_on_freshness_rows(context, check_rows)
         return
 
     check_rows = _run_checks_with_isolation(con)
@@ -1661,6 +1722,7 @@ def _write_freshness_checks(context) -> None:
         con.commit()
     except Exception:
         pass
+    _alert_on_freshness_rows(context, check_rows)
 
 
 def _write_run_log(context, status: str, error_message: Optional[str] = None) -> None:
@@ -1859,16 +1921,17 @@ def dagster_run_log_success(context) -> None:
     except Exception as exc:
         errors.append(f"run_log_write_failed: {exc}")
         context.log.warning("Run log write failed: %s", exc)
-    try:
-        _write_freshness_checks(context)
-    except Exception as exc:
-        errors.append(f"freshness_check_write_failed: {exc}")
-        context.log.warning("Freshness check write failed: %s", exc)
-    try:
-        # DQ check failures are logged in observability.data_quality_checks.
-        write_data_quality_checks(context)
-    except Exception as exc:
-        context.log.warning("Data quality check write failed: %s", exc)
+    if _should_run_post_run_checks(context):
+        try:
+            _write_freshness_checks(context)
+        except Exception as exc:
+            errors.append(f"freshness_check_write_failed: {exc}")
+            context.log.warning("Freshness check write failed: %s", exc)
+        try:
+            # DQ check failures are logged in observability.data_quality_checks.
+            write_data_quality_checks(context)
+        except Exception as exc:
+            context.log.warning("Data quality check write failed: %s", exc)
     if errors:
         raise RuntimeError("Observability failure(s): " + " | ".join(errors))
 
@@ -1880,6 +1943,32 @@ def _failure_event_message(context) -> str | None:
     return getattr(failure_event, "message", None)
 
 
+def _send_pipeline_failure_alert(context, error_message: Optional[str]) -> None:
+    run = _get_run_from_context(context)
+    run_id = getattr(run, "run_id", None) or getattr(context, "run_id", None)
+    job_name = getattr(run, "job_name", None) or getattr(context, "job_name", None)
+    tags = run.tags or {} if run else {}
+    partition_key = tags.get("dagster/partition")
+    events = [
+        {
+            "event_type": "pipeline_failure",
+            "severity": "RED",
+            "status": "FAILURE",
+            "run_id": str(run_id) if run_id else None,
+            "job_name": job_name,
+            "partition_key": partition_key,
+            "error_message": error_message,
+        }
+    ]
+    try:
+        send_red_observability_alerts(events, logger=getattr(context, "log", None))
+    except Exception as exc:
+        try:
+            context.log.warning("RED pipeline failure email alert failed: %s", exc)
+        except Exception:
+            pass
+
+
 @failure_hook(required_resource_keys={"duckdb"})
 def dagster_run_log_failure(context) -> None:
     error_message = _failure_event_message(context)
@@ -1888,6 +1977,7 @@ def dagster_run_log_failure(context) -> None:
     except Exception as exc:
         context.log.warning("Run log write failed: %s", exc)
         raise RuntimeError(f"Observability failure: run_log_write_failed: {exc}") from exc
+    _send_pipeline_failure_alert(context, error_message)
 
 
 @run_status_sensor(
@@ -1915,3 +2005,4 @@ def dagster_run_log_failure_sensor(context) -> None:
     except Exception as exc:
         context.log.warning("Run log write failed: %s", exc)
         raise RuntimeError(f"Observability failure: run_log_write_failed: {exc}") from exc
+    _send_pipeline_failure_alert(context, error_message)

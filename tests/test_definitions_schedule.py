@@ -12,7 +12,11 @@ from portfolio_project.definitions import (
     defs,
     monthly_factors_schedule,
     research_daily_prices_schedule,
+    weekly_digest_schedule,
 )
+from portfolio_project.defs.portfolio_db.bronze.news import BRONZE_NEWS_PARTITIONS
+from portfolio_project.defs.portfolio_db.gold.news import GOLD_NEWS_PARTITIONS
+from portfolio_project.defs.portfolio_db.silver.news import SILVER_NEWS_PARTITIONS
 
 
 def test_previous_trading_day_weekday_and_weekend_logic() -> None:
@@ -38,6 +42,12 @@ def test_daily_news_schedule_uses_same_day_partition() -> None:
     request = _daily_news_schedule_fn(context)
     assert request.partition_key == "2026-02-17"
     assert request.run_key == "2026-02-17"
+
+
+def test_daily_news_partitions_expose_same_day_schedule_target() -> None:
+    assert BRONZE_NEWS_PARTITIONS.end_offset == 1
+    assert SILVER_NEWS_PARTITIONS.end_offset == 1
+    assert GOLD_NEWS_PARTITIONS.end_offset == 1
 
 
 def test_research_daily_prices_schedule_uses_previous_trading_day_partition() -> None:
@@ -91,6 +101,17 @@ def test_research_daily_prices_schedule_metadata() -> None:
     assert research_daily_prices_schedule.job.name == "research_daily_prices_job"
 
 
+def test_weekly_digest_schedule_metadata() -> None:
+    assert weekly_digest_schedule.cron_schedule == "0 8 * * 1"
+    assert weekly_digest_schedule.execution_timezone == "America/New_York"
+    assert weekly_digest_schedule.job.name == "weekly_digest_job"
+
+
 def test_research_daily_prices_job_resolves_from_definitions() -> None:
     job_def = defs.get_job_def("research_daily_prices_job")
     assert job_def.name == "research_daily_prices_job"
+
+
+def test_weekly_digest_job_resolves_from_definitions() -> None:
+    job_def = defs.get_job_def("weekly_digest_job")
+    assert job_def.name == "weekly_digest_job"

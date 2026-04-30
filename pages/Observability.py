@@ -6,6 +6,8 @@ import duckdb
 import pandas as pd
 import streamlit as st
 
+from portfolio_project.components.notification_center import render_notification_center
+
 st.set_page_config(
     page_title="Observability",
     page_icon="OB",
@@ -65,6 +67,7 @@ html, body, [class*="css"] {
 """
 
 st.markdown(CSS, unsafe_allow_html=True)
+render_notification_center()
 
 KNOWN_JOBS = [
     "daily_prices_job",

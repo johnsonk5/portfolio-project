@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from portfolio_project.components.notification_center import render_notification_center
+
 st.set_page_config(
     page_title="The Lab",
     page_icon="TL",
@@ -88,6 +90,7 @@ html, body, [class*="css"] {
 """
 
 st.markdown(CSS, unsafe_allow_html=True)
+render_notification_center()
 
 COLORWAY = ["#6ee7b7", "#60a5fa", "#fbbf24", "#f97316", "#f472b6"]
 FACTOR_LABELS = {
@@ -2157,4 +2160,3 @@ with tabs["detail"]:
             )
             st.dataframe(parameter_display, use_container_width=True, hide_index=True)
         st.markdown("</div>", unsafe_allow_html=True)
-

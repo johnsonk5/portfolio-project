@@ -8,8 +8,42 @@ Reliability is handled with three layers:
 - Run observability (`run_log`, `run_asset_log`).
 - Freshness checks (`data_freshness_checks`).
 - Data quality checks (`data_quality_checks`).
+- Email alerts for RED observability events and the weekly digest.
 
 All observability tables are written to the portfolio DuckDB (`portfolio.duckdb`), even for research workflows that read and write data in `research.duckdb`.
+
+## Email Alerts
+
+Email alerting is opt-in and sends one plain-text email when a RED observability event is recorded.
+The weekly digest uses the same SMTP configuration and is sent by `weekly_digest_schedule`.
+
+### Alert Coverage
+- Pipeline failures from Dagster failure hooks and failure sensors.
+- Freshness check rows with `severity = 'RED'` and `status` in `FAIL`, `SKIPPED`, or `WARN`.
+- Data quality check rows with `severity = 'RED'` and `status` in `FAIL`, `SKIPPED`, or `WARN`.
+
+Email delivery failures are logged as warnings and do not fail the pipeline run.
+
+### Email Config
+- `PORTFOLIO_ALERT_EMAIL_TO`: required recipient list. Use commas or semicolons for multiple recipients.
+- `PORTFOLIO_ALERT_EMAIL_FROM`: sender address. Defaults to `PORTFOLIO_ALERT_SMTP_USERNAME` when omitted.
+- `PORTFOLIO_ALERT_SMTP_HOST`: required SMTP hostname.
+- `PORTFOLIO_ALERT_SMTP_PORT`: SMTP port, default `587`.
+- `PORTFOLIO_ALERT_SMTP_USERNAME`: optional SMTP username.
+- `PORTFOLIO_ALERT_SMTP_PASSWORD`: optional SMTP password.
+- `PORTFOLIO_ALERT_SMTP_STARTTLS`: whether to call STARTTLS, default `true`.
+- `PORTFOLIO_ALERT_EMAIL_ENABLED`: optional kill switch, default `true`.
+- `PORTFOLIO_ALERT_EMAIL_SUBJECT_PREFIX`: subject prefix, default `[Portfolio Alert]`.
+
+If `PORTFOLIO_ALERT_EMAIL_TO`, `PORTFOLIO_ALERT_EMAIL_FROM` or `PORTFOLIO_ALERT_SMTP_USERNAME`, and `PORTFOLIO_ALERT_SMTP_HOST` are not configured, alerting is disabled.
+
+### Weekly Digest
+- Schedule: `weekly_digest_schedule`, Mondays at `0 8 * * 1` America/New_York.
+- Delivery: plain-text email through the same `PORTFOLIO_ALERT_*` SMTP settings.
+- Run stats: total/success/failed runs, average duration, and mutation counts for the last 7 days.
+- Market KPIs: index ETF performance when available, market breadth, trend versus 50d/200d moving averages, and median realized volatility.
+- `Discounts`: latest symbols sorted by distance below their 52-week high, with recent returns, momentum, and volatility.
+- Random News: five random recent rows from `gold.headlines`; this is intentionally simple until source ranking is added.
 
 ## Run Observability
 
@@ -26,7 +60,7 @@ All observability tables are written to the portfolio DuckDB (`portfolio.duckdb`
 Freshness checks run on successful runs and write to `observability.data_freshness_checks`.
 
 ### Current Coverage
-- `daily_prices_job`: `prices_active_symbol_coverage`.
+- `daily_prices_job`: `prices_active_symbol_coverage`, requiring at least 95% of active `silver.assets` symbols to have prices for the target trading day by default. Override with `PRICES_ACTIVE_SYMBOL_COVERAGE_MIN_RATIO`.
 - `research_daily_prices_job`:
   - `research_daily_prices_latest_trading_date_present`.
   - `research_daily_prices_partition_row_count_vs_recent_median`.
@@ -83,6 +117,7 @@ DQ checks run on successful runs and write to `observability.data_quality_checks
 ### Important Behavior
 - DQ rows are inserted per evaluation event; they are not globally replaced per `run_id` in the current writer path.
 - A unique `check_id` is stored per DQ row.
+- RED DQ email alerts are sent only when a `job_name` + `partition_key` + `check_name` issue first becomes actionable. Repeated failures of the same active issue are logged but do not send another email until a non-actionable result, such as `PASS`, clears the prior alert state.
 
 ## DuckDB Concurrency Safety
 
