@@ -70,6 +70,10 @@ from portfolio_project.defs.research_db.gold.strategy import (
     gold_strategy_rankings,
     gold_strategy_returns,
 )
+from portfolio_project.defs.research_db.ref.simulation import (
+    ref_run_types,
+    ref_simulation_types,
+)
 from portfolio_project.defs.research_db.silver.corporate_actions import (
     silver_alpaca_corporate_actions,
 )
@@ -112,6 +116,8 @@ research_prices_selection = AssetSelection.assets(
 )
 
 strategy_backfill_selection = AssetSelection.assets(
+    ref_run_types,
+    ref_simulation_types,
     silver_strategy_definitions,
     silver_strategy_runs,
     silver_strategy_parameters,
@@ -411,6 +417,8 @@ defs = Definitions(
         silver_strategy_definitions,
         silver_strategy_runs,
         silver_strategy_parameters,
+        ref_run_types,
+        ref_simulation_types,
         silver_universe_membership_events,
         silver_universe_membership_daily,
         gold_strategy_rankings,
