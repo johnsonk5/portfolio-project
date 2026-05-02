@@ -324,6 +324,8 @@ def test_strategy_gold_assets_build_rankings_holdings_returns_and_performance(
         """
         SELECT
             strategy_id,
+            run_type_id,
+            simulation_type_id,
             run_status,
             rankings_row_count,
             holdings_row_count,
@@ -337,8 +339,8 @@ def test_strategy_gold_assets_build_rankings_holdings_returns_and_performance(
         """
     ).fetchall()
     assert run_rows == [
-        ("benchmark_spy_buy_and_hold", "success", 2, 2, 2, 1, True, None),
-        ("momentum_top_1", "success", 4, 2, 2, 1, True, None),
+        ("benchmark_spy_buy_and_hold", "backtest", None, "success", 2, 2, 2, 1, True, None),
+        ("momentum_top_1", "backtest", None, "success", 4, 2, 2, 1, True, None),
     ]
 
     dq_row = obs_con.execute(

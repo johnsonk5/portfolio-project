@@ -624,6 +624,8 @@ def _ensure_strategy_run_rows(
             {
                 "run_id": strategy.run_id,
                 "strategy_id": strategy.strategy_id,
+                "run_type_id": "backtest",
+                "simulation_type_id": None,
                 "run_status": run_status,
                 "dataset_version": dataset_version,
                 "code_version": None,
@@ -665,6 +667,7 @@ def _ensure_strategy_run_rows(
         UPDATE silver.strategy_runs AS target
         SET
             run_status = seed.run_status,
+            run_type_id = coalesce(target.run_type_id, seed.run_type_id),
             dataset_version = seed.dataset_version,
             started_at = coalesce(target.started_at, seed.started_at),
             asof_ts = seed.asof_ts,

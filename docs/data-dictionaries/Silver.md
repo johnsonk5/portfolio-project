@@ -234,6 +234,7 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | `asof_ts` | `timestamp` | Load timestamp. |
 | `run_id` | `object` | Pipeline run identifier that loaded the row. |
 
+
 ## `silver.strategy_runs`
 
 *DuckDB Table in silver schema*
@@ -242,6 +243,8 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | --- | --- | --- |
 | `run_id` | `object` | Unique strategy run identifier. |
 | `strategy_id` | `object` | Parent strategy identifier. |
+| `run_type_id` | `object` | Run type code such as `backtest`, `simulation`, `paper`, or `live`. |
+| `simulation_type_id` | `int` | Simulation type identifier for simulation runs; null for non-simulation run types. |
 | `run_status` | `object` | Run status such as `pending`, `running`, `success`, or `failed`. |
 | `dataset_version` | `object` | Research dataset snapshot identifier used for the run. |
 | `code_version` | `object` | Code version, commit, or release tag used for the run. |
@@ -272,4 +275,3 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | `ingest_ts` | `timestamp` | Ingestion timestamp. |
 | `asof_ts` | `timestamp` | Load timestamp. |
 | `run_id` | `object` | Pipeline run identifier that loaded the row. |
-
