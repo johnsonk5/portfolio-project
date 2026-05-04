@@ -451,24 +451,43 @@ def test_strategy_simulation_run_applies_next_open_fixed_slippage(
             persist,
             asof_ts
         )
-        VALUES (
-            'sim-run:momentum_top_1',
-            'momentum_top_1',
-            'simulation',
-            3,
-            'pending',
-            NULL,
-            NULL,
-            NULL,
-            NULL,
-            NULL,
-            NULL,
-            NULL,
-            NULL,
-            NULL,
-            TRUE,
-            current_timestamp
-        )
+        VALUES
+            (
+                'sim-run:momentum_top_1',
+                'momentum_top_1',
+                'simulation',
+                3,
+                'pending',
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                TRUE,
+                current_timestamp
+            ),
+            (
+                'sim-run-open:momentum_top_1',
+                'momentum_top_1',
+                'simulation',
+                2,
+                'pending',
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                TRUE,
+                current_timestamp
+            )
         """
     )
 
@@ -478,22 +497,30 @@ def test_strategy_simulation_run_applies_next_open_fixed_slippage(
 
     sim_return = con.execute(
         """
-        SELECT round(portfolio_return, 6)
+        SELECT run_id, round(portfolio_return, 6)
         FROM gold.strategy_returns
-        WHERE run_id = 'sim-run:momentum_top_1'
+        WHERE run_id IN ('sim-run:momentum_top_1', 'sim-run-open:momentum_top_1')
           AND date = DATE '2024-02-01'
+        ORDER BY run_id
         """
-    ).fetchone()
-    assert sim_return == (0.047119,)
+    ).fetchall()
+    assert sim_return == [
+        ("sim-run-open:momentum_top_1", 0.047619),
+        ("sim-run:momentum_top_1", 0.047119),
+    ]
 
-    run_row = con.execute(
+    run_rows = con.execute(
         """
         SELECT run_type_id, simulation_type_id, run_status, returns_row_count
         FROM silver.strategy_runs
-        WHERE run_id = 'sim-run:momentum_top_1'
+        WHERE run_id IN ('sim-run:momentum_top_1', 'sim-run-open:momentum_top_1')
+        ORDER BY run_id
         """
-    ).fetchone()
-    assert run_row == ("simulation", 3, "running", 2)
+    ).fetchall()
+    assert run_rows == [
+        ("simulation", 2, "running", 2),
+        ("simulation", 3, "running", 2),
+    ]
 
 
 def test_strategy_rankings_failure_updates_strategy_run_metadata(
@@ -1496,6 +1523,7 @@ def test_strategies_for_missing_backfill_job_filters_completed_strategies(
     con = duckdb.connect(":memory:")
     silver_context = build_asset_context(resources={"research_duckdb": con})
     silver_strategy_module.silver_strategy_definitions(silver_context)
+    silver_strategy_module.silver_strategy_runs(silver_context)
 
     con.execute("CREATE SCHEMA IF NOT EXISTS gold")
     con.execute(
@@ -1519,7 +1547,11 @@ def test_strategies_for_missing_backfill_job_filters_completed_strategies(
     con.execute(
         """
         INSERT INTO gold.strategy_performance (run_id, strategy_id, asof_ts)
-        VALUES ('existing-run', 'benchmark_spy_buy_and_hold', current_timestamp)
+        VALUES (
+            'manual:benchmark_spy_buy_and_hold',
+            'benchmark_spy_buy_and_hold',
+            current_timestamp
+        )
         """
     )
 
@@ -1533,6 +1565,103 @@ def test_strategies_for_missing_backfill_job_filters_completed_strategies(
     )
 
     assert [strategy.strategy_id for strategy in strategies] == ["momentum_top_1"]
+
+
+def test_missing_backfill_keeps_pending_simulation_when_backtest_performance_exists(
+    tmp_path: Path, monkeypatch
+) -> None:
+    catalog_path = tmp_path / "investment_strategies.yaml"
+    catalog_path.write_text(TEST_GOLD_STRATEGY_YAML, encoding="utf-8")
+    monkeypatch.setattr(silver_strategy_module, "STRATEGY_CATALOG_PATH", catalog_path)
+
+    con = duckdb.connect(":memory:")
+    silver_context = build_asset_context(resources={"research_duckdb": con})
+    silver_strategy_module.silver_strategy_definitions(silver_context)
+    silver_strategy_module.silver_strategy_runs(silver_context)
+
+    con.execute("CREATE SCHEMA IF NOT EXISTS gold")
+    con.execute(
+        """
+        CREATE TABLE gold.strategy_performance (
+            run_id VARCHAR,
+            strategy_id VARCHAR,
+            cagr DOUBLE,
+            sharpe_ratio DOUBLE,
+            sortino_ratio DOUBLE,
+            max_drawdown DOUBLE,
+            annualized_volatility DOUBLE,
+            hit_rate DOUBLE,
+            turnover_avg DOUBLE,
+            benchmark_return DOUBLE,
+            alpha DOUBLE,
+            asof_ts TIMESTAMP
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO gold.strategy_performance (run_id, strategy_id, asof_ts)
+        VALUES (
+            'manual:benchmark_spy_buy_and_hold',
+            'benchmark_spy_buy_and_hold',
+            current_timestamp
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO silver.strategy_runs (
+            run_id,
+            strategy_id,
+            run_type_id,
+            simulation_type_id,
+            run_status,
+            dataset_version,
+            code_version,
+            started_at,
+            completed_at,
+            error_message,
+            rankings_row_count,
+            holdings_row_count,
+            returns_row_count,
+            performance_row_count,
+            persist,
+            asof_ts
+        )
+        VALUES (
+            'sim-run:benchmark_spy_buy_and_hold',
+            'benchmark_spy_buy_and_hold',
+            'simulation',
+            3,
+            'pending',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            TRUE,
+            current_timestamp
+        )
+        """
+    )
+
+    class DummyContext:
+        job_name = gold_strategy_module.MISSING_STRATEGIES_JOB_NAME
+
+    strategies = gold_strategy_module._strategies_for_context(
+        con,
+        cast(AssetExecutionContext, DummyContext()),
+        source_table=None,
+    )
+
+    assert [(strategy.strategy_id, strategy.run_id) for strategy in strategies] == [
+        ("benchmark_spy_buy_and_hold", "sim-run:benchmark_spy_buy_and_hold"),
+        ("momentum_top_1", "manual:momentum_top_1"),
+    ]
 
 
 def test_composite_underrated_momentum_ranking_requires_positive_momentum() -> None:

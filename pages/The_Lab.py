@@ -128,7 +128,7 @@ def _resolve_research_prices_glob() -> str:
 
 
 @st.cache_data(show_spinner=False)
-def _load_strategy_catalog() -> tuple[pd.DataFrame, str | None]:
+def _load_strategy_run_catalog() -> tuple[pd.DataFrame, str | None]:
     db_path = _resolve_research_duckdb_path()
     if not db_path.exists():
         return pd.DataFrame(), f"Research DuckDB not found at {db_path}"
@@ -137,36 +137,106 @@ def _load_strategy_catalog() -> tuple[pd.DataFrame, str | None]:
     try:
         df = con.execute(
             """
+            WITH active_strategies AS (
+                SELECT
+                    strategy_id,
+                    strategy_name,
+                    strategy_version,
+                    description,
+                    ranking_method,
+                    rebalance_frequency,
+                    benchmark_symbol,
+                    target_count,
+                    weighting_method,
+                    long_short_flag,
+                    config_json
+                FROM silver.strategy_definitions
+                WHERE is_active = TRUE
+            ),
+            successful_runs AS (
+                SELECT
+                    r.run_id,
+                    r.strategy_id,
+                    lower(coalesce(r.run_type_id, 'backtest')) AS run_type_id,
+                    r.simulation_type_id,
+                    r.run_status,
+                    r.started_at,
+                    r.completed_at,
+                    r.asof_ts,
+                    p.cagr,
+                    p.sharpe_ratio,
+                    p.max_drawdown,
+                    p.annualized_volatility,
+                    p.alpha,
+                    row_number() OVER (
+                        PARTITION BY
+                            r.strategy_id,
+                            lower(coalesce(r.run_type_id, 'backtest')),
+                            coalesce(r.simulation_type_id, -1)
+                        ORDER BY
+                            p.asof_ts DESC NULLS LAST,
+                            r.completed_at DESC NULLS LAST,
+                            r.started_at DESC NULLS LAST,
+                            r.run_id DESC
+                    ) AS row_num
+                FROM silver.strategy_runs AS r
+                INNER JOIN gold.strategy_performance AS p
+                    ON p.run_id = r.run_id
+                   AND p.strategy_id = r.strategy_id
+                WHERE r.run_status = 'success'
+            )
             SELECT
-                strategy_id,
-                strategy_name,
-                strategy_version,
-                description,
-                ranking_method,
-                rebalance_frequency,
-                benchmark_symbol,
-                target_count,
-                weighting_method,
-                long_short_flag,
-                config_json
-            FROM silver.strategy_definitions
-            WHERE is_active = TRUE
-            ORDER BY strategy_name, strategy_id
+                s.strategy_id,
+                s.strategy_name,
+                s.strategy_version,
+                s.description,
+                s.ranking_method,
+                s.rebalance_frequency,
+                s.benchmark_symbol,
+                s.target_count,
+                s.weighting_method,
+                s.long_short_flag,
+                s.config_json,
+                r.run_id,
+                r.run_type_id,
+                r.simulation_type_id,
+                st.simulation_type_code,
+                st.lookahead_safe_flag,
+                r.cagr,
+                r.sharpe_ratio,
+                r.max_drawdown,
+                r.annualized_volatility,
+                r.alpha,
+                r.asof_ts
+            FROM active_strategies AS s
+            INNER JOIN successful_runs AS r
+                ON s.strategy_id = r.strategy_id
+               AND r.row_num = 1
+            LEFT JOIN ref.simulation_types AS st
+                ON r.simulation_type_id = st.simulation_type_id
+            ORDER BY s.strategy_name, s.strategy_id, r.run_type_id, st.simulation_type_code
             """
         ).fetch_df()
     except Exception as exc:
-        return pd.DataFrame(), f"Failed to load strategy catalog: {exc}"
+        return pd.DataFrame(), f"Failed to load strategy run catalog: {exc}"
     finally:
         con.close()
 
+    if not df.empty:
+        df["run_flavor"] = df.apply(_run_flavor_label, axis=1)
+        df["run_label"] = df.apply(_run_label, axis=1)
+        df["selector_label"] = df.apply(
+            lambda row: f"{row['run_label']} ({row['strategy_name']})",
+            axis=1,
+        )
     return df, None
 
 
 @st.cache_data(show_spinner=False)
 def _load_strategy_detail_payload(
-    strategy_id: str,
+    run_id: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, str | None]:
-    if not strategy_id:
+    if not run_id:
         return (
             pd.DataFrame(),
             pd.DataFrame(),
@@ -189,25 +259,26 @@ def _load_strategy_detail_payload(
 
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        run_id_df = con.execute(
+        run_df = con.execute(
             """
-            WITH latest_success AS (
-                SELECT
-                    run_id,
-                    row_number() OVER (
-                        ORDER BY asof_ts DESC, completed_at DESC, started_at DESC, run_id DESC
-                    ) AS row_num
-                FROM silver.strategy_runs
-                WHERE strategy_id = ?
-                  AND run_status = 'success'
-            )
-            SELECT run_id
-            FROM latest_success
-            WHERE row_num = 1
+            SELECT strategy_id
+            FROM silver.strategy_runs
+            WHERE run_id = ?
+              AND run_status = 'success'
+            LIMIT 1
             """,
-            [strategy_id],
+            [run_id],
         ).fetch_df()
-        run_ids = run_id_df["run_id"].dropna().astype(str).unique().tolist()
+        if run_df.empty:
+            return (
+                pd.DataFrame(),
+                pd.DataFrame(),
+                pd.DataFrame(),
+                pd.DataFrame(),
+                pd.DataFrame(),
+                f"Successful strategy run not found for run_id `{run_id}`.",
+            )
+        strategy_id = str(run_df["strategy_id"].iloc[0])
 
         definition_df = con.execute(
             """
@@ -248,71 +319,73 @@ def _load_strategy_detail_payload(
             [strategy_id],
         ).fetch_df()
 
-        if run_ids:
-            performance_df = con.execute(
-                """
-                SELECT
-                    run_id,
-                    strategy_id,
-                    cagr,
-                    sharpe_ratio,
-                    sortino_ratio,
-                    max_drawdown,
-                    annualized_volatility,
-                    hit_rate,
-                    turnover_avg,
-                    benchmark_return,
-                    alpha,
-                    asof_ts
-                FROM gold.strategy_performance
-                WHERE strategy_id = ?
-                  AND run_id = ANY(?)
-                """,
-                [strategy_id, run_ids],
-            ).fetch_df()
-        else:
-            performance_df = pd.DataFrame()
+        performance_df = con.execute(
+            """
+            SELECT
+                p.run_id,
+                p.strategy_id,
+                p.cagr,
+                p.sharpe_ratio,
+                p.sortino_ratio,
+                p.max_drawdown,
+                p.annualized_volatility,
+                p.hit_rate,
+                p.turnover_avg,
+                p.benchmark_return,
+                p.alpha,
+                p.asof_ts,
+                lower(coalesce(r.run_type_id, 'backtest')) AS run_type_id,
+                r.simulation_type_id,
+                st.simulation_type_code,
+                st.lookahead_safe_flag
+            FROM gold.strategy_performance AS p
+            LEFT JOIN silver.strategy_runs AS r
+                ON p.run_id = r.run_id
+               AND p.strategy_id = r.strategy_id
+            LEFT JOIN ref.simulation_types AS st
+                ON r.simulation_type_id = st.simulation_type_id
+            WHERE p.strategy_id = ?
+              AND p.run_id = ?
+            """,
+            [strategy_id, run_id],
+        ).fetch_df()
 
-        if run_ids:
-            returns_df = con.execute(
-                """
-                SELECT
-                    strategy_id,
-                    date,
-                    portfolio_return,
-                    benchmark_return,
-                    cumulative_return,
-                    drawdown,
-                    turnover,
-                    holdings_count
-                FROM gold.strategy_returns
-                WHERE run_id = ANY(?)
-                ORDER BY date
-                """,
-                [run_ids],
-            ).fetch_df()
-        else:
-            returns_df = pd.DataFrame()
+        returns_df = con.execute(
+            """
+            SELECT
+                run_id,
+                strategy_id,
+                date,
+                portfolio_return,
+                benchmark_return,
+                cumulative_return,
+                drawdown,
+                turnover,
+                holdings_count
+            FROM gold.strategy_returns
+            WHERE run_id = ?
+            ORDER BY date
+            """,
+            [run_id],
+        ).fetch_df()
 
-        if run_ids:
-            holdings_df = con.execute(
-                """
-                SELECT
-                    h.strategy_id,
-                    h.rebalance_date,
-                    h.symbol,
-                    h.target_weight,
-                    h.entry_rank,
-                    h.signal_value
-                FROM gold.strategy_holdings AS h
-                WHERE h.strategy_id = ?
-                  AND h.run_id = ANY(?)
-                ORDER BY h.rebalance_date DESC, h.entry_rank, h.symbol
-                """,
-                [strategy_id, run_ids],
-            ).fetch_df()
-        else:
-            holdings_df = pd.DataFrame()
+        holdings_df = con.execute(
+            """
+            SELECT
+                h.run_id,
+                h.strategy_id,
+                h.rebalance_date,
+                h.symbol,
+                h.target_weight,
+                h.entry_rank,
+                h.signal_value
+            FROM gold.strategy_holdings AS h
+            WHERE h.strategy_id = ?
+              AND h.run_id = ?
+            ORDER BY h.rebalance_date DESC, h.entry_rank, h.symbol
+            """,
+            [strategy_id, run_id],
+        ).fetch_df()
     except Exception as exc:
         return (
             pd.DataFrame(),
@@ -330,9 +403,9 @@ def _load_strategy_detail_payload(
 
 @st.cache_data(show_spinner=False)
 def _load_strategy_comparison_payload(
-    selected_strategy_ids: tuple[str, ...],
+    selected_run_ids: tuple[str, ...],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str | None]:
-    if not selected_strategy_ids:
+    if not selected_run_ids:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), None
 
     db_path = _resolve_research_duckdb_path()
@@ -346,50 +419,42 @@ def _load_strategy_comparison_payload(
 
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        strategy_ids = list(selected_strategy_ids)
+        run_ids = list(selected_run_ids)
         performance_df = con.execute(
             """
-            WITH selected_strategies AS (
-                SELECT
-                    strategy_id,
-                    strategy_name,
-                    benchmark_symbol,
-                    ranking_method,
-                    target_count
-                FROM silver.strategy_definitions
-                WHERE strategy_id = ANY(?)
-            ),
-            latest_performance AS (
-                SELECT
-                    *,
-                    row_number() OVER (
-                        PARTITION BY strategy_id
-                        ORDER BY asof_ts DESC, run_id DESC
-                    ) AS row_num
-                FROM gold.strategy_performance
-                WHERE strategy_id = ANY(?)
-            )
             SELECT
-                s.strategy_id,
+                p.run_id,
+                p.strategy_id,
                 s.strategy_name,
+                lower(coalesce(r.run_type_id, 'backtest')) AS run_type_id,
+                r.simulation_type_id,
+                st.simulation_type_code,
+                st.lookahead_safe_flag,
                 s.benchmark_symbol,
                 s.ranking_method,
                 s.target_count,
-                p.run_id,
                 p.cagr,
                 p.sharpe_ratio,
                 p.max_drawdown,
                 p.annualized_volatility,
                 p.alpha,
                 p.asof_ts
-            FROM selected_strategies AS s
-            LEFT JOIN latest_performance AS p
-                ON s.strategy_id = p.strategy_id
-               AND p.row_num = 1
-            ORDER BY s.strategy_name, s.strategy_id
+            FROM gold.strategy_performance AS p
+            INNER JOIN silver.strategy_definitions AS s
+                ON p.strategy_id = s.strategy_id
+            LEFT JOIN silver.strategy_runs AS r
+                ON p.run_id = r.run_id
+               AND p.strategy_id = r.strategy_id
+            LEFT JOIN ref.simulation_types AS st
+                ON r.simulation_type_id = st.simulation_type_id
+            WHERE p.run_id = ANY(?)
+            ORDER BY s.strategy_name, s.strategy_id, p.run_id
             """,
-            [strategy_ids, strategy_ids],
+            [run_ids],
         ).fetch_df()
+        if not performance_df.empty:
+            performance_df["run_flavor"] = performance_df.apply(_run_flavor_label, axis=1)
+            performance_df["run_label"] = performance_df.apply(_run_label, axis=1)
 
         run_ids = performance_df["run_id"].dropna().astype(str).unique().tolist()
         if not run_ids:
@@ -398,6 +463,7 @@ def _load_strategy_comparison_payload(
         returns_df = con.execute(
             """
             SELECT
+                run_id,
                 strategy_id,
                 date,
                 portfolio_return,
@@ -407,7 +473,7 @@ def _load_strategy_comparison_payload(
                 holdings_count
             FROM gold.strategy_returns
             WHERE run_id = ANY(?)
-            ORDER BY strategy_id, date
+            ORDER BY run_id, date
             """,
             [run_ids],
         ).fetch_df()
@@ -440,13 +506,13 @@ def _load_strategy_comparison_payload(
 
 def _compute_betas(returns_df: pd.DataFrame) -> pd.DataFrame:
     if returns_df.empty:
-        return pd.DataFrame(columns=["strategy_id", "beta"])
+        return pd.DataFrame(columns=["run_id", "beta"])
 
     rows: list[dict[str, float | str | None]] = []
     grouped = returns_df.dropna(subset=["portfolio_return", "benchmark_return"]).groupby(
-        "strategy_id", sort=False
+        "run_id", sort=False
     )
-    for strategy_id, frame in grouped:
+    for run_id, frame in grouped:
         benchmark = frame["benchmark_return"].astype(float)
         portfolio = frame["portfolio_return"].astype(float)
         variance = float(benchmark.var(ddof=1)) if len(frame) > 1 else float("nan")
@@ -455,7 +521,7 @@ def _compute_betas(returns_df: pd.DataFrame) -> pd.DataFrame:
         else:
             covariance = float(np.cov(portfolio, benchmark, ddof=1)[0, 1])
             beta = covariance / variance
-        rows.append({"strategy_id": str(strategy_id), "beta": beta})
+        rows.append({"run_id": str(run_id), "beta": beta})
     return pd.DataFrame(rows)
 
 
@@ -463,7 +529,7 @@ def _compute_factor_exposures(
     returns_df: pd.DataFrame,
     factors_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    columns = ["strategy_id", "factor", "exposure", "observations"]
+    columns = ["run_id", "factor", "exposure", "observations"]
     if returns_df.empty or factors_df.empty:
         return pd.DataFrame(columns=columns)
 
@@ -476,13 +542,13 @@ def _compute_factor_exposures(
     if merged.empty:
         return pd.DataFrame(columns=columns)
 
-    merged["portfolio_excess"] = merged["portfolio_return"].astype(float) - merged[
-        "rf"
-    ].astype(float)
+    merged["portfolio_excess"] = merged["portfolio_return"].astype(float) - merged["rf"].astype(
+        float
+    )
 
     rows: list[dict[str, float | int | str]] = []
     regressors = ["mkt_rf", "smb", "hml", "mom"]
-    for strategy_id, frame in merged.groupby("strategy_id", sort=False):
+    for run_id, frame in merged.groupby("run_id", sort=False):
         regression_frame = frame.dropna(subset=["portfolio_excess", *regressors]).copy()
         if len(regression_frame) < 20:
             continue
@@ -492,7 +558,7 @@ def _compute_factor_exposures(
         for factor_name, coefficient in zip(regressors, coefficients, strict=True):
             rows.append(
                 {
-                    "strategy_id": str(strategy_id),
+                    "run_id": str(run_id),
                     "factor": factor_name,
                     "exposure": float(coefficient),
                     "observations": int(len(regression_frame)),
@@ -508,18 +574,18 @@ def _build_metric_table(
     if performance_df.empty:
         return pd.DataFrame()
 
-    frame = performance_df.merge(beta_df, on="strategy_id", how="left")
+    frame = performance_df.merge(beta_df, on="run_id", how="left")
     frame = frame[
         [
-            "strategy_name",
+            "run_label",
             "sharpe_ratio",
             "annualized_volatility",
             "alpha",
             "max_drawdown",
             "beta",
         ]
-    ].rename(columns={"strategy_name": "Strategy"})
-    frame = frame.set_index("Strategy").transpose()
+    ].rename(columns={"run_label": "Strategy Run"})
+    frame = frame.set_index("Strategy Run").transpose()
     frame.index = [METRIC_LABELS.get(index, index) for index in frame.index]
     return frame
 
@@ -767,9 +833,7 @@ def _render_strategy_benchmark_section(
         and pd.notna(strategy_summary.get("Sharpe"))
         and pd.notna(benchmark_summary.get("Sharpe"))
     ):
-        sharpe_delta = float(strategy_summary["Sharpe"]) - float(
-            benchmark_summary["Sharpe"]
-        )
+        sharpe_delta = float(strategy_summary["Sharpe"]) - float(benchmark_summary["Sharpe"])
 
     st.markdown(
         '<div class="section-title" style="margin-top: 4px;">Quick Read</div>',
@@ -969,9 +1033,7 @@ def _compute_holdings_rebalance_metrics(holdings_df: pd.DataFrame) -> pd.DataFra
                 for symbol in union_symbols
             )
             intersection_count = len(current_symbols & previous_symbols)
-            overlap_prev = (
-                intersection_count / len(previous_symbols) if previous_symbols else None
-            )
+            overlap_prev = intersection_count / len(previous_symbols) if previous_symbols else None
             added_count = len(current_symbols - previous_symbols)
             removed_count = len(previous_symbols - current_symbols)
             names_changed = (added_count or 0) + (removed_count or 0)
@@ -1233,11 +1295,15 @@ def _compute_symbol_cagr_table(
 
     if not rows:
         return pd.DataFrame(columns=columns)
-    return pd.DataFrame(rows).sort_values(
-        ["average_cagr", "holding_spells", "symbol"],
-        ascending=[False, False, True],
-        kind="stable",
-    ).reset_index(drop=True)
+    return (
+        pd.DataFrame(rows)
+        .sort_values(
+            ["average_cagr", "holding_spells", "symbol"],
+            ascending=[False, False, True],
+            kind="stable",
+        )
+        .reset_index(drop=True)
+    )
 
 
 def _read_query_param(name: str) -> str | None:
@@ -1247,11 +1313,35 @@ def _read_query_param(name: str) -> str | None:
     return value
 
 
-def _set_lab_query_params(view: str, strategy_id: str | None = None) -> None:
+def _run_flavor_label(row: pd.Series) -> str:
+    run_type = str(row.get("run_type_id") or "backtest").strip().lower()
+    simulation_code = str(row.get("simulation_type_code") or "").strip()
+    if run_type == "simulation" and simulation_code:
+        return simulation_code
+    if run_type == "paper":
+        return "paper"
+    if run_type == "live":
+        return "live"
+    return run_type or "backtest"
+
+
+def _run_label(row: pd.Series) -> str:
+    strategy_id = str(row.get("strategy_id") or "").strip()
+    flavor = str(row.get("run_flavor") or _run_flavor_label(row)).strip()
+    return f"{strategy_id}-{flavor}" if flavor else strategy_id
+
+
+def _set_lab_query_params(
+    view: str,
+    strategy_id: str | None = None,
+    run_id: str | None = None,
+) -> None:
     st.query_params.clear()
     st.query_params["lab_view"] = view
     if strategy_id:
         st.query_params["strategy_id"] = strategy_id
+    if run_id:
+        st.query_params["run_id"] = run_id
 
 
 def _pretty_label(value: object) -> str:
@@ -1335,34 +1425,42 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-catalog_df, catalog_error = _load_strategy_catalog()
-if catalog_error:
-    st.info(catalog_error)
+run_catalog_df, run_catalog_error = _load_strategy_run_catalog()
+if run_catalog_error:
+    st.info(run_catalog_error)
     st.stop()
 
-if catalog_df.empty:
-    st.info("No active strategies were found in the research catalog.")
+if run_catalog_df.empty:
+    st.info(
+        "No successful strategy runs were found in the research catalog. Run the research strategy "
+        "assets before using The Lab."
+    )
     st.stop()
 
-catalog_df = catalog_df.copy()
-catalog_df["selector_label"] = catalog_df.apply(
-    lambda row: f"{row['strategy_name']} ({row['strategy_id']})",
-    axis=1,
-)
-
-default_labels = catalog_df["selector_label"].head(3).tolist()
+run_catalog_df = run_catalog_df.copy()
+default_labels = run_catalog_df["selector_label"].head(3).tolist()
 query_view = _read_query_param("lab_view")
 if query_view not in LAB_VIEWS:
     query_view = "compare"
 
 query_strategy_id = _read_query_param("strategy_id")
-valid_strategy_ids = set(catalog_df["strategy_id"].astype(str).tolist())
+query_run_id = _read_query_param("run_id")
+valid_run_ids = set(run_catalog_df["run_id"].astype(str).tolist())
 
-default_detail_strategy_id = (
-    query_strategy_id
-    if query_strategy_id in valid_strategy_ids
-    else str(catalog_df["strategy_id"].iloc[0])
-)
+if query_run_id in valid_run_ids:
+    default_detail_run_id = str(query_run_id)
+elif query_strategy_id:
+    matching_runs = run_catalog_df.loc[
+        run_catalog_df["strategy_id"].astype(str) == query_strategy_id,
+        "run_id",
+    ]
+    default_detail_run_id = (
+        str(matching_runs.iloc[0])
+        if not matching_runs.empty
+        else str(run_catalog_df["run_id"].iloc[0])
+    )
+else:
+    default_detail_run_id = str(run_catalog_df["run_id"].iloc[0])
 
 tab_keys = ["compare", "detail"]
 if query_view == "detail":
@@ -1375,13 +1473,13 @@ with tabs["compare"]:
     st.markdown('<div class="section-title">Strategy Comparison</div>', unsafe_allow_html=True)
 
     selected_labels = st.multiselect(
-        "Select up to 5 strategies",
-        options=catalog_df["selector_label"].tolist(),
+        "Select up to 5 strategy runs",
+        options=run_catalog_df["selector_label"].tolist(),
         default=default_labels,
         max_selections=5,
         help=(
-            "Strategies use the catalog's human-readable names. Comparison pulls "
-            "the latest materialized run for each strategy."
+            "Each option is the latest successful run for a strategy and run flavor, such as "
+            "`momentum_top_200-next_open_fixed_10bps`."
         ),
     )
 
@@ -1390,25 +1488,26 @@ with tabs["compare"]:
         st.markdown("</div>", unsafe_allow_html=True)
         st.stop()
 
-    selected_rows = catalog_df[catalog_df["selector_label"].isin(selected_labels)].copy()
+    selected_rows = run_catalog_df[run_catalog_df["selector_label"].isin(selected_labels)].copy()
     selected_rows = selected_rows.set_index("selector_label").loc[selected_labels].reset_index()
 
     drilldown_options = []
     for _, row in selected_rows.iterrows():
         strategy_id = str(row["strategy_id"])
-        strategy_name = str(row["strategy_name"])
+        run_id = str(row["run_id"])
+        run_label = str(row["run_label"])
         drilldown_options.append(
-            f"[{strategy_name} Definition](?lab_view=detail&strategy_id={strategy_id})"
+            f"[{run_label} Detail](?lab_view=detail&strategy_id={strategy_id}&run_id={run_id})"
         )
     st.markdown(
-        "Open a selected strategy in the detail tab: " + " | ".join(drilldown_options),
+        "Open a selected strategy run in the detail tab: " + " | ".join(drilldown_options),
         unsafe_allow_html=False,
     )
 
-    selected_strategy_ids = tuple(selected_rows["strategy_id"].tolist())
+    selected_run_ids = tuple(selected_rows["run_id"].astype(str).tolist())
 
     performance_df, returns_df, factors_df, load_error = _load_strategy_comparison_payload(
-        selected_strategy_ids
+        selected_run_ids
     )
     if load_error:
         st.info(load_error)
@@ -1423,10 +1522,10 @@ with tabs["compare"]:
         st.markdown("</div>", unsafe_allow_html=True)
         st.stop()
 
-    name_map = (
-        performance_df[["strategy_id", "strategy_name"]]
+    label_map = (
+        performance_df[["run_id", "run_label"]]
         .drop_duplicates()
-        .set_index("strategy_id")["strategy_name"]
+        .set_index("run_id")["run_label"]
         .to_dict()
     )
 
@@ -1442,12 +1541,13 @@ with tabs["compare"]:
     for idx, (_, row) in enumerate(selected_rows.head(4).iterrows()):
         with summary_cols[idx]:
             st.metric(
-                row["strategy_name"],
+                row["run_label"],
                 f"{int(row['target_count'])} holdings",
-                row["ranking_method"],
+                row["run_flavor"],
             )
             st.markdown(
-                f"[Open In Strategy Detail](?lab_view=detail&strategy_id={row['strategy_id']})"
+                "[Open In Strategy Detail]"
+                f"(?lab_view=detail&strategy_id={row['strategy_id']}&run_id={row['run_id']})"
             )
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -1455,7 +1555,7 @@ with tabs["compare"]:
     returns_df = returns_df.copy()
     if not returns_df.empty:
         returns_df["date"] = pd.to_datetime(returns_df["date"])
-        returns_df["strategy_name"] = returns_df["strategy_id"].map(name_map)
+        returns_df["run_label"] = returns_df["run_id"].map(label_map)
 
     factors_df = factors_df.copy()
     if not factors_df.empty:
@@ -1485,13 +1585,13 @@ with tabs["compare"]:
                     x=alt.X("date:T", title="Date"),
                     y=alt.Y("cumulative_return_pct:Q", title="Cumulative return (%)"),
                     color=alt.Color(
-                        "strategy_name:N",
-                        title="Strategy",
+                        "run_label:N",
+                        title="Strategy Run",
                         scale=alt.Scale(range=COLORWAY),
                     ),
                     tooltip=[
                         alt.Tooltip("date:T", title="Date"),
-                        alt.Tooltip("strategy_name:N", title="Strategy"),
+                        alt.Tooltip("run_label:N", title="Strategy Run"),
                         alt.Tooltip(
                             "cumulative_return_pct:Q",
                             title="Cumulative return (%)",
@@ -1542,7 +1642,7 @@ with tabs["compare"]:
             )
         else:
             exposure_chart_df = factor_exposures_df.copy()
-            exposure_chart_df["strategy_name"] = exposure_chart_df["strategy_id"].map(name_map)
+            exposure_chart_df["run_label"] = exposure_chart_df["run_id"].map(label_map)
             exposure_chart_df["factor_label"] = exposure_chart_df["factor"].map(FACTOR_LABELS)
             exposure_chart = (
                 alt.Chart(exposure_chart_df)
@@ -1551,13 +1651,13 @@ with tabs["compare"]:
                     x=alt.X("factor_label:N", title="Factor"),
                     y=alt.Y("exposure:Q", title="Exposure"),
                     color=alt.Color(
-                        "strategy_name:N",
-                        title="Strategy",
+                        "run_label:N",
+                        title="Strategy Run",
                         scale=alt.Scale(range=COLORWAY),
                     ),
-                    xOffset="strategy_name:N",
+                    xOffset="run_label:N",
                     tooltip=[
-                        alt.Tooltip("strategy_name:N", title="Strategy"),
+                        alt.Tooltip("run_label:N", title="Strategy Run"),
                         alt.Tooltip("factor_label:N", title="Factor"),
                         alt.Tooltip("exposure:Q", title="Exposure", format=".3f"),
                         alt.Tooltip("observations:Q", title="Regression obs", format=","),
@@ -1570,11 +1670,14 @@ with tabs["compare"]:
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">Selected Strategies</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Selected Strategy Runs</div>', unsafe_allow_html=True)
     selected_display = selected_rows[
         [
+            "run_label",
             "strategy_name",
             "strategy_id",
+            "run_type_id",
+            "simulation_type_code",
             "ranking_method",
             "rebalance_frequency",
             "weighting_method",
@@ -1584,8 +1687,11 @@ with tabs["compare"]:
         ]
     ].rename(
         columns={
+            "run_label": "Run",
             "strategy_name": "Strategy",
             "strategy_id": "ID",
+            "run_type_id": "Run Type",
+            "simulation_type_code": "Simulation",
             "ranking_method": "Ranking Method",
             "rebalance_frequency": "Rebalance",
             "weighting_method": "Weighting",
@@ -1598,27 +1704,31 @@ with tabs["compare"]:
     st.markdown("</div>", unsafe_allow_html=True)
 
 with tabs["detail"]:
-    detail_options = catalog_df["selector_label"].tolist()
+    detail_options = run_catalog_df["selector_label"].tolist()
     detail_default_index = int(
-        catalog_df.index[catalog_df["strategy_id"].astype(str) == default_detail_strategy_id][0]
+        run_catalog_df.index[run_catalog_df["run_id"].astype(str) == default_detail_run_id][0]
     )
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Strategy Definition</div>', unsafe_allow_html=True)
 
     selected_detail_label = st.selectbox(
-        "Select strategy",
+        "Select strategy run",
         options=detail_options,
         index=detail_default_index,
-        help="Choose any active research strategy to inspect its definition and metadata.",
+        help=(
+            "Choose a materialized strategy run to inspect its definition, performance, "
+            "and holdings."
+        ),
     )
-    selected_detail_row = catalog_df.loc[
-        catalog_df["selector_label"] == selected_detail_label
+    selected_detail_row = run_catalog_df.loc[
+        run_catalog_df["selector_label"] == selected_detail_label
     ].iloc[0]
     selected_detail_strategy_id = str(selected_detail_row["strategy_id"])
+    selected_detail_run_id = str(selected_detail_row["run_id"])
 
-    if query_view == "detail" and selected_detail_strategy_id != query_strategy_id:
-        _set_lab_query_params("detail", selected_detail_strategy_id)
+    if query_view == "detail" and selected_detail_run_id != query_run_id:
+        _set_lab_query_params("detail", selected_detail_strategy_id, selected_detail_run_id)
         st.rerun()
 
     (
@@ -1628,7 +1738,7 @@ with tabs["detail"]:
         detail_returns_df,
         detail_holdings_df,
         detail_error,
-    ) = _load_strategy_detail_payload(selected_detail_strategy_id)
+    ) = _load_strategy_detail_payload(selected_detail_run_id)
     if detail_error:
         st.info(detail_error)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -1648,17 +1758,17 @@ with tabs["detail"]:
         if pd.notna(definition_row["description"])
         else "No strategy description is available yet."
     )
-    strategy_version_text = (
-        f'{definition_row["strategy_id"]} | {definition_row["strategy_version"]}'
-    )
+    run_label = str(selected_detail_row["run_label"])
+    run_flavor = str(selected_detail_row["run_flavor"])
+    strategy_version_text = f"{run_label} | {definition_row['strategy_version']}"
 
     st.markdown(
         f"""
         <div style="font-size: 1.5rem; font-weight: 700; margin-bottom: 6px;">
-          {definition_row["strategy_name"]}
+          {run_label}
         </div>
         <div style="color: var(--ink-2); margin-bottom: 16px;">
-          {description_text}
+          {definition_row["strategy_name"]} | {description_text}
         </div>
         """,
         unsafe_allow_html=True,
@@ -1692,8 +1802,15 @@ with tabs["detail"]:
             "Ranking Method",
             _pretty_label(definition_row.get("ranking_method")),
         )
+        _render_definition_metric("Run Type", _pretty_label(selected_detail_row.get("run_type_id")))
 
     with config_col:
+        _render_definition_metric("Run Flavor", _pretty_label(run_flavor))
+        if pd.notna(selected_detail_row.get("lookahead_safe_flag")):
+            _render_definition_metric(
+                "Lookahead Safe",
+                _pretty_label(bool(selected_detail_row.get("lookahead_safe_flag"))),
+            )
         _render_definition_metric(
             "Selection Mode",
             _pretty_label(config.get("selection_mode")),
@@ -1716,7 +1833,7 @@ with tabs["detail"]:
     st.markdown("</div>", unsafe_allow_html=True)
 
     _render_strategy_benchmark_section(
-        strategy_name=str(definition_row["strategy_name"]),
+        strategy_name=run_label,
         benchmark_symbol=str(definition_row.get("benchmark_symbol") or "SPY").strip().upper()
         or "SPY",
         detail_performance_df=detail_performance_df,
@@ -1760,8 +1877,8 @@ with tabs["detail"]:
                 options=rebalance_dates,
                 index=0,
                 format_func=lambda value: pd.to_datetime(value).strftime("%B %d, %Y"),
-                key=f"holdings_tab_rebalance_{selected_detail_strategy_id}",
-                help="Inspect holdings at any rebalance date for this strategy.",
+                key=f"holdings_tab_rebalance_{selected_detail_run_id}",
+                help="Inspect holdings at any rebalance date for this strategy run.",
             )
 
             selected_holdings_df = detail_holdings_df.loc[
@@ -1964,9 +2081,7 @@ with tabs["detail"]:
             avg_names_changed = (
                 stability_df["names_changed"].mean() if not stability_df.empty else np.nan
             )
-            avg_overlap = (
-                stability_df["overlap_prev"].mean() if not stability_df.empty else np.nan
-            )
+            avg_overlap = stability_df["overlap_prev"].mean() if not stability_df.empty else np.nan
             with stability_cols[0]:
                 st.metric(
                     "Avg Turnover",
@@ -2024,14 +2139,16 @@ with tabs["detail"]:
                         "added_count": "Added",
                         "removed_count": "Removed",
                     }
-                )[[
-                    "Rebalance Date",
-                    "Turnover (%)",
-                    "Overlap",
-                    "Names Changed",
-                    "Added",
-                    "Removed",
-                ]]
+                )[
+                    [
+                        "Rebalance Date",
+                        "Turnover (%)",
+                        "Overlap",
+                        "Names Changed",
+                        "Added",
+                        "Removed",
+                    ]
+                ]
                 st.dataframe(
                     stability_table,
                     use_container_width=True,

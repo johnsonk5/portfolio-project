@@ -250,10 +250,10 @@ def _strategy_run_id(context: AssetExecutionContext, strategy_id: str) -> str:
     return f"manual:{strategy_id}"
 
 
-def _pending_strategy_run_id(con, strategy_id: str) -> str | None:
+def _pending_strategy_run_ids(con, strategy_id: str) -> list[str]:
     if not _table_exists(con, "silver", "strategy_runs"):
-        return None
-    row = con.execute(
+        return []
+    rows = con.execute(
         """
         SELECT run_id
         FROM silver.strategy_runs
@@ -263,13 +263,28 @@ def _pending_strategy_run_id(con, strategy_id: str) -> str | None:
         ORDER BY asof_ts DESC NULLS LAST,
                  started_at DESC NULLS LAST,
                  run_id DESC
-        LIMIT 1
         """,
         [strategy_id],
-    ).fetchone()
-    if row is None or row[0] in (None, ""):
-        return None
-    return str(row[0])
+    ).fetchall()
+    return [str(row[0]) for row in rows if row[0] not in (None, "")]
+
+
+def _simulation_strategy_run_exists(con, run_id: str) -> bool:
+    if not _table_exists(con, "silver", "strategy_runs"):
+        return False
+    return (
+        con.execute(
+            """
+            SELECT 1
+            FROM silver.strategy_runs
+            WHERE run_id = ?
+              AND run_type_id = 'simulation'
+            LIMIT 1
+            """,
+            [run_id],
+        ).fetchone()
+        is not None
+    )
 
 
 def _active_strategies(con, context: AssetExecutionContext) -> list[StrategyConfig]:
@@ -296,11 +311,10 @@ def _active_strategies(con, context: AssetExecutionContext) -> list[StrategyConf
     strategies: list[StrategyConfig] = []
     for row in rows:
         strategy_id = str(row[0])
-        run_id = _pending_strategy_run_id(con, strategy_id) or _strategy_run_id(
-            context,
-            strategy_id,
-        )
-        strategies.append(
+        run_ids = _pending_strategy_run_ids(con, strategy_id) or [
+            _strategy_run_id(context, strategy_id)
+        ]
+        strategy_configs = [
             StrategyConfig(
                 strategy_id=strategy_id,
                 rebalance_frequency=str(row[1]),
@@ -312,6 +326,13 @@ def _active_strategies(con, context: AssetExecutionContext) -> list[StrategyConf
                 end_date=row[7],
                 config=_safe_json_loads(row[8]),
                 run_id=run_id,
+            )
+            for run_id in run_ids
+        ]
+        strategies.extend(
+            sorted(
+                strategy_configs,
+                key=lambda strategy_config: strategy_config.run_id,
             )
         )
     return strategies
@@ -351,11 +372,26 @@ def _strategies_with_latest_run_ids(
             SELECT run_id
             FROM gold.{_quote_identifier(source_table)}
             WHERE strategy_id = ?
-            ORDER BY asof_ts DESC, run_id DESC
+              AND run_id = ?
+            ORDER BY asof_ts DESC
             LIMIT 1
             """,
-            [strategy.strategy_id],
+            [strategy.strategy_id, strategy.run_id],
         ).fetchone()
+        if row is None or row[0] in (None, ""):
+            if _simulation_strategy_run_exists(con, strategy.run_id):
+                resolved.append(strategy)
+                continue
+            row = con.execute(
+                f"""
+                SELECT run_id
+                FROM gold.{_quote_identifier(source_table)}
+                WHERE strategy_id = ?
+                ORDER BY asof_ts DESC, run_id DESC
+                LIMIT 1
+                """,
+                [strategy.strategy_id],
+            ).fetchone()
         if row is None or row[0] in (None, ""):
             resolved.append(strategy)
             continue
@@ -383,19 +419,17 @@ def _filter_missing_strategies(
     if not strategies or not _table_exists(con, "gold", "strategy_performance"):
         return strategies
 
-    completed_strategy_ids = {
+    completed_run_ids = {
         str(row[0])
         for row in con.execute(
             """
-            SELECT DISTINCT strategy_id
+            SELECT DISTINCT run_id
             FROM gold.strategy_performance
-            WHERE strategy_id IS NOT NULL
+            WHERE run_id IS NOT NULL
             """
         ).fetchall()
     }
-    return [
-        strategy for strategy in strategies if strategy.strategy_id not in completed_strategy_ids
-    ]
+    return [strategy for strategy in strategies if strategy.run_id not in completed_run_ids]
 
 
 def _strategies_for_context(
