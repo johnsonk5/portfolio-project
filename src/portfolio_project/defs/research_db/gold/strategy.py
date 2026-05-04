@@ -110,6 +110,26 @@ class StrategyConfig:
     run_id: str
 
 
+@dataclass(frozen=True)
+class SimulationTypeConfig:
+    simulation_type_id: int | None
+    simulation_type_code: str
+    fill_price_basis: str
+    slippage_model: str
+    slippage_bps: float
+    slippage_params: dict[str, Any]
+
+
+DEFAULT_SIMULATION_TYPE = SimulationTypeConfig(
+    simulation_type_id=None,
+    simulation_type_code="close_no_cost",
+    fill_price_basis="close",
+    slippage_model="none",
+    slippage_bps=0.0,
+    slippage_params={},
+)
+
+
 def _now_utc_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -151,6 +171,64 @@ def _safe_json_loads(raw_value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _simulation_type_for_run(con, run_id: str) -> SimulationTypeConfig:
+    if not _table_exists(con, "silver", "strategy_runs"):
+        return DEFAULT_SIMULATION_TYPE
+
+    run_row = con.execute(
+        """
+        SELECT run_type_id, simulation_type_id
+        FROM silver.strategy_runs
+        WHERE run_id = ?
+        LIMIT 1
+        """,
+        [run_id],
+    ).fetchone()
+    if run_row is None:
+        return DEFAULT_SIMULATION_TYPE
+
+    run_type_id = str(run_row[0] or "").strip().lower()
+    simulation_type_id = run_row[1]
+    if run_type_id != "simulation" or simulation_type_id is None:
+        return DEFAULT_SIMULATION_TYPE
+    if not _table_exists(con, "ref", "simulation_types"):
+        raise ValueError(
+            f"Strategy run {run_id} has simulation_type_id={simulation_type_id}, "
+            "but ref.simulation_types is not materialized."
+        )
+
+    type_row = con.execute(
+        """
+        SELECT
+            simulation_type_id,
+            simulation_type_code,
+            fill_price_basis,
+            slippage_model,
+            slippage_bps,
+            slippage_params_json
+        FROM ref.simulation_types
+        WHERE simulation_type_id = ?
+          AND is_active = TRUE
+        LIMIT 1
+        """,
+        [simulation_type_id],
+    ).fetchone()
+    if type_row is None:
+        raise ValueError(
+            f"Strategy run {run_id} references inactive or unknown "
+            f"simulation_type_id={simulation_type_id}."
+        )
+
+    return SimulationTypeConfig(
+        simulation_type_id=int(type_row[0]),
+        simulation_type_code=str(type_row[1]).strip().lower(),
+        fill_price_basis=str(type_row[2]).strip().lower(),
+        slippage_model=str(type_row[3]).strip().lower(),
+        slippage_bps=float(type_row[4] or 0.0),
+        slippage_params=_safe_json_loads(type_row[5]),
+    )
+
+
 def _coerce_parameter_value(raw_value: Any, parameter_type: str) -> Any:
     if raw_value is None:
         return None
@@ -170,6 +248,43 @@ def _strategy_run_id(context: AssetExecutionContext, strategy_id: str) -> str:
     if run_id:
         return f"{run_id}:{strategy_id}"
     return f"manual:{strategy_id}"
+
+
+def _pending_strategy_run_ids(con, strategy_id: str) -> list[str]:
+    if not _table_exists(con, "silver", "strategy_runs"):
+        return []
+    rows = con.execute(
+        """
+        SELECT run_id
+        FROM silver.strategy_runs
+        WHERE strategy_id = ?
+          AND run_type_id = 'simulation'
+          AND run_status IN ('pending', 'running')
+        ORDER BY asof_ts DESC NULLS LAST,
+                 started_at DESC NULLS LAST,
+                 run_id DESC
+        """,
+        [strategy_id],
+    ).fetchall()
+    return [str(row[0]) for row in rows if row[0] not in (None, "")]
+
+
+def _simulation_strategy_run_exists(con, run_id: str) -> bool:
+    if not _table_exists(con, "silver", "strategy_runs"):
+        return False
+    return (
+        con.execute(
+            """
+            SELECT 1
+            FROM silver.strategy_runs
+            WHERE run_id = ?
+              AND run_type_id = 'simulation'
+            LIMIT 1
+            """,
+            [run_id],
+        ).fetchone()
+        is not None
+    )
 
 
 def _active_strategies(con, context: AssetExecutionContext) -> list[StrategyConfig]:
@@ -196,7 +311,10 @@ def _active_strategies(con, context: AssetExecutionContext) -> list[StrategyConf
     strategies: list[StrategyConfig] = []
     for row in rows:
         strategy_id = str(row[0])
-        strategies.append(
+        run_ids = _pending_strategy_run_ids(con, strategy_id) or [
+            _strategy_run_id(context, strategy_id)
+        ]
+        strategy_configs = [
             StrategyConfig(
                 strategy_id=strategy_id,
                 rebalance_frequency=str(row[1]),
@@ -207,7 +325,14 @@ def _active_strategies(con, context: AssetExecutionContext) -> list[StrategyConf
                 start_date=row[6],
                 end_date=row[7],
                 config=_safe_json_loads(row[8]),
-                run_id=_strategy_run_id(context, strategy_id),
+                run_id=run_id,
+            )
+            for run_id in run_ids
+        ]
+        strategies.extend(
+            sorted(
+                strategy_configs,
+                key=lambda strategy_config: strategy_config.run_id,
             )
         )
     return strategies
@@ -247,11 +372,26 @@ def _strategies_with_latest_run_ids(
             SELECT run_id
             FROM gold.{_quote_identifier(source_table)}
             WHERE strategy_id = ?
-            ORDER BY asof_ts DESC, run_id DESC
+              AND run_id = ?
+            ORDER BY asof_ts DESC
             LIMIT 1
             """,
-            [strategy.strategy_id],
+            [strategy.strategy_id, strategy.run_id],
         ).fetchone()
+        if row is None or row[0] in (None, ""):
+            if _simulation_strategy_run_exists(con, strategy.run_id):
+                resolved.append(strategy)
+                continue
+            row = con.execute(
+                f"""
+                SELECT run_id
+                FROM gold.{_quote_identifier(source_table)}
+                WHERE strategy_id = ?
+                ORDER BY asof_ts DESC, run_id DESC
+                LIMIT 1
+                """,
+                [strategy.strategy_id],
+            ).fetchone()
         if row is None or row[0] in (None, ""):
             resolved.append(strategy)
             continue
@@ -279,19 +419,17 @@ def _filter_missing_strategies(
     if not strategies or not _table_exists(con, "gold", "strategy_performance"):
         return strategies
 
-    completed_strategy_ids = {
+    completed_run_ids = {
         str(row[0])
         for row in con.execute(
             """
-            SELECT DISTINCT strategy_id
+            SELECT DISTINCT run_id
             FROM gold.strategy_performance
-            WHERE strategy_id IS NOT NULL
+            WHERE run_id IS NOT NULL
             """
         ).fetchall()
     }
-    return [
-        strategy for strategy in strategies if strategy.strategy_id not in completed_strategy_ids
-    ]
+    return [strategy for strategy in strategies if strategy.run_id not in completed_run_ids]
 
 
 def _strategies_for_context(
@@ -433,13 +571,13 @@ def _build_rankings_for_strategy(
                    AND upper(trim(u.symbol)) = upper(trim(s.symbol))
                 WHERE CAST(s.date AS DATE) = ?
             """
-            params = [rebalance_date]
+            random_params: list[Any] = [rebalance_date]
             min_avg_dollar_volume_21d = parameters.get("min_avg_dollar_volume_21d")
             if min_avg_dollar_volume_21d is not None:
                 sql += " AND CAST(s.avg_dollar_volume_21d AS DOUBLE) >= ?"
-                params.append(float(min_avg_dollar_volume_21d))
+                random_params.append(float(min_avg_dollar_volume_21d))
             sql += " ORDER BY symbol"
-            candidate_rows = con.execute(sql, params).fetchall()
+            candidate_rows = con.execute(sql, random_params).fetchall()
         else:
             secondary_select_sql = ""
             secondary_not_null_sql = ""
@@ -488,16 +626,18 @@ def _build_rankings_for_strategy(
                 continue
             random_seed = int(parameters.get("random_seed") or 0)
             candidate_df["score"] = candidate_df["symbol"].map(
-                lambda symbol: int.from_bytes(
-                    hashlib.sha256(
-                        f"{strategy.strategy_id}|{rebalance_date.isoformat()}|{random_seed}|{symbol}".encode(
-                            "utf-8"
-                        )
-                    ).digest()[:8],
-                    byteorder="big",
-                    signed=False,
+                lambda symbol: (
+                    int.from_bytes(
+                        hashlib.sha256(
+                            f"{strategy.strategy_id}|{rebalance_date.isoformat()}|{random_seed}|{symbol}".encode(
+                                "utf-8"
+                            )
+                        ).digest()[:8],
+                        byteorder="big",
+                        signed=False,
+                    )
+                    / float(2**64 - 1)
                 )
-                / float(2**64 - 1)
             )
         else:
             candidate_columns = (
@@ -510,6 +650,7 @@ def _build_rankings_for_strategy(
                 continue
 
             if secondary_signal_column and score_method == "zscore_sum":
+
                 def _zscore(series: pd.Series) -> pd.Series:
                     std = series.std(ddof=0)
                     if pd.isna(std) or std == 0:
@@ -935,10 +1076,8 @@ def _log_holdings_weight_sum_check(
         }
         for row in failing_rows
     ]
-    max_abs_deviation = max(
-        (group["abs_deviation"] for group in failing_groups),
-        default=0.0,
-    )
+    abs_deviations = [float(row[4]) for row in failing_rows]
+    max_abs_deviation = max(abs_deviations, default=0.0)
 
     write_dq_log(
         con=observability_con,
@@ -1081,14 +1220,27 @@ def _load_price_history(
     end_date: date,
 ) -> pd.DataFrame:
     if not symbols:
-        return pd.DataFrame(columns=["trade_date", "symbol", "price"])
+        return pd.DataFrame(
+            columns=["trade_date", "symbol", "open", "close", "close_fill", "vwap", "price"]
+        )
+    schema_rows = con.execute(
+        "DESCRIBE SELECT * FROM read_parquet(?, union_by_name = true)",
+        [PRICE_GLOB],
+    ).fetchall()
+    available_columns = {str(row[0]).lower() for row in schema_rows}
+    open_expr = "CAST(open AS DOUBLE)" if "open" in available_columns else "NULL::DOUBLE"
+    vwap_expr = "CAST(vwap AS DOUBLE)" if "vwap" in available_columns else "NULL::DOUBLE"
     return con.execute(
-        """
+        f"""
         SELECT
             CAST(trade_date AS DATE) AS trade_date,
             upper(trim(symbol)) AS symbol,
+            {open_expr} AS open,
+            CAST(close AS DOUBLE) AS close,
+            CAST(coalesce(adjusted_close, close) AS DOUBLE) AS close_fill,
+            {vwap_expr} AS vwap,
             CAST(coalesce(adjusted_close, close) AS DOUBLE) AS price
-        FROM read_parquet(?)
+        FROM read_parquet(?, union_by_name = true)
         WHERE upper(trim(symbol)) = ANY(?)
           AND CAST(trade_date AS DATE) >= ?
           AND CAST(trade_date AS DATE) <= ?
@@ -1136,12 +1288,101 @@ def _daily_symbol_returns(price_df: pd.DataFrame) -> pd.DataFrame:
     frame.loc[valid_prices, "asset_return"] = (
         frame.loc[valid_prices, "price"] / frame.loc[valid_prices, "prev_price"]
     ) - 1.0
-    extreme_mask = (
-        frame["asset_return"].notna()
-        & (frame["asset_return"].abs() > MAX_ABS_DAILY_SECURITY_RETURN)
+    extreme_mask = frame["asset_return"].notna() & (
+        frame["asset_return"].abs() > MAX_ABS_DAILY_SECURITY_RETURN
     )
     frame.loc[extreme_mask, "asset_return"] = pd.NA
     return frame[["trade_date", "symbol", "asset_return"]]
+
+
+def _fill_price_column(fill_price_basis: str) -> str:
+    normalized_basis = fill_price_basis.strip().lower()
+    if normalized_basis in {"open", "next_open"}:
+        return "open"
+    if normalized_basis == "vwap":
+        return "vwap"
+    return "close_fill"
+
+
+def _simulation_trade_price_returns(
+    price_df: pd.DataFrame,
+    *,
+    simulation_type: SimulationTypeConfig,
+) -> pd.DataFrame:
+    if price_df.empty:
+        return pd.DataFrame(columns=["trade_date", "symbol", "asset_return"])
+
+    frame = price_df.sort_values(["symbol", "trade_date"], kind="stable").copy()
+    fill_column = _fill_price_column(simulation_type.fill_price_basis)
+    frame["entry_price"] = pd.to_numeric(frame[fill_column], errors="coerce")
+    frame["close_fill"] = pd.to_numeric(frame["close_fill"], errors="coerce")
+    frame["prev_close"] = frame.groupby("symbol")["close_fill"].shift(1)
+
+    same_session_fill = simulation_type.fill_price_basis == "close"
+    entry_basis = frame["prev_close"] if same_session_fill else frame["entry_price"]
+    valid_prices = (
+        frame["close_fill"].notna()
+        & entry_basis.notna()
+        & frame["close_fill"].gt(0)
+        & entry_basis.gt(0)
+    )
+    frame["asset_return"] = pd.NA
+    frame.loc[valid_prices, "asset_return"] = (
+        frame.loc[valid_prices, "close_fill"] / entry_basis.loc[valid_prices]
+    ) - 1.0
+    extreme_mask = frame["asset_return"].notna() & (
+        frame["asset_return"].abs() > MAX_ABS_DAILY_SECURITY_RETURN
+    )
+    frame.loc[extreme_mask, "asset_return"] = pd.NA
+    return frame[["trade_date", "symbol", "asset_return"]]
+
+
+def _volatility_slippage_bps(
+    returns_df: pd.DataFrame,
+    *,
+    trade_day: date,
+    symbols: list[str],
+    simulation_type: SimulationTypeConfig,
+) -> float:
+    params = simulation_type.slippage_params
+    window_days = int(params.get("volatility_window_days") or 21)
+    base_bps = float(params.get("base_bps") or 0.0)
+    volatility_multiplier = float(params.get("volatility_multiplier") or 0.0)
+    history = returns_df[
+        (pd.to_datetime(returns_df["trade_date"]).dt.date < trade_day)
+        & (returns_df["symbol"].isin(symbols))
+    ].copy()
+    if history.empty:
+        return base_bps
+    recent = history.sort_values("trade_date", kind="stable").groupby("symbol").tail(window_days)
+    realized_vol = pd.to_numeric(recent["asset_return"], errors="coerce").dropna().std(ddof=0)
+    if pd.isna(realized_vol):
+        return base_bps
+    return base_bps + (float(realized_vol) * 10_000.0 * volatility_multiplier)
+
+
+def _slippage_bps_for_trade(
+    returns_df: pd.DataFrame,
+    *,
+    trade_day: date,
+    symbols: list[str],
+    simulation_type: SimulationTypeConfig,
+) -> float:
+    if simulation_type.slippage_model == "none":
+        return 0.0
+    if simulation_type.slippage_model == "fixed_bps":
+        return simulation_type.slippage_bps
+    if simulation_type.slippage_model == "volatility_based":
+        return _volatility_slippage_bps(
+            returns_df,
+            trade_day=trade_day,
+            symbols=symbols,
+            simulation_type=simulation_type,
+        )
+    raise ValueError(
+        "Unsupported slippage_model for "
+        f"{simulation_type.simulation_type_code}: {simulation_type.slippage_model}"
+    )
 
 
 def _next_trading_date(dates: list[date], current_date: date) -> date | None:
@@ -1164,9 +1405,7 @@ def _expected_return_dates_for_strategy(
         """,
         [strategy.run_id],
     ).fetchall()
-    rebalance_dates = [
-        pd.Timestamp(row[0]).date() for row in holdings_rows if row[0] is not None
-    ]
+    rebalance_dates = [pd.Timestamp(row[0]).date() for row in holdings_rows if row[0] is not None]
     if not rebalance_dates:
         return []
 
@@ -1200,6 +1439,7 @@ def _build_returns_for_strategy(
     strategy: StrategyConfig,
     asof_ts: datetime,
 ) -> list[dict[str, Any]]:
+    simulation_type = _simulation_type_for_run(con, strategy.run_id)
     holdings_rows = con.execute(
         """
         SELECT rebalance_date, symbol, target_weight
@@ -1230,8 +1470,12 @@ def _build_returns_for_strategy(
     if price_df.empty:
         return []
 
-    returns_df = _daily_symbol_returns(price_df)
-    trading_dates = sorted(pd.to_datetime(returns_df["trade_date"]).dt.date.unique().tolist())
+    close_returns_df = _daily_symbol_returns(price_df)
+    trade_returns_df = _simulation_trade_price_returns(
+        price_df,
+        simulation_type=simulation_type,
+    )
+    trading_dates = sorted(pd.to_datetime(close_returns_df["trade_date"]).dt.date.unique().tolist())
     holdings_df["rebalance_date"] = pd.to_datetime(holdings_df["rebalance_date"]).dt.date
 
     rebalance_dates = sorted(holdings_df["rebalance_date"].unique().tolist())
@@ -1252,12 +1496,14 @@ def _build_returns_for_strategy(
         }
         if previous_weights is None:
             turnover = 0.0
+            trade_notional = sum(abs(weight) for weight in current_weights.values())
         else:
             all_symbols = set(previous_weights) | set(current_weights)
-            turnover = 0.5 * sum(
+            trade_notional = sum(
                 abs(current_weights.get(symbol, 0.0) - previous_weights.get(symbol, 0.0))
                 for symbol in all_symbols
             )
+            turnover = 0.5 * trade_notional
         previous_weights = current_weights
         periods.append(
             {
@@ -1265,20 +1511,26 @@ def _build_returns_for_strategy(
                 "effective_end": next_rebalance,
                 "weights": current_weights,
                 "turnover": turnover,
+                "trade_notional": trade_notional,
             }
         )
 
     if not periods:
         return []
 
-    asset_return_wide = returns_df.pivot(
+    trade_return_wide = trade_returns_df.pivot(
+        index="trade_date",
+        columns="symbol",
+        values="asset_return",
+    )
+    close_return_wide = close_returns_df.pivot(
         index="trade_date",
         columns="symbol",
         values="asset_return",
     )
     benchmark_returns = (
-        asset_return_wide[benchmark_symbol]
-        if benchmark_symbol in asset_return_wide.columns
+        close_return_wide[benchmark_symbol]
+        if benchmark_symbol in close_return_wide.columns
         else pd.Series(dtype="float64")
     )
     benchmark_trade_dates = (
@@ -1301,12 +1553,27 @@ def _build_returns_for_strategy(
             trade_date = pd.Timestamp(trade_day)
             weights = period["weights"]
             weighted_returns = []
+            period_return_wide = (
+                trade_return_wide if trade_day == period["effective_start"] else close_return_wide
+            )
             for symbol, weight in weights.items():
-                symbol_return = asset_return_wide.at[trade_date, symbol]
+                if symbol not in period_return_wide.columns:
+                    symbol_return = pd.NA
+                else:
+                    symbol_return = period_return_wide.at[trade_date, symbol]
                 weighted_returns.append(
                     weight * (0.0 if pd.isna(symbol_return) else float(symbol_return))
                 )
             portfolio_return = float(sum(weighted_returns))
+            if trade_day == period["effective_start"] and period["trade_notional"]:
+                traded_symbols = sorted(weights)
+                slippage_bps = _slippage_bps_for_trade(
+                    close_returns_df,
+                    trade_day=trade_day,
+                    symbols=traded_symbols,
+                    simulation_type=simulation_type,
+                )
+                portfolio_return -= float(period["trade_notional"]) * (slippage_bps / 10_000.0)
             benchmark_return = None
             if not benchmark_returns.empty and trade_date in benchmark_returns.index:
                 bench_value = benchmark_returns.loc[trade_date]
@@ -1572,11 +1839,7 @@ def _performance_row(
     alpha = (
         float(excess.mean()) * 252.0
         if periods and math.isfinite(float(excess.mean()))
-        else (
-            (cagr - benchmark_cagr)
-            if cagr is not None and benchmark_cagr is not None
-            else None
-        )
+        else ((cagr - benchmark_cagr) if cagr is not None and benchmark_cagr is not None else None)
     )
     return {
         "run_id": run_id,
