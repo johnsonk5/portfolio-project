@@ -8,6 +8,7 @@ import pytest
 from dagster import AssetExecutionContext, build_asset_context
 
 import portfolio_project.defs.research_db.gold.strategy as gold_strategy_module
+import portfolio_project.defs.research_db.ref.simulation as simulation_ref_module
 import portfolio_project.defs.research_db.silver.strategy as silver_strategy_module
 
 TEST_GOLD_STRATEGY_YAML = """
@@ -199,6 +200,8 @@ def _seed_research_inputs(con: duckdb.DuckDBPyConnection, data_root: Path) -> No
             {"trade_date": "2024-03-01", "symbol": "BBB", "close": 110.0, "adjusted_close": 110.0},
         ]
     )
+    prices_df["open"] = prices_df["close"]
+    prices_df["vwap"] = prices_df["close"]
     month_dir = data_root / "silver" / "research_daily_prices" / "month=2024-01"
     month_dir.mkdir(parents=True, exist_ok=True)
     prices_df.loc[prices_df["trade_date"] == "2024-01-31"].to_parquet(
@@ -396,6 +399,101 @@ def test_strategy_gold_assets_build_rankings_holdings_returns_and_performance(
         """
     ).fetchone()
     assert dq_row == ("dq_gold_strategy_returns_expected_return_dates", "PASS", 0.0)
+
+
+def test_strategy_simulation_run_applies_next_open_fixed_slippage(
+    tmp_path: Path, monkeypatch
+) -> None:
+    catalog_path = tmp_path / "investment_strategies.yaml"
+    catalog_path.write_text(TEST_GOLD_STRATEGY_YAML, encoding="utf-8")
+    monkeypatch.setattr(silver_strategy_module, "STRATEGY_CATALOG_PATH", catalog_path)
+    monkeypatch.setattr(gold_strategy_module, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(
+        gold_strategy_module,
+        "PRICE_GLOB",
+        (tmp_path / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet").as_posix(),
+    )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con, "duckdb": obs_con})
+
+    silver_strategy_module.silver_strategy_definitions(context)
+    silver_strategy_module.silver_strategy_parameters(context)
+    silver_strategy_module.silver_strategy_runs(context)
+    simulation_ref_module.ref_simulation_types(context)
+    _seed_research_inputs(con, tmp_path)
+
+    feb_1_path = (
+        tmp_path / "silver" / "research_daily_prices" / "month=2024-02" / "date=2024-02-01.parquet"
+    )
+    feb_1_df = pd.read_parquet(feb_1_path)
+    feb_1_df.loc[feb_1_df["symbol"] == "AAA", "open"] = 105.0
+    feb_1_df.to_parquet(feb_1_path, index=False)
+
+    con.execute(
+        """
+        INSERT INTO silver.strategy_runs (
+            run_id,
+            strategy_id,
+            run_type_id,
+            simulation_type_id,
+            run_status,
+            dataset_version,
+            code_version,
+            started_at,
+            completed_at,
+            error_message,
+            rankings_row_count,
+            holdings_row_count,
+            returns_row_count,
+            performance_row_count,
+            persist,
+            asof_ts
+        )
+        VALUES (
+            'sim-run:momentum_top_1',
+            'momentum_top_1',
+            'simulation',
+            3,
+            'pending',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            TRUE,
+            current_timestamp
+        )
+        """
+    )
+
+    gold_strategy_module.gold_strategy_rankings(context)
+    gold_strategy_module.gold_strategy_holdings(context)
+    gold_strategy_module.gold_strategy_returns(context)
+
+    sim_return = con.execute(
+        """
+        SELECT round(portfolio_return, 6)
+        FROM gold.strategy_returns
+        WHERE run_id = 'sim-run:momentum_top_1'
+          AND date = DATE '2024-02-01'
+        """
+    ).fetchone()
+    assert sim_return == (0.047119,)
+
+    run_row = con.execute(
+        """
+        SELECT run_type_id, simulation_type_id, run_status, returns_row_count
+        FROM silver.strategy_runs
+        WHERE run_id = 'sim-run:momentum_top_1'
+        """
+    ).fetchone()
+    assert run_row == ("simulation", 3, "running", 2)
 
 
 def test_strategy_rankings_failure_updates_strategy_run_metadata(
