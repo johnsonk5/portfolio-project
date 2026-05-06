@@ -29,7 +29,7 @@ def _signals_select_sql() -> str:
                 CAST(trade_date AS DATE) AS date,
                 upper(trim(symbol)) AS symbol,
                 CAST(close AS DOUBLE) AS close,
-                CAST(adjusted_close AS DOUBLE) AS adjusted_close,
+                COALESCE(CAST(adjusted_close AS DOUBLE), CAST(close AS DOUBLE)) AS adjusted_close,
                 CAST(volume AS BIGINT) AS volume,
                 CAST(dollar_volume AS DOUBLE) AS dollar_volume,
                 COALESCE(CAST(adjusted_close AS DOUBLE), CAST(close AS DOUBLE)) AS return_price

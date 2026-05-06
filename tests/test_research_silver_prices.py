@@ -105,6 +105,19 @@ def test_research_daily_prices_prefers_alpaca_on_overlap(tmp_path: Path) -> None
     assert out_df["source"].tolist() == ["alpaca", "alpaca", "eodhd"]
     assert float(out_df.loc[out_df["symbol"] == "AAPL", "close"].iloc[0]) == 100.5
     assert float(out_df.loc[out_df["symbol"] == "AAPL", "dollar_volume"].iloc[0]) == 100500.0
+    assert float(out_df.loc[out_df["symbol"] == "MSFT", "adjusted_close"].iloc[0]) == 200.5
+
+    schema = (
+        duckdb.connect(":memory:")
+        .execute(
+            "DESCRIBE SELECT * FROM read_parquet(?, hive_partitioning = false)",
+            [out_path.as_posix()],
+        )
+        .fetchall()
+    )
+    actual_types = {str(row[0]): str(row[1]).upper() for row in schema}
+    assert actual_types["volume"] == "BIGINT"
+    assert actual_types["trade_count"] == "BIGINT"
 
 
 def test_research_daily_prices_rerun_replaces_stale_partition(tmp_path: Path, monkeypatch) -> None:
@@ -475,6 +488,66 @@ def test_research_daily_prices_writes_invalid_values_dq_check_to_observability(
     )
 
 
+def test_research_daily_prices_nulls_invalid_optional_vwap_before_dq(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root = tmp_path / "data"
+    research_silver_prices_module.DATA_ROOT = data_root
+    monkeypatch.setattr(research_silver_prices_module, "RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT", 1)
+    partition_key = "2026-02-13"
+
+    _write_bronze_prices(
+        data_root,
+        "alpaca_prices_daily",
+        partition_key,
+        pd.DataFrame(
+            {
+                "symbol": ["AAPL"],
+                "timestamp": [datetime(2026, 2, 13, 21, 0, tzinfo=timezone.utc)],
+                "trade_date": ["2026-02-13"],
+                "open": [100.0],
+                "high": [101.0],
+                "low": [99.0],
+                "close": [100.5],
+                "adjusted_close": [pd.NA],
+                "volume": [1000],
+                "trade_count": [10],
+                "vwap": [0.0],
+                "source": ["alpaca"],
+                "ingested_ts": [datetime.now(timezone.utc)],
+            }
+        ),
+    )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(
+        partition_key=partition_key,
+        resources={"research_duckdb": con, "duckdb": obs_con},
+    )
+    research_silver_prices_module.silver_research_daily_prices(context)
+
+    out_path = (
+        data_root
+        / "silver"
+        / "research_daily_prices"
+        / "month=2026-02"
+        / f"date={partition_key}.parquet"
+    )
+    out_df = pd.read_parquet(out_path)
+    assert pd.isna(out_df.loc[0, "vwap"])
+
+    row = obs_con.execute(
+        """
+        SELECT status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_research_daily_prices_invalid_values'
+        """
+    ).fetchone()
+    assert row == ("PASS", 0.0)
+
+
 def test_research_daily_prices_invalid_values_check_fails_for_logically_impossible_rows(
     tmp_path: Path,
     monkeypatch,
@@ -525,12 +598,12 @@ def test_research_daily_prices_invalid_values_check_fails_for_logically_impossib
 
     assert row is not None
     assert row[0] == "FAIL"
-    assert row[1] == 4.0
+    assert row[1] == 3.0
     assert row[2] == 0.0
     assert json.loads(row[3])["violation_counts"] == {
         "negative_value_rows": 1,
         "ohlc_range_violation_rows": 1,
-        "vwap_outside_range_rows": 1,
+        "vwap_outside_range_rows": 0,
         "adjusted_close_non_positive_rows": 1,
     }
 
