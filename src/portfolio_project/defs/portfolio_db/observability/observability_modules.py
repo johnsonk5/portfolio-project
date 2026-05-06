@@ -3,6 +3,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from portfolio_project.defs.portfolio_db.observability.alerts import (
+    is_red_observability_event,
+    send_red_observability_alerts,
+)
+
 
 def ensure_data_quality_table(con) -> None:
     con.execute("CREATE SCHEMA IF NOT EXISTS observability")
@@ -29,6 +34,68 @@ def ensure_data_quality_table(con) -> None:
         ADD COLUMN IF NOT EXISTS check_id VARCHAR
         """
     )
+
+
+def _latest_prior_data_quality_state(
+    con,
+    *,
+    job_name: str | None,
+    partition_key: str | None,
+    check_name: str,
+) -> tuple[str | None, str | None] | None:
+    result = con.execute(
+        """
+        SELECT severity, status
+        FROM observability.data_quality_checks
+        WHERE job_name IS NOT DISTINCT FROM ?
+          AND partition_key IS NOT DISTINCT FROM ?
+          AND check_name IS NOT DISTINCT FROM ?
+        ORDER BY logged_ts DESC
+        LIMIT 1
+        """,
+        [job_name, partition_key, check_name],
+    ).fetchone()
+    if result is None:
+        return None
+    return result[0], result[1]
+
+
+def _should_send_data_quality_alert(
+    con,
+    *,
+    job_name: str | None,
+    partition_key: str | None,
+    check_name: str,
+    severity: str,
+    status: str,
+) -> bool:
+    if not is_red_observability_event({"severity": severity, "status": status}):
+        return False
+    prior_state = _latest_prior_data_quality_state(
+        con,
+        job_name=job_name,
+        partition_key=partition_key,
+        check_name=check_name,
+    )
+    if prior_state is None:
+        return True
+    prior_severity, prior_status = prior_state
+    return not is_red_observability_event({"severity": prior_severity, "status": prior_status})
+
+
+def _send_data_quality_alert(
+    *,
+    context,
+    event: dict[str, Any],
+) -> None:
+    try:
+        send_red_observability_alerts(
+            [{**event, "event_type": "data_quality"}],
+            logger=getattr(context, "log", None) if context is not None else None,
+        )
+    except Exception as exc:
+        if context is not None and hasattr(context, "log"):
+            context.log.warning("RED data quality email alert failed: %s", exc)
 
 
 def write_dq_log(
@@ -78,6 +145,14 @@ def write_dq_log(
 
     try:
         ensure_data_quality_table(con)
+        should_alert = _should_send_data_quality_alert(
+            con,
+            job_name=resolved_job_name,
+            partition_key=resolved_partition_key,
+            check_name=check_name,
+            severity=severity,
+            status=status,
+        )
         if dedupe_by_run_check and resolved_run_id:
             con.execute(
                 """
@@ -122,6 +197,21 @@ def write_dq_log(
             con.commit()
         except Exception:
             pass
+        if should_alert:
+            _send_data_quality_alert(
+                context=context,
+                event={
+                    "run_id": resolved_run_id,
+                    "job_name": resolved_job_name,
+                    "partition_key": resolved_partition_key,
+                    "check_name": check_name,
+                    "severity": severity,
+                    "status": status,
+                    "measured_value": measured_value,
+                    "threshold_value": threshold_value,
+                    "details_json": json.dumps(payload),
+                },
+            )
     except Exception as exc:
         if context is not None and hasattr(context, "log"):
             context.log.warning("Unable to write DQ log row (%s): %s", check_name, exc)

@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -521,6 +521,237 @@ def test_strategy_simulation_run_applies_next_open_fixed_slippage(
         ("simulation", 2, "running", 2),
         ("simulation", 3, "running", 2),
     ]
+
+
+def test_strategy_run_contract_dq_checks_validate_simulation_metadata() -> None:
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con, "duckdb": obs_con})
+
+    silver_strategy_module.silver_strategy_runs(context)
+    simulation_ref_module.ref_simulation_types(context)
+    simulation_ref_module.ref_run_types(context)
+    con.execute(
+        """
+        INSERT INTO ref.simulation_types (
+            simulation_type_id,
+            simulation_type_code,
+            description,
+            fill_price_basis,
+            slippage_model,
+            slippage_bps,
+            commission_model,
+            lookahead_safe_flag,
+            is_active,
+            default_flag,
+            notes,
+            slippage_params_json
+        )
+        VALUES (
+            99,
+            'inactive_type',
+            'Inactive test type.',
+            'next_open',
+            'none',
+            0,
+            'none',
+            TRUE,
+            FALSE,
+            FALSE,
+            NULL,
+            NULL
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO silver.strategy_runs (
+            run_id,
+            strategy_id,
+            run_type_id,
+            simulation_type_id,
+            run_status,
+            dataset_version,
+            code_version,
+            started_at,
+            completed_at,
+            error_message,
+            rankings_row_count,
+            holdings_row_count,
+            returns_row_count,
+            performance_row_count,
+            persist,
+            asof_ts
+        )
+        VALUES
+            ('valid-run', 'strategy_a', 'simulation', 3, 'pending', NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp),
+            ('invalid-run-type', 'strategy_a', 'sandbox', NULL, 'pending', NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp),
+            ('missing-sim-type', 'strategy_a', 'simulation', NULL, 'pending', NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp),
+            ('extra-sim-type', 'strategy_a', 'backtest', 3, 'pending', NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp),
+            ('unknown-sim-type', 'strategy_a', 'simulation', 1000, 'pending', NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp),
+            ('inactive-sim-type', 'strategy_a', 'simulation', 99, 'pending', NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp),
+            ('unsafe-reportable', 'strategy_a', 'simulation', 1, 'pending', NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp),
+            ('dup-run', 'strategy_a', 'simulation', 3, 'pending', NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp),
+            ('dup-run', 'strategy_b', 'simulation', 3, 'pending', NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp)
+        """
+    )
+
+    gold_strategy_module._log_strategy_run_contract_checks(
+        measured_con=con,
+        observability_con=obs_con,
+        run_id="dq-test-run",
+        job_name="strategy_dq_test",
+        partition_key=None,
+    )
+
+    dq_rows = dict(
+        obs_con.execute(
+            """
+            SELECT check_name, measured_value
+            FROM observability.data_quality_checks
+            WHERE run_id = 'dq-test-run'
+            ORDER BY check_name
+            """
+        ).fetchall()
+    )
+    assert dq_rows["dq_silver_strategy_runs_valid_run_type"] == 1.0
+    assert dq_rows["dq_silver_strategy_runs_simulation_type_required_scope"] == 2.0
+    assert dq_rows["dq_silver_strategy_runs_simulation_type_exists"] == 1.0
+    assert dq_rows["dq_silver_strategy_runs_simulation_type_active"] == 1.0
+    assert dq_rows["dq_silver_strategy_runs_unique_run_id"] == 1.0
+    assert dq_rows["dq_silver_strategy_runs_reportable_simulations_lookahead_safe"] == 1.0
+
+    status_rows = dict(
+        obs_con.execute(
+            """
+            SELECT check_name, status
+            FROM observability.data_quality_checks
+            WHERE run_id = 'dq-test-run'
+            ORDER BY check_name
+            """
+        ).fetchall()
+    )
+    assert all(status == "FAIL" for status in status_rows.values())
+
+
+def test_simulation_result_dq_checks_reject_future_dates_and_failed_run_outputs() -> None:
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con, "duckdb": obs_con})
+    future_date = date.today() + timedelta(days=1)
+
+    silver_strategy_module.silver_strategy_runs(context)
+    con.execute("CREATE SCHEMA IF NOT EXISTS gold")
+    con.execute(
+        """
+        INSERT INTO silver.strategy_runs (
+            run_id,
+            strategy_id,
+            run_type_id,
+            simulation_type_id,
+            run_status,
+            dataset_version,
+            code_version,
+            started_at,
+            completed_at,
+            error_message,
+            rankings_row_count,
+            holdings_row_count,
+            returns_row_count,
+            performance_row_count,
+            persist,
+            asof_ts
+        )
+        VALUES
+            ('future-sim', 'strategy_a', 'simulation', 3, 'success', NULL, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp),
+            ('failed-sim', 'strategy_a', 'simulation', 3, 'failed', NULL, NULL, NULL, NULL,
+                'test failure', NULL, NULL, NULL, NULL, TRUE, current_timestamp)
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE gold.strategy_holdings (
+            run_id VARCHAR,
+            strategy_id VARCHAR,
+            rebalance_date DATE,
+            symbol VARCHAR,
+            target_weight DOUBLE,
+            side VARCHAR,
+            entry_rank INTEGER,
+            signal_value DOUBLE,
+            asof_ts TIMESTAMP
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE gold.strategy_returns (
+            run_id VARCHAR,
+            strategy_id VARCHAR,
+            date DATE,
+            portfolio_return DOUBLE,
+            benchmark_return DOUBLE,
+            excess_return DOUBLE,
+            cumulative_return DOUBLE,
+            drawdown DOUBLE,
+            turnover DOUBLE,
+            holdings_count INTEGER,
+            asof_ts TIMESTAMP
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO gold.strategy_holdings
+        VALUES
+            ('failed-sim', 'strategy_a', DATE '2024-01-31', 'AAA', 1.0, 'LONG', 1, 1.0,
+                current_timestamp),
+            ('future-sim', 'strategy_a', ?, 'AAA', 1.0, 'LONG', 1, 1.0, current_timestamp)
+        """,
+        [future_date],
+    )
+    con.execute(
+        """
+        INSERT INTO gold.strategy_returns
+        VALUES
+            ('failed-sim', 'strategy_a', DATE '2024-02-01', 0.01, 0.0, 0.01, 0.01, 0.0,
+                0.0, 1, current_timestamp),
+            ('future-sim', 'strategy_a', ?, 0.01, 0.0, 0.01, 0.01, 0.0, 0.0, 1,
+                current_timestamp)
+        """,
+        [future_date],
+    )
+
+    gold_strategy_module._log_simulation_result_checks(
+        measured_con=con,
+        observability_con=obs_con,
+        run_id="dq-result-test-run",
+        job_name="strategy_dq_test",
+        partition_key=None,
+    )
+
+    dq_rows = dict(
+        obs_con.execute(
+            """
+            SELECT check_name, measured_value
+            FROM observability.data_quality_checks
+            WHERE run_id = 'dq-result-test-run'
+            ORDER BY check_name
+            """
+        ).fetchall()
+    )
+    assert dq_rows["dq_gold_strategy_simulation_results_no_future_dates"] == 2.0
+    assert dq_rows["dq_gold_strategy_failed_runs_no_holdings_or_returns"] == 2.0
 
 
 def test_strategy_rankings_failure_updates_strategy_run_metadata(
