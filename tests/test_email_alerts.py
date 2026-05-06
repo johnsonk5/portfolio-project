@@ -18,6 +18,7 @@ from portfolio_project.defs.portfolio_db.observability.data_quality import (
     _filter_new_data_quality_alert_rows,
     _write_data_quality_rows,
 )
+from portfolio_project.defs.portfolio_db.observability.observability_modules import write_dq_log
 
 
 def _config() -> EmailAlertConfig:
@@ -354,3 +355,70 @@ def test_data_quality_alert_filter_alerts_after_recovery() -> None:
     )
 
     assert _filter_new_data_quality_alert_rows(con, [new_failure]) == [new_failure]
+
+
+def test_write_dq_log_sends_email_for_direct_red_event(monkeypatch) -> None:
+    con = duckdb.connect(":memory:")
+    sent_messages: list[EmailMessage] = []
+    monkeypatch.setenv("PORTFOLIO_ALERT_EMAIL_TO", "ops@example.com")
+    monkeypatch.setenv("PORTFOLIO_ALERT_EMAIL_FROM", "alerts@example.com")
+    monkeypatch.setenv("PORTFOLIO_ALERT_SMTP_HOST", "smtp.example.com")
+
+    def fake_send(message: EmailMessage, config: EmailAlertConfig) -> None:
+        sent_messages.append(message)
+
+    monkeypatch.setattr(alerts, "send_email_alert", fake_send)
+
+    write_dq_log(
+        con=con,
+        check_name="dq_research_simulation_contract",
+        severity="RED",
+        status="FAIL",
+        measured_value=1.0,
+        threshold_value=0.0,
+        details={"table": "silver.strategy_runs"},
+        run_id="run-1",
+        job_name="strategy_returns_job",
+        partition_key=None,
+    )
+
+    assert len(sent_messages) == 1
+    body = sent_messages[0].get_content()
+    assert "strategy_returns_job/dq_research_simulation_contract" in body
+    assert "run_id: run-1" in body
+
+
+def test_write_dq_log_suppresses_repeated_direct_red_until_recovery(monkeypatch) -> None:
+    con = duckdb.connect(":memory:")
+    sent_messages: list[EmailMessage] = []
+    monkeypatch.setenv("PORTFOLIO_ALERT_EMAIL_TO", "ops@example.com")
+    monkeypatch.setenv("PORTFOLIO_ALERT_EMAIL_FROM", "alerts@example.com")
+    monkeypatch.setenv("PORTFOLIO_ALERT_SMTP_HOST", "smtp.example.com")
+
+    def fake_send(message: EmailMessage, config: EmailAlertConfig) -> None:
+        sent_messages.append(message)
+
+    monkeypatch.setattr(alerts, "send_email_alert", fake_send)
+
+    for run_id, status in [
+        ("run-1", "FAIL"),
+        ("run-2", "FAIL"),
+        ("run-3", "PASS"),
+        ("run-4", "FAIL"),
+    ]:
+        write_dq_log(
+            con=con,
+            check_name="dq_research_simulation_contract",
+            severity="RED",
+            status=status,
+            measured_value=1.0 if status == "FAIL" else 0.0,
+            threshold_value=0.0,
+            details={"table": "silver.strategy_runs"},
+            run_id=run_id,
+            job_name="strategy_returns_job",
+            partition_key=None,
+        )
+
+    assert len(sent_messages) == 2
+    assert "run_id: run-1" in sent_messages[0].get_content()
+    assert "run_id: run-4" in sent_messages[1].get_content()

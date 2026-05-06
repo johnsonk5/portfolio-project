@@ -911,6 +911,405 @@ def _update_strategy_runs_failure(
     )
 
 
+def _log_dq_count_check(
+    *,
+    observability_con,
+    check_name: str,
+    measured_value: float,
+    details: dict[str, Any],
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+    severity: str = "RED",
+) -> None:
+    write_dq_log(
+        con=observability_con,
+        check_name=check_name,
+        severity=severity,
+        status="PASS" if measured_value == 0.0 else "FAIL",
+        measured_value=measured_value,
+        threshold_value=0.0,
+        details=details,
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
+
+
+def _log_skipped_dq_check(
+    *,
+    observability_con,
+    check_name: str,
+    details: dict[str, Any],
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> None:
+    write_dq_log(
+        con=observability_con,
+        check_name=check_name,
+        severity="YELLOW",
+        status="SKIPPED",
+        measured_value=None,
+        threshold_value=None,
+        details=details,
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
+
+
+def _log_strategy_run_contract_checks(
+    *,
+    measured_con,
+    observability_con,
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> None:
+    if not _table_exists(measured_con, "silver", "strategy_runs"):
+        return
+
+    duplicate_rows = measured_con.execute(
+        """
+        SELECT run_id, count(*) AS row_count
+        FROM silver.strategy_runs
+        WHERE run_id IS NOT NULL
+        GROUP BY run_id
+        HAVING count(*) > 1
+        ORDER BY run_id
+        """
+    ).fetchall()
+    duplicate_run_ids = [
+        {"run_id": str(row[0]), "row_count": int(row[1] or 0)} for row in duplicate_rows
+    ]
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_silver_strategy_runs_unique_run_id",
+        measured_value=float(sum(row["row_count"] - 1 for row in duplicate_run_ids)),
+        details={
+            "table": "silver.strategy_runs",
+            "duplicate_run_ids": duplicate_run_ids,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+    if not _table_exists(measured_con, "ref", "run_types"):
+        _log_skipped_dq_check(
+            observability_con=observability_con,
+            check_name="dq_silver_strategy_runs_valid_run_type",
+            details={
+                "table": "silver.strategy_runs",
+                "required_reference_table": "ref.run_types",
+            },
+            run_id=run_id,
+            job_name=job_name,
+            partition_key=partition_key,
+        )
+    else:
+        invalid_run_type_rows = measured_con.execute(
+            """
+            SELECT sr.run_id, sr.run_type_id
+            FROM silver.strategy_runs AS sr
+            LEFT JOIN ref.run_types AS rt
+                ON lower(trim(sr.run_type_id)) = lower(trim(rt.run_type_code))
+               AND rt.is_active = TRUE
+            WHERE sr.run_type_id IS NULL
+               OR trim(sr.run_type_id) = ''
+               OR rt.run_type_code IS NULL
+            ORDER BY sr.run_id
+            """
+        ).fetchall()
+        invalid_run_types = [
+            {"run_id": str(row[0]), "run_type_id": None if row[1] is None else str(row[1])}
+            for row in invalid_run_type_rows
+        ]
+        _log_dq_count_check(
+            observability_con=observability_con,
+            check_name="dq_silver_strategy_runs_valid_run_type",
+            measured_value=float(len(invalid_run_types)),
+            details={
+                "table": "silver.strategy_runs",
+                "reference_table": "ref.run_types",
+                "invalid_run_types": invalid_run_types,
+            },
+            run_id=run_id,
+            job_name=job_name,
+            partition_key=partition_key,
+        )
+
+    requirement_rows = measured_con.execute(
+        """
+        SELECT run_id, run_type_id, simulation_type_id
+        FROM silver.strategy_runs
+        WHERE (
+                lower(trim(coalesce(run_type_id, ''))) = 'simulation'
+                AND simulation_type_id IS NULL
+              )
+           OR (
+                lower(trim(coalesce(run_type_id, ''))) <> 'simulation'
+                AND simulation_type_id IS NOT NULL
+              )
+        ORDER BY run_id
+        """
+    ).fetchall()
+    requirement_failures = [
+        {
+            "run_id": str(row[0]),
+            "run_type_id": None if row[1] is None else str(row[1]),
+            "simulation_type_id": None if row[2] is None else int(row[2]),
+        }
+        for row in requirement_rows
+    ]
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_silver_strategy_runs_simulation_type_required_scope",
+        measured_value=float(len(requirement_failures)),
+        details={
+            "table": "silver.strategy_runs",
+            "rule": "simulation_type_id is required for simulation runs and null otherwise",
+            "failing_runs": requirement_failures,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+    if not _table_exists(measured_con, "ref", "simulation_types"):
+        for check_name in (
+            "dq_silver_strategy_runs_simulation_type_exists",
+            "dq_silver_strategy_runs_simulation_type_active",
+            "dq_silver_strategy_runs_reportable_simulations_lookahead_safe",
+        ):
+            _log_skipped_dq_check(
+                observability_con=observability_con,
+                check_name=check_name,
+                details={
+                    "table": "silver.strategy_runs",
+                    "required_reference_table": "ref.simulation_types",
+                },
+                run_id=run_id,
+                job_name=job_name,
+                partition_key=partition_key,
+            )
+        return
+
+    missing_type_rows = measured_con.execute(
+        """
+        SELECT sr.run_id, sr.simulation_type_id
+        FROM silver.strategy_runs AS sr
+        LEFT JOIN ref.simulation_types AS st
+            ON sr.simulation_type_id = st.simulation_type_id
+        WHERE lower(trim(coalesce(sr.run_type_id, ''))) = 'simulation'
+          AND sr.simulation_type_id IS NOT NULL
+          AND st.simulation_type_id IS NULL
+        ORDER BY sr.run_id
+        """
+    ).fetchall()
+    missing_types = [
+        {"run_id": str(row[0]), "simulation_type_id": int(row[1])}
+        for row in missing_type_rows
+    ]
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_silver_strategy_runs_simulation_type_exists",
+        measured_value=float(len(missing_types)),
+        details={
+            "table": "silver.strategy_runs",
+            "reference_table": "ref.simulation_types",
+            "failing_runs": missing_types,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+    inactive_type_rows = measured_con.execute(
+        """
+        SELECT
+            sr.run_id,
+            sr.simulation_type_id,
+            st.simulation_type_code,
+            st.is_active
+        FROM silver.strategy_runs AS sr
+        INNER JOIN ref.simulation_types AS st
+            ON sr.simulation_type_id = st.simulation_type_id
+        WHERE lower(trim(coalesce(sr.run_type_id, ''))) = 'simulation'
+          AND coalesce(st.is_active, FALSE) = FALSE
+        ORDER BY sr.run_id
+        """
+    ).fetchall()
+    inactive_types = [
+        {
+            "run_id": str(row[0]),
+            "simulation_type_id": int(row[1]),
+            "simulation_type_code": None if row[2] is None else str(row[2]),
+            "is_active": bool(row[3]),
+        }
+        for row in inactive_type_rows
+    ]
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_silver_strategy_runs_simulation_type_active",
+        measured_value=float(len(inactive_types)),
+        details={
+            "table": "silver.strategy_runs",
+            "reference_table": "ref.simulation_types",
+            "failing_runs": inactive_types,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+    unsafe_rows = measured_con.execute(
+        """
+        SELECT
+            sr.run_id,
+            sr.simulation_type_id,
+            st.simulation_type_code,
+            st.lookahead_safe_flag
+        FROM silver.strategy_runs AS sr
+        INNER JOIN ref.simulation_types AS st
+            ON sr.simulation_type_id = st.simulation_type_id
+        WHERE lower(trim(coalesce(sr.run_type_id, ''))) = 'simulation'
+          AND coalesce(sr.persist, TRUE) = TRUE
+          AND coalesce(st.lookahead_safe_flag, FALSE) = FALSE
+        ORDER BY sr.run_id
+        """
+    ).fetchall()
+    unsafe_reportable_runs = [
+        {
+            "run_id": str(row[0]),
+            "simulation_type_id": int(row[1]),
+            "simulation_type_code": None if row[2] is None else str(row[2]),
+            "lookahead_safe_flag": bool(row[3]),
+        }
+        for row in unsafe_rows
+    ]
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_silver_strategy_runs_reportable_simulations_lookahead_safe",
+        measured_value=float(len(unsafe_reportable_runs)),
+        details={
+            "table": "silver.strategy_runs",
+            "reference_table": "ref.simulation_types",
+            "rule": "persisted simulation runs must use lookahead-safe simulation types",
+            "failing_runs": unsafe_reportable_runs,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+
+def _log_simulation_result_checks(
+    *,
+    measured_con,
+    observability_con,
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> None:
+    if not _table_exists(measured_con, "silver", "strategy_runs"):
+        return
+
+    result_tables = [
+        ("gold.strategy_rankings", "strategy_rankings", "rebalance_date"),
+        ("gold.strategy_holdings", "strategy_holdings", "rebalance_date"),
+        ("gold.strategy_returns", "strategy_returns", "date"),
+    ]
+
+    future_results: list[dict[str, Any]] = []
+    for table_label, table_name, date_column in result_tables:
+        if not _table_exists(measured_con, "gold", table_name):
+            continue
+        rows = measured_con.execute(
+            f"""
+            SELECT
+                '{table_label}' AS table_name,
+                sr.run_id,
+                r.strategy_id,
+                CAST(r.{_quote_identifier(date_column)} AS DATE) AS result_date
+            FROM gold.{_quote_identifier(table_name)} AS r
+            INNER JOIN silver.strategy_runs AS sr
+                ON r.run_id = sr.run_id
+            WHERE lower(trim(coalesce(sr.run_type_id, ''))) = 'simulation'
+              AND CAST(r.{_quote_identifier(date_column)} AS DATE) > current_date
+            ORDER BY table_name, sr.run_id, result_date
+            """
+        ).fetchall()
+        future_results.extend(
+            {
+                "table": str(row[0]),
+                "run_id": str(row[1]),
+                "strategy_id": str(row[2]),
+                "result_date": str(row[3]),
+            }
+            for row in rows
+        )
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_gold_strategy_simulation_results_no_future_dates",
+        measured_value=float(len(future_results)),
+        details={
+            "tables": [table_label for table_label, _, _ in result_tables],
+            "failing_rows": future_results,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+    failed_run_outputs: list[dict[str, Any]] = []
+    for table_label, table_name in (
+        ("gold.strategy_holdings", "strategy_holdings"),
+        ("gold.strategy_returns", "strategy_returns"),
+    ):
+        if not _table_exists(measured_con, "gold", table_name):
+            continue
+        rows = measured_con.execute(
+            f"""
+            SELECT
+                '{table_label}' AS table_name,
+                sr.run_id,
+                r.strategy_id,
+                count(*) AS row_count
+            FROM gold.{_quote_identifier(table_name)} AS r
+            INNER JOIN silver.strategy_runs AS sr
+                ON r.run_id = sr.run_id
+            WHERE lower(trim(coalesce(sr.run_status, ''))) = 'failed'
+            GROUP BY sr.run_id, r.strategy_id
+            ORDER BY table_name, sr.run_id, r.strategy_id
+            """
+        ).fetchall()
+        failed_run_outputs.extend(
+            {
+                "table": str(row[0]),
+                "run_id": str(row[1]),
+                "strategy_id": str(row[2]),
+                "row_count": int(row[3] or 0),
+            }
+            for row in rows
+        )
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_gold_strategy_failed_runs_no_holdings_or_returns",
+        measured_value=float(sum(row["row_count"] for row in failed_run_outputs)),
+        details={
+            "tables": ["gold.strategy_holdings", "gold.strategy_returns"],
+            "failing_groups": failed_run_outputs,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+
 def _materialize_rankings(
     con,
     strategies: list[StrategyConfig],
@@ -1980,6 +2379,13 @@ def gold_strategy_holdings(context: AssetExecutionContext) -> None:
     )
     asof_ts = _now_utc_naive()
     try:
+        _log_strategy_run_contract_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
         row_count = _materialize_holdings(con, strategies, asof_ts=asof_ts)
         _update_strategy_run_row_counts(
             con,
@@ -2024,8 +2430,22 @@ def gold_strategy_holdings(context: AssetExecutionContext) -> None:
             job_name=_safe_job_name(context),
             partition_key=_safe_partition_key(context),
         )
+        _log_simulation_result_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
     except Exception as exc:
         _update_strategy_runs_failure(con, strategies, asof_ts=asof_ts, error_message=str(exc))
+        _log_simulation_result_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
         raise
     context.add_output_metadata(
         {
@@ -2054,6 +2474,13 @@ def gold_strategy_returns(context: AssetExecutionContext) -> None:
     )
     asof_ts = _now_utc_naive()
     try:
+        _log_strategy_run_contract_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
         row_count = _materialize_returns(con, strategies, asof_ts=asof_ts)
         _update_strategy_run_row_counts(
             con,
@@ -2070,8 +2497,22 @@ def gold_strategy_returns(context: AssetExecutionContext) -> None:
             job_name=_safe_job_name(context),
             partition_key=_safe_partition_key(context),
         )
+        _log_simulation_result_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
     except Exception as exc:
         _update_strategy_runs_failure(con, strategies, asof_ts=asof_ts, error_message=str(exc))
+        _log_simulation_result_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
         raise
     context.add_output_metadata(
         {
@@ -2100,6 +2541,13 @@ def gold_strategy_performance(context: AssetExecutionContext) -> None:
     )
     asof_ts = _now_utc_naive()
     try:
+        _log_strategy_run_contract_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
         benchmark_series_ready = _log_strategy_benchmark_series_check(
             measured_con=con,
             observability_con=context.resources.duckdb,
@@ -2122,8 +2570,22 @@ def gold_strategy_performance(context: AssetExecutionContext) -> None:
             asof_ts=asof_ts,
         )
         _update_strategy_runs_success(con, strategies, asof_ts=asof_ts)
+        _log_simulation_result_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
     except Exception as exc:
         _update_strategy_runs_failure(con, strategies, asof_ts=asof_ts, error_message=str(exc))
+        _log_simulation_result_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
         raise
     context.add_output_metadata(
         {
