@@ -25,6 +25,11 @@ def test_universe_assets_build_from_rolling_dollar_volume(tmp_path: Path, monkey
     monkeypatch.setattr(universe_module, "DATA_ROOT", data_root)
     monkeypatch.setattr(universe_module, "LIQUIDITY_LOOKBACK_DAYS", 2)
     monkeypatch.setattr(universe_module, "UNIVERSE_SIZE", 2)
+    monkeypatch.setattr(universe_module, "ELIGIBILITY_MIN_CLOSE", 5.0)
+    monkeypatch.setattr(universe_module, "ELIGIBILITY_MIN_AVG_DOLLAR_VOLUME_63D", 1.0)
+    monkeypatch.setattr(universe_module, "ELIGIBILITY_CONTINUITY_LOOKBACK_DAYS", 2)
+    monkeypatch.setattr(universe_module, "ELIGIBILITY_MIN_TRADING_DAYS_252D", 1)
+    monkeypatch.setattr(universe_module, "ELIGIBILITY_MIN_POSITIVE_VOLUME_DAYS_252D", 1)
 
     _write_silver_prices_daily(
         data_root,
@@ -163,3 +168,84 @@ def test_universe_assets_build_from_rolling_dollar_volume(tmp_path: Path, monkey
         ("dq_research_universe_membership_events_removed_fields_nulls", "PASS", 0.0),
         ("dq_research_universe_membership_events_required_fields_nulls", "PASS", 0.0),
     ]
+
+
+def test_universe_eligibility_filters_no_metadata_artifacts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root = tmp_path / "data"
+    monkeypatch.setattr(universe_module, "DATA_ROOT", data_root)
+    monkeypatch.setattr(universe_module, "LIQUIDITY_LOOKBACK_DAYS", 2)
+    monkeypatch.setattr(universe_module, "UNIVERSE_SIZE", 10)
+    monkeypatch.setattr(universe_module, "ELIGIBILITY_MIN_CLOSE", 5.0)
+    monkeypatch.setattr(universe_module, "ELIGIBILITY_MIN_AVG_DOLLAR_VOLUME_63D", 1_000_000.0)
+    monkeypatch.setattr(universe_module, "ELIGIBILITY_CONTINUITY_LOOKBACK_DAYS", 2)
+    monkeypatch.setattr(universe_module, "ELIGIBILITY_MIN_TRADING_DAYS_252D", 2)
+    monkeypatch.setattr(universe_module, "ELIGIBILITY_MIN_POSITIVE_VOLUME_DAYS_252D", 2)
+
+    for partition_key in ["2026-02-12", "2026-02-13"]:
+        _write_silver_prices_daily(
+            data_root,
+            partition_key,
+            pd.DataFrame(
+                {
+                    "symbol": ["AAPL", "0P00000M7O", "LOW", "THIN", "ABCQ", "XYZW"],
+                    "timestamp": [f"{partition_key}T21:00:00Z"] * 6,
+                    "trade_date": [partition_key] * 6,
+                    "close": [100.0, 100.0, 3.0, 100.0, 10.0, 10.0],
+                    "volume": [20_000, 20_000, 20_000, 10, 20_000, 20_000],
+                    "dollar_volume": [
+                        2_000_000.0,
+                        2_000_000.0,
+                        60_000.0,
+                        1_000.0,
+                        200_000.0,
+                        200_000.0,
+                    ],
+                    "source": ["eodhd"] * 6,
+                    "ingested_ts": [f"{partition_key}T22:00:00Z"] * 6,
+                }
+            ),
+        )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con, "duckdb": obs_con})
+    universe_module.silver_universe_membership_daily(context)
+
+    eligibility_rows = con.execute(
+        """
+        SELECT
+            symbol,
+            passes_symbol_format,
+            passes_min_price,
+            passes_min_liquidity,
+            passes_trading_continuity,
+            passes_non_bankruptcy_suffix,
+            passes_non_derivative_suffix,
+            is_eligible_research_universe,
+            exclusion_reasons
+        FROM silver.universe_eligibility_daily
+        WHERE date = DATE '2026-02-13'
+        ORDER BY symbol
+        """
+    ).fetchall()
+    by_symbol = {row[0]: row[1:] for row in eligibility_rows}
+
+    assert by_symbol["AAPL"] == (True, True, True, True, True, True, True, "")
+    assert by_symbol["0P00000M7O"][0] is False
+    assert by_symbol["LOW"][1] is False
+    assert by_symbol["THIN"][2] is False
+    assert by_symbol["ABCQ"][4] is False
+    assert by_symbol["XYZW"][5] is False
+
+    members = con.execute(
+        """
+        SELECT symbol
+        FROM silver.universe_membership_daily
+        WHERE member_date = DATE '2026-02-13'
+        ORDER BY symbol
+        """
+    ).fetchall()
+    assert members == [("AAPL",)]

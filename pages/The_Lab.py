@@ -553,9 +553,10 @@ def _compute_factor_exposures(
         if len(regression_frame) < 20:
             continue
         x = regression_frame[regressors].astype(float).to_numpy()
+        x = np.column_stack([np.ones(len(regression_frame)), x])
         y = regression_frame["portfolio_excess"].astype(float).to_numpy()
         coefficients, *_ = np.linalg.lstsq(x, y, rcond=None)
-        for factor_name, coefficient in zip(regressors, coefficients, strict=True):
+        for factor_name, coefficient in zip(regressors, coefficients[1:], strict=True):
             rows.append(
                 {
                     "run_id": str(run_id),

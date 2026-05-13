@@ -77,6 +77,9 @@ STRATEGY_RETURNS_COLUMNS: list[tuple[str, str]] = [
     ("drawdown", "DOUBLE"),
     ("turnover", "DOUBLE"),
     ("holdings_count", "INTEGER"),
+    ("held_symbols_expected", "INTEGER"),
+    ("held_symbols_with_returns", "INTEGER"),
+    ("missing_symbols", "VARCHAR"),
     ("asof_ts", "TIMESTAMP"),
 ]
 
@@ -419,6 +422,18 @@ def _filter_missing_strategies(
     if not strategies or not _table_exists(con, "gold", "strategy_performance"):
         return strategies
 
+    pending_simulation_run_ids = {
+        str(row[0])
+        for row in con.execute(
+            """
+            SELECT DISTINCT run_id
+            FROM silver.strategy_runs
+            WHERE run_id IS NOT NULL
+              AND lower(trim(coalesce(run_type_id, ''))) = 'simulation'
+              AND lower(trim(coalesce(run_status, ''))) IN ('pending', 'running')
+            """
+        ).fetchall()
+    }
     completed_run_ids = {
         str(row[0])
         for row in con.execute(
@@ -429,7 +444,11 @@ def _filter_missing_strategies(
             """
         ).fetchall()
     }
-    return [strategy for strategy in strategies if strategy.run_id not in completed_run_ids]
+    return [
+        strategy
+        for strategy in strategies
+        if strategy.run_id in pending_simulation_run_ids or strategy.run_id not in completed_run_ids
+    ]
 
 
 def _strategies_for_context(
@@ -1111,8 +1130,7 @@ def _log_strategy_run_contract_checks(
         """
     ).fetchall()
     missing_types = [
-        {"run_id": str(row[0]), "simulation_type_id": int(row[1])}
-        for row in missing_type_rows
+        {"run_id": str(row[0]), "simulation_type_id": int(row[1])} for row in missing_type_rows
     ]
     _log_dq_count_check(
         observability_con=observability_con,
@@ -1627,8 +1645,25 @@ def _load_price_history(
         [PRICE_GLOB],
     ).fetchall()
     available_columns = {str(row[0]).lower() for row in schema_rows}
-    open_expr = "CAST(open AS DOUBLE)" if "open" in available_columns else "NULL::DOUBLE"
-    vwap_expr = "CAST(vwap AS DOUBLE)" if "vwap" in available_columns else "NULL::DOUBLE"
+    adjustment_ratio_expr = """
+        CASE
+            WHEN adjusted_close IS NOT NULL
+             AND close IS NOT NULL
+             AND CAST(close AS DOUBLE) > 0
+            THEN CAST(adjusted_close AS DOUBLE) / CAST(close AS DOUBLE)
+            ELSE 1.0
+        END
+    """
+    open_expr = (
+        f"CAST(open AS DOUBLE) * ({adjustment_ratio_expr})"
+        if "open" in available_columns
+        else "NULL::DOUBLE"
+    )
+    vwap_expr = (
+        f"CAST(vwap AS DOUBLE) * ({adjustment_ratio_expr})"
+        if "vwap" in available_columns
+        else "NULL::DOUBLE"
+    )
     return con.execute(
         f"""
         SELECT
@@ -1797,22 +1832,34 @@ def _expected_return_dates_for_strategy(
 ) -> list[date]:
     holdings_rows = con.execute(
         """
-        SELECT DISTINCT rebalance_date
+        SELECT DISTINCT rebalance_date, symbol
         FROM gold.strategy_holdings
         WHERE run_id = ?
-        ORDER BY rebalance_date
+        ORDER BY rebalance_date, symbol
         """,
         [strategy.run_id],
     ).fetchall()
-    rebalance_dates = [pd.Timestamp(row[0]).date() for row in holdings_rows if row[0] is not None]
+    rebalance_dates = sorted(
+        {pd.Timestamp(row[0]).date() for row in holdings_rows if row[0] is not None}
+    )
     if not rebalance_dates:
         return []
 
+    symbols = sorted(
+        {
+            strategy.benchmark_symbol.strip().upper(),
+            *[
+                str(row[1]).strip().upper()
+                for row in holdings_rows
+                if row[1] not in (None, "")
+            ],
+        }
+    )
     trading_dates = _load_distinct_trading_dates(
         con,
         start_date=rebalance_dates[0],
         end_date=strategy.end_date or date(2999, 12, 31),
-        symbols=[strategy.benchmark_symbol.strip().upper()],
+        symbols=symbols,
     )
     if not trading_dates:
         return []
@@ -1932,19 +1979,12 @@ def _build_returns_for_strategy(
         if benchmark_symbol in close_return_wide.columns
         else pd.Series(dtype="float64")
     )
-    benchmark_trade_dates = (
-        sorted(pd.to_datetime(benchmark_returns.dropna().index).date.tolist())
-        if not benchmark_returns.empty
-        else []
-    )
-    if not benchmark_trade_dates:
-        return []
     daily_rows: list[dict[str, Any]] = []
     cumulative_wealth = 1.0
     peak_wealth = 1.0
 
     for period in periods:
-        for trade_day in benchmark_trade_dates:
+        for trade_day in trading_dates:
             if trade_day < period["effective_start"]:
                 continue
             if period["effective_end"] is not None and trade_day >= period["effective_end"]:
@@ -1952,19 +1992,32 @@ def _build_returns_for_strategy(
             trade_date = pd.Timestamp(trade_day)
             weights = period["weights"]
             weighted_returns = []
+            held_symbols_expected = len(weights)
+            held_symbols_with_returns = 0
+            missing_symbols: list[str] = []
             period_return_wide = (
                 trade_return_wide if trade_day == period["effective_start"] else close_return_wide
             )
             for symbol, weight in weights.items():
-                if symbol not in period_return_wide.columns:
+                missing_return_row = (
+                    symbol not in period_return_wide.columns
+                    or trade_date not in period_return_wide.index
+                )
+                if missing_return_row:
                     symbol_return = pd.NA
                 else:
                     symbol_return = period_return_wide.at[trade_date, symbol]
-                weighted_returns.append(
-                    weight * (0.0 if pd.isna(symbol_return) else float(symbol_return))
-                )
-            portfolio_return = float(sum(weighted_returns))
-            if trade_day == period["effective_start"] and period["trade_notional"]:
+                if pd.isna(symbol_return):
+                    missing_symbols.append(symbol)
+                    continue
+                held_symbols_with_returns += 1
+                weighted_returns.append(weight * float(symbol_return))
+            portfolio_return = None if missing_symbols else float(sum(weighted_returns))
+            if (
+                portfolio_return is not None
+                and trade_day == period["effective_start"]
+                and period["trade_notional"]
+            ):
                 traded_symbols = sorted(weights)
                 slippage_bps = _slippage_bps_for_trade(
                     close_returns_df,
@@ -1977,9 +2030,14 @@ def _build_returns_for_strategy(
             if not benchmark_returns.empty and trade_date in benchmark_returns.index:
                 bench_value = benchmark_returns.loc[trade_date]
                 benchmark_return = None if pd.isna(bench_value) else float(bench_value)
-            cumulative_wealth *= 1.0 + portfolio_return
-            peak_wealth = max(peak_wealth, cumulative_wealth)
-            drawdown = (cumulative_wealth / peak_wealth) - 1.0 if peak_wealth else None
+            if portfolio_return is None:
+                cumulative_return = None
+                drawdown = None
+            else:
+                cumulative_wealth *= 1.0 + portfolio_return
+                peak_wealth = max(peak_wealth, cumulative_wealth)
+                cumulative_return = cumulative_wealth - 1.0
+                drawdown = (cumulative_wealth / peak_wealth) - 1.0 if peak_wealth else None
             daily_rows.append(
                 {
                     "run_id": strategy.run_id,
@@ -1988,14 +2046,19 @@ def _build_returns_for_strategy(
                     "portfolio_return": portfolio_return,
                     "benchmark_return": benchmark_return,
                     "excess_return": (
-                        None if benchmark_return is None else portfolio_return - benchmark_return
+                        None
+                        if benchmark_return is None or portfolio_return is None
+                        else portfolio_return - benchmark_return
                     ),
-                    "cumulative_return": cumulative_wealth - 1.0,
+                    "cumulative_return": cumulative_return,
                     "drawdown": drawdown,
                     "turnover": (
                         period["turnover"] if trade_day == period["effective_start"] else 0.0
                     ),
                     "holdings_count": len(weights),
+                    "held_symbols_expected": held_symbols_expected,
+                    "held_symbols_with_returns": held_symbols_with_returns,
+                    "missing_symbols": ",".join(sorted(missing_symbols)) or None,
                     "asof_ts": asof_ts,
                 }
             )
@@ -2038,6 +2101,9 @@ def _materialize_returns(
             "drawdown",
             "turnover",
             "holdings_count",
+            "held_symbols_expected",
+            "held_symbols_with_returns",
+            "missing_symbols",
             "asof_ts",
         ]
     ]
@@ -2200,6 +2266,67 @@ def _log_strategy_benchmark_series_check(
     return measured_value == 0.0
 
 
+def _log_strategy_held_return_coverage_check(
+    *,
+    measured_con,
+    observability_con,
+    strategies: list[StrategyConfig],
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> bool:
+    run_ids = _current_run_ids(strategies)
+    if not run_ids:
+        return True
+
+    missing_rows = measured_con.execute(
+        """
+        SELECT
+            run_id,
+            strategy_id,
+            date,
+            held_symbols_expected,
+            held_symbols_with_returns,
+            missing_symbols
+        FROM gold.strategy_returns
+        WHERE run_id = ANY(?)
+          AND coalesce(held_symbols_with_returns, 0) < coalesce(held_symbols_expected, 0)
+        ORDER BY run_id, date
+        """,
+        [run_ids],
+    ).fetchall()
+    failing_dates = [
+        {
+            "run_id": str(row[0]),
+            "strategy_id": str(row[1]),
+            "date": str(row[2]),
+            "held_symbols_expected": int(row[3] or 0),
+            "held_symbols_with_returns": int(row[4] or 0),
+            "missing_symbols": [] if row[5] in (None, "") else str(row[5]).split(","),
+        }
+        for row in missing_rows
+    ]
+    measured_value = float(len(failing_dates))
+    write_dq_log(
+        con=observability_con,
+        check_name="dq_gold_strategy_returns_held_symbol_return_coverage",
+        severity="RED",
+        status="PASS" if measured_value == 0.0 else "FAIL",
+        measured_value=measured_value,
+        threshold_value=0.0,
+        details={
+            "table": "gold.strategy_returns",
+            "run_ids": run_ids,
+            "failing_dates": failing_dates,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
+    return measured_value == 0.0
+
+
 def _annualized_return(total_return: float, periods: int) -> float | None:
     if periods <= 0 or (1.0 + total_return) <= 0:
         return None
@@ -2213,6 +2340,7 @@ def _performance_row(
     asof_ts: datetime,
 ) -> dict[str, Any]:
     frame = returns_df.sort_values("date", kind="stable").copy()
+    frame = frame.dropna(subset=["portfolio_return", "cumulative_return"])
     portfolio = frame["portfolio_return"].astype(float)
     benchmark = frame["benchmark_return"].astype(float)
     excess = frame["excess_return"].astype(float)
@@ -2490,6 +2618,14 @@ def gold_strategy_returns(context: AssetExecutionContext) -> None:
             asof_ts=asof_ts,
         )
         _log_strategy_return_continuity_check(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            strategies=strategies,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
+        _log_strategy_held_return_coverage_check(
             measured_con=con,
             observability_con=context.resources.duckdb,
             strategies=strategies,

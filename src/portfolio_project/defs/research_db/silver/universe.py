@@ -15,6 +15,20 @@ DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 LIQUIDITY_LOOKBACK_DAYS = int(os.getenv("RESEARCH_UNIVERSE_LIQUIDITY_LOOKBACK_DAYS", "20"))
 UNIVERSE_SIZE = int(os.getenv("RESEARCH_UNIVERSE_SIZE", "500"))
 UNIVERSE_SOURCE = "rolling_avg_dollar_volume_top_500"
+ELIGIBILITY_MIN_CLOSE = float(os.getenv("RESEARCH_UNIVERSE_ELIGIBILITY_MIN_CLOSE", "5"))
+ELIGIBILITY_MIN_AVG_DOLLAR_VOLUME_63D = float(
+    os.getenv("RESEARCH_UNIVERSE_ELIGIBILITY_MIN_AVG_DOLLAR_VOLUME_63D", "1000000")
+)
+ELIGIBILITY_CONTINUITY_LOOKBACK_DAYS = int(
+    os.getenv("RESEARCH_UNIVERSE_ELIGIBILITY_CONTINUITY_LOOKBACK_DAYS", "252")
+)
+ELIGIBILITY_MIN_TRADING_DAYS_252D = int(
+    os.getenv("RESEARCH_UNIVERSE_ELIGIBILITY_MIN_TRADING_DAYS_252D", "200")
+)
+ELIGIBILITY_MIN_POSITIVE_VOLUME_DAYS_252D = int(
+    os.getenv("RESEARCH_UNIVERSE_ELIGIBILITY_MIN_POSITIVE_VOLUME_DAYS_252D", "200")
+)
+ELIGIBILITY_SYMBOL_PATTERN = r"^[A-Z][A-Z\.\-]{0,5}$"
 
 
 def _safe_partition_key(context: AssetExecutionContext) -> str | None:
@@ -78,40 +92,130 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
     try:
         con.execute(
             """
-            CREATE OR REPLACE TABLE silver.universe_membership_daily AS
+            CREATE OR REPLACE TABLE silver.universe_eligibility_daily AS
             WITH prices AS (
                 SELECT
                     CAST(trade_date AS DATE) AS trade_date,
                     upper(trim(symbol)) AS symbol,
+                    CAST(close AS DOUBLE) AS close,
+                    CAST(volume AS BIGINT) AS volume,
                     CAST(dollar_volume AS DOUBLE) AS dollar_volume
                 FROM read_parquet(?)
                 WHERE trade_date IS NOT NULL
                   AND symbol IS NOT NULL
                   AND trim(symbol) <> ''
-                  AND dollar_volume IS NOT NULL
-                  AND dollar_volume > 0
             ),
-            liquidity AS (
+            features AS (
                 SELECT
-                    trade_date AS member_date,
+                    trade_date AS date,
                     symbol,
-                    avg(dollar_volume) OVER (
+                    close,
+                    volume,
+                    dollar_volume,
+                    avg(dollar_volume) FILTER (
+                        WHERE dollar_volume IS NOT NULL AND dollar_volume > 0
+                    ) OVER (
                         PARTITION BY symbol
                         ORDER BY trade_date
                         ROWS BETWEEN ? PRECEDING AND CURRENT ROW
-                    ) AS rolling_avg_dollar_volume
+                    ) AS avg_dollar_volume_63d,
+                    count(*) FILTER (
+                        WHERE close IS NOT NULL
+                    ) OVER (
+                        PARTITION BY symbol
+                        ORDER BY trade_date
+                        ROWS BETWEEN ? PRECEDING AND CURRENT ROW
+                    ) AS trading_days_seen_252d,
+                    count(*) FILTER (
+                        WHERE volume IS NOT NULL AND volume > 0
+                    ) OVER (
+                        PARTITION BY symbol
+                        ORDER BY trade_date
+                        ROWS BETWEEN ? PRECEDING AND CURRENT ROW
+                    ) AS volume_positive_days_252d
                 FROM prices
             ),
+            flags AS (
+                SELECT
+                    symbol,
+                    date,
+                    regexp_matches(symbol, ?) AS passes_symbol_format,
+                    close >= ? AS passes_min_price,
+                    avg_dollar_volume_63d >= ? AS passes_min_liquidity,
+                    trading_days_seen_252d >= ?
+                      AND volume_positive_days_252d >= ? AS passes_trading_continuity,
+                    NOT regexp_matches(symbol, 'Q$') AS passes_non_bankruptcy_suffix,
+                    NOT regexp_matches(symbol, '(W|WS|WT|R|RT|U|P|PR)$')
+                        AS passes_non_derivative_suffix,
+                    close,
+                    avg_dollar_volume_63d,
+                    trading_days_seen_252d,
+                    volume_positive_days_252d
+                FROM features
+            )
+            SELECT
+                symbol,
+                date,
+                passes_symbol_format,
+                passes_min_price,
+                passes_min_liquidity,
+                passes_trading_continuity,
+                passes_non_bankruptcy_suffix,
+                passes_non_derivative_suffix,
+                (
+                    passes_symbol_format
+                    AND passes_min_price
+                    AND passes_min_liquidity
+                    AND passes_trading_continuity
+                    AND passes_non_bankruptcy_suffix
+                    AND passes_non_derivative_suffix
+                ) AS is_eligible_research_universe,
+                concat_ws(
+                    '; ',
+                    CASE WHEN NOT passes_symbol_format THEN 'symbol_format' END,
+                    CASE WHEN NOT passes_min_price THEN 'min_price' END,
+                    CASE WHEN NOT passes_min_liquidity THEN 'min_liquidity' END,
+                    CASE WHEN NOT passes_trading_continuity THEN 'trading_continuity' END,
+                    CASE
+                        WHEN NOT passes_non_bankruptcy_suffix THEN 'bankruptcy_suffix'
+                    END,
+                    CASE WHEN NOT passes_non_derivative_suffix THEN 'derivative_suffix' END
+                ) AS exclusion_reasons,
+                close,
+                avg_dollar_volume_63d,
+                trading_days_seen_252d,
+                volume_positive_days_252d,
+                current_timestamp AS ingested_ts
+            FROM flags
+            ORDER BY date, symbol
+            """,
+            [
+                prices_glob,
+                LIQUIDITY_LOOKBACK_DAYS - 1,
+                ELIGIBILITY_CONTINUITY_LOOKBACK_DAYS - 1,
+                ELIGIBILITY_CONTINUITY_LOOKBACK_DAYS - 1,
+                ELIGIBILITY_SYMBOL_PATTERN,
+                ELIGIBILITY_MIN_CLOSE,
+                ELIGIBILITY_MIN_AVG_DOLLAR_VOLUME_63D,
+                ELIGIBILITY_MIN_TRADING_DAYS_252D,
+                ELIGIBILITY_MIN_POSITIVE_VOLUME_DAYS_252D,
+            ],
+        )
+        con.execute(
+            """
+            CREATE OR REPLACE TABLE silver.universe_membership_daily AS
+            WITH
             ranked AS (
                 SELECT
-                    member_date,
+                    date AS member_date,
                     symbol,
-                    rolling_avg_dollar_volume,
+                    avg_dollar_volume_63d AS rolling_avg_dollar_volume,
                     row_number() OVER (
-                        PARTITION BY member_date
-                        ORDER BY rolling_avg_dollar_volume DESC, symbol ASC
+                        PARTITION BY date
+                        ORDER BY avg_dollar_volume_63d DESC, symbol ASC
                     ) AS liquidity_rank
-                FROM liquidity
+                FROM silver.universe_eligibility_daily
+                WHERE is_eligible_research_universe = TRUE
             )
             SELECT
                 member_date,
@@ -124,7 +228,7 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
             WHERE liquidity_rank <= ?
             ORDER BY member_date, liquidity_rank, symbol
             """,
-            [prices_glob, LIQUIDITY_LOOKBACK_DAYS - 1, UNIVERSE_SOURCE, UNIVERSE_SIZE],
+            [UNIVERSE_SOURCE, UNIVERSE_SIZE],
         )
     except Exception as exc:
         context.log.warning(

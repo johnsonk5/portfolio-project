@@ -83,6 +83,7 @@ from portfolio_project.defs.research_db.silver.factors import (
 from portfolio_project.defs.research_db.silver.research_prices import (
     silver_research_daily_prices,
 )
+from portfolio_project.defs.research_db.silver.security_master import silver_security_master
 from portfolio_project.defs.research_db.silver.signals import (
     silver_signals_daily,
 )
@@ -113,6 +114,7 @@ research_prices_selection = AssetSelection.assets(
     silver_signals_daily,
     silver_universe_membership_daily,
     silver_universe_membership_events,
+    silver_security_master,
 )
 
 strategy_backfill_selection = AssetSelection.assets(
@@ -421,6 +423,7 @@ defs = Definitions(
         ref_simulation_types,
         silver_universe_membership_events,
         silver_universe_membership_daily,
+        silver_security_master,
         gold_strategy_rankings,
         gold_strategy_holdings,
         gold_strategy_returns,

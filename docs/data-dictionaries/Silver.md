@@ -30,6 +30,30 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | `is_sp500` | `bool` | S&P 500 membership flag. |
 | `wikipedia_title` | `object` | Resolved English Wikipedia title (nullable). |
 
+## `silver.security_master`
+
+*DuckDB Table in the research DuckDB silver schema*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `symbol` | `object` | Source ticker symbol. |
+| `canonical_symbol` | `object` | Normalized ticker symbol used for joins and de-duplication. |
+| `security_name` | `object` | Security name from source metadata when available. |
+| `security_type` | `object` | Broad classification such as `equity`, `fund`, `derivative`, or `unknown`. |
+| `security_subtype` | `object` | More specific classification such as `common_stock`, `etf`, or `adr`. |
+| `exchange` | `object` | Normalized exchange code from source metadata when available. |
+| `classification_confidence` | `float` | Heuristic confidence score between 0 and 1. |
+| `classification_reason` | `object` | Human-readable reason for the classification and investability decision. |
+| `classification_source` | `object` | Classification method identifier, currently based on symbols present in research prices and signals with metadata fallback where available. |
+| `is_common_stock` | `bool` | Whether the row appears to be common equity. |
+| `is_etf` | `bool` | Whether the row appears to be an ETF. |
+| `is_adr` | `bool` | Whether the row appears to be an ADR. |
+| `is_otc` | `bool` | Whether the row is listed on an OTC venue. |
+| `is_bankruptcy_related` | `bool` | Whether the symbol or name suggests bankruptcy or liquidation. |
+| `is_derivative_security` | `bool` | Whether the row appears to be a warrant, right, unit, preferred, or similar derivative-like security. |
+| `is_fund_like` | `bool` | Whether the row appears to be fund-like, including ETFs and trusts. |
+| `is_investable_common_equity` | `bool` | Convenience flag for tradable common equity excluding ETFs, ADRs, OTC names, bankruptcy-related names, derivatives, and fund-like securities. |
+
 ## `silver.prices`
 
 *Parquet file*
@@ -131,6 +155,28 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | `source` | `object` | Source label for the liquidity rule. |
 | `ingested_ts` | `timestamp` | ETL ingest timestamp. |
 
+## `silver.universe_eligibility_daily`
+
+*DuckDB Table in the research DuckDB silver schema*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `symbol` | `object` | Canonical ticker symbol. |
+| `date` | `date` | Trading date for the eligibility decision. |
+| `passes_symbol_format` | `bool` | Whether the symbol matches the no-metadata sanity pattern. |
+| `passes_min_price` | `bool` | Whether close is at or above the configured minimum price. |
+| `passes_min_liquidity` | `bool` | Whether trailing average dollar volume meets the configured threshold. |
+| `passes_trading_continuity` | `bool` | Whether enough recent price and positive-volume observations exist. |
+| `passes_non_bankruptcy_suffix` | `bool` | Whether the symbol avoids the bankruptcy-like `Q` suffix rule. |
+| `passes_non_derivative_suffix` | `bool` | Whether the symbol avoids warrant, right, unit, and preferred-like suffix rules. |
+| `is_eligible_research_universe` | `bool` | Combined eligibility flag used before liquidity ranking. |
+| `exclusion_reasons` | `object` | Semicolon-separated failed eligibility rules, blank when eligible. |
+| `close` | `float` | Close used for the minimum price rule. |
+| `avg_dollar_volume_63d` | `float` | Rolling average dollar volume used for liquidity filtering and ranking. |
+| `trading_days_seen_252d` | `int` | Count of recent rows with close observations. |
+| `volume_positive_days_252d` | `int` | Count of recent rows with positive volume. |
+| `ingested_ts` | `timestamp` | ETL ingest timestamp. |
+
 ## `silver.ref_sp500`
 
 *DuckDB Table in silver schema*
@@ -201,11 +247,11 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | Column | Type | Description |
 | --- | --- | --- |
 | `factor_date` | `date` | Trading date for the factor observation. |
-| `mkt_rf` | `float` | Market excess return (`MKT-RF`). |
-| `smb` | `float` | Size factor (`SMB`). |
-| `hml` | `float` | Value factor (`HML`). |
-| `rf` | `float` | Daily risk-free rate (`RF`). |
-| `mom` | `float` | Daily momentum factor (`MOM`). |
+| `mkt_rf` | `float` | Market excess return (`MKT-RF`) stored as a decimal return, not percent. |
+| `smb` | `float` | Size factor (`SMB`) stored as a decimal return, not percent. |
+| `hml` | `float` | Value factor (`HML`) stored as a decimal return, not percent. |
+| `rf` | `float` | Daily risk-free rate (`RF`) stored as a decimal return, not percent. |
+| `mom` | `float` | Daily momentum factor (`MOM`) stored as a decimal return, not percent. |
 | `source` | `object` | Source label for the Kenneth R. French Data Library. |
 | `frequency` | `object` | Frequency label (`daily`). |
 | `ingested_ts` | `timestamp` | Bronze ingest timestamp carried forward. |

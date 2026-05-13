@@ -44,11 +44,11 @@ def test_silver_fama_french_factors_materializes_single_parquet_file(tmp_path: P
     bronze_df = pd.DataFrame(
         {
             "factor_date": pd.to_datetime(["2026-01-30", "2026-02-03"]),
-            "mkt_rf": [0.5, -0.25],
-            "smb": [0.1, 0.2],
-            "hml": [-0.3, 0.4],
-            "rf": [0.01, 0.01],
-            "mom": [0.6, -0.1],
+            "mkt_rf": [0.005, -0.0025],
+            "smb": [0.001, 0.002],
+            "hml": [-0.003, 0.004],
+            "rf": [0.0001, 0.0001],
+            "mom": [0.006, -0.001],
             "source": ["kenneth_r_french_data_library", "kenneth_r_french_data_library"],
             "frequency": ["daily", "daily"],
             "ingested_ts": pd.to_datetime(["2026-03-15T16:30:00Z", "2026-03-15T16:30:00Z"]),
@@ -74,7 +74,7 @@ def test_silver_fama_french_factors_materializes_single_parquet_file(tmp_path: P
             "2026-03-15",
             "2026-03-15",
         ]
-        assert df["mom"].tolist() == [0.6, -0.1]
+        assert df["mom"].tolist() == [0.006, -0.001]
 
         dq_rows = obs_con.execute(
             """

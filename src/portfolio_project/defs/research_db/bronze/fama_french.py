@@ -26,6 +26,7 @@ USER_AGENT = os.getenv(
 )
 
 _DATE_PATTERN = re.compile(r"^\d{8}$")
+PERCENT_RETURN_COLUMNS = {"mkt_rf", "smb", "hml", "rf", "mom"}
 
 
 def _read_zipped_text(zip_bytes: bytes) -> str:
@@ -56,6 +57,8 @@ def _extract_daily_rows(raw_text: str, expected_column_names: list[str]) -> pd.D
     df["factor_date"] = pd.to_datetime(df["factor_date"], format="%Y%m%d")
     for column in expected_column_names:
         df[column] = pd.to_numeric(df[column], errors="coerce")
+        if column in PERCENT_RETURN_COLUMNS:
+            df[column] = df[column] / 100.0
     return df
 
 
