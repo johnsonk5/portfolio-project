@@ -415,7 +415,11 @@ def _load_underrated_investments(
         con.close()
 
     if df.empty:
-        return df, None, "No positive-momentum underrated investment data available for the latest trade date."
+        return (
+            df,
+            None,
+            "No positive-momentum underrated investment data available for the latest trade date.",
+        )
 
     df = df.copy()
     df["score"] = _zscore(df["momentum_12_1"]) + _zscore(df["pct_below_52w_high"])

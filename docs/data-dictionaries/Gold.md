@@ -99,6 +99,9 @@
 | `drawdown` | `float` | Running drawdown from the cumulative peak. |
 | `turnover` | `float` | Daily turnover, non-zero on rebalance effective dates. |
 | `holdings_count` | `int` | Active holdings count for the date. |
+| `held_symbols_expected` | `int` | Number of held symbols expected to contribute returns for the date. |
+| `held_symbols_with_returns` | `int` | Number of held symbols with available return observations for the date. |
+| `missing_symbols` | `object` | Comma-separated held symbols missing return observations; null when coverage is complete. |
 | `asof_ts` | `datetime64[us]` | Load timestamp. |
 
 ## `gold.strategy_performance`

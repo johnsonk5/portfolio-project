@@ -145,23 +145,64 @@ def test_strategy_runs_asset_preserves_existing_run_rows(tmp_path: Path, monkeyp
         VALUES ('run-001', 'benchmark_spy_buy_and_hold', 'success', 'snapshot-001', true)
         """
     )
+    con.execute(
+        """
+        INSERT INTO silver.strategy_runs (
+            run_id,
+            strategy_id,
+            run_type_id,
+            simulation_type_id,
+            run_status,
+            dataset_version,
+            persist
+        )
+        VALUES (
+            'run-002',
+            'momentum_top_10',
+            'simulation',
+            3,
+            'success',
+            'snapshot-002',
+            true
+        )
+        """
+    )
 
     strategy_module.silver_strategy_runs(context)
 
     run_rows = con.execute(
         """
-        SELECT run_id, strategy_id, run_status, dataset_version, persist
+        SELECT
+            run_id,
+            strategy_id,
+            run_type_id,
+            simulation_type_id,
+            run_status,
+            dataset_version,
+            persist
         FROM silver.strategy_runs
+        ORDER BY run_id
         """
     ).fetchall()
     assert run_rows == [
         (
             "run-001",
             "benchmark_spy_buy_and_hold",
+            "backtest",
+            None,
             "success",
             "snapshot-001",
             True,
-        )
+        ),
+        (
+            "run-002",
+            "momentum_top_10",
+            "simulation",
+            3,
+            "success",
+            "snapshot-002",
+            True,
+        ),
     ]
 
 

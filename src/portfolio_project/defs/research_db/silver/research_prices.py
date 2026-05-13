@@ -73,6 +73,15 @@ NON_NEGATIVE_COUNT_COLUMNS = [
     "volume",
     "trade_count",
 ]
+MARKET_VALUE_COLUMNS = [
+    "open",
+    "high",
+    "low",
+    "close",
+    "adjusted_close",
+    "vwap",
+    "dollar_volume",
+]
 
 
 def _table_exists(con, schema: str, table: str) -> bool:
@@ -484,6 +493,39 @@ def _normalize_daily_prices_df(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _coerce_nullable_integer(series: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(series, errors="coerce")
+    whole_number = numeric.isna() | numeric.mod(1).eq(0)
+    return numeric.where(whole_number).astype("Int64")
+
+
+def _prepare_research_daily_prices_for_write(day_df: pd.DataFrame) -> pd.DataFrame:
+    prepared = day_df.copy()
+
+    for column in MARKET_VALUE_COLUMNS:
+        prepared[column] = pd.to_numeric(prepared[column], errors="coerce").astype("float64")
+    for column in NON_NEGATIVE_COUNT_COLUMNS:
+        prepared[column] = _coerce_nullable_integer(prepared[column])
+
+    prepared["adjusted_close"] = prepared["adjusted_close"].fillna(prepared["close"])
+    invalid_vwap = (
+        prepared["vwap"].notna()
+        & (
+            prepared["vwap"].le(0)
+            | prepared["low"].isna()
+            | prepared["high"].isna()
+            | prepared["vwap"].lt(prepared["low"])
+            | prepared["vwap"].gt(prepared["high"])
+        )
+    )
+    prepared.loc[invalid_vwap, "vwap"] = pd.NA
+    prepared["dollar_volume"] = prepared["close"] * pd.to_numeric(
+        prepared["volume"], errors="coerce"
+    )
+
+    return prepared[PRICE_COLUMNS]
+
+
 def combine_source_daily_prices(trade_date: date) -> pd.DataFrame:
     frames = [
         _normalize_daily_prices_df(_load_bronze_prices("alpaca_prices_daily", trade_date)),
@@ -504,7 +546,8 @@ def combine_source_daily_prices(trade_date: date) -> pd.DataFrame:
     combined = pd.concat(frames, ignore_index=True)
     combined = combined.drop_duplicates(subset=["symbol", "trade_date"], keep="first").copy()
     combined = combined.drop(columns=["source_priority"])
-    return combined[PRICE_COLUMNS].sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+    combined = _prepare_research_daily_prices_for_write(combined)
+    return combined.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
 
 
 def write_research_daily_prices_partition(
@@ -604,6 +647,8 @@ def silver_research_daily_prices(context: AssetExecutionContext) -> None:
                 pd.to_numeric(day_df.loc[alpaca_rows, "close"], errors="coerce")
                 * split_factor.values
             )
+
+    day_df = _prepare_research_daily_prices_for_write(day_df)
 
     files_written, rows_written = write_research_daily_prices_partition(
         trade_date,

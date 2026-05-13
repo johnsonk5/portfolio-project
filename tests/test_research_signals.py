@@ -176,3 +176,79 @@ def test_signals_daily_builds_expected_metrics(tmp_path: Path, monkeypatch) -> N
         """
     ).fetchone()
     assert dq_row == ("dq_research_signals_daily_required_fields_nulls", "PASS", 0.0)
+
+
+def test_signals_daily_fills_missing_adjusted_close_from_close(tmp_path: Path, monkeypatch) -> None:
+    data_root = tmp_path / "data"
+    monkeypatch.setattr(signals_module, "DATA_ROOT", data_root)
+    monkeypatch.setattr(signals_module, "SIGNALS_SYMBOL_BUCKETS", 1)
+
+    _write_silver_prices_daily(
+        data_root,
+        "2026-02-12",
+        pd.DataFrame(
+            {
+                "symbol": ["AAPL"],
+                "timestamp": [pd.Timestamp("2026-02-12T21:00:00Z")],
+                "trade_date": ["2026-02-12"],
+                "open": [99.0],
+                "high": [101.0],
+                "low": [98.0],
+                "close": [100.0],
+                "adjusted_close": [pd.NA],
+                "volume": [1000],
+                "trade_count": [10],
+                "vwap": [100.0],
+                "dollar_volume": [100000.0],
+                "source": ["alpaca"],
+                "ingested_ts": [pd.Timestamp("2026-02-12T21:01:00Z")],
+            }
+        ),
+    )
+    _write_silver_prices_daily(
+        data_root,
+        "2026-02-13",
+        pd.DataFrame(
+            {
+                "symbol": ["AAPL"],
+                "timestamp": [pd.Timestamp("2026-02-13T21:00:00Z")],
+                "trade_date": ["2026-02-13"],
+                "open": [100.0],
+                "high": [102.0],
+                "low": [99.0],
+                "close": [101.0],
+                "adjusted_close": [pd.NA],
+                "volume": [1000],
+                "trade_count": [10],
+                "vwap": [101.0],
+                "dollar_volume": [101000.0],
+                "source": ["alpaca"],
+                "ingested_ts": [pd.Timestamp("2026-02-13T21:01:00Z")],
+            }
+        ),
+    )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con, "duckdb": obs_con})
+    signals_module.silver_signals_daily(context)
+
+    rows = con.execute(
+        """
+        SELECT date, close, adjusted_close, returns_1d
+        FROM silver.signals_daily
+        ORDER BY date
+        """
+    ).fetchall()
+    assert rows[0][1:3] == (100.0, 100.0)
+    assert rows[1][1:3] == (101.0, 101.0)
+    assert rows[1][3] == pytest.approx(0.01)
+
+    dq_row = obs_con.execute(
+        """
+        SELECT status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_research_signals_daily_required_fields_nulls'
+        """
+    ).fetchone()
+    assert dq_row == ("PASS", 0.0)

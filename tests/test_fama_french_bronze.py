@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from dagster import materialize
 
 import portfolio_project.defs.research_db.bronze.fama_french as ff_module
@@ -24,8 +25,8 @@ Copyright 2026
 
     assert list(df.columns) == ["factor_date", "mkt_rf", "smb", "hml", "rf"]
     assert df["factor_date"].dt.strftime("%Y-%m-%d").tolist() == ["2026-01-02", "2026-01-05"]
-    assert df["mkt_rf"].tolist() == [1.23, -0.5]
-    assert df["rf"].tolist() == [0.01, 0.01]
+    assert df["mkt_rf"].tolist() == pytest.approx([0.0123, -0.005])
+    assert df["rf"].tolist() == pytest.approx([0.0001, 0.0001])
 
 
 def test_bronze_fama_french_factors_materializes_snapshot(
@@ -38,16 +39,16 @@ def test_bronze_fama_french_factors_materializes_snapshot(
     core_df = pd.DataFrame(
         {
             "factor_date": pd.to_datetime(["2026-01-02", "2026-01-05"]),
-            "mkt_rf": [1.23, -0.5],
-            "smb": [-0.45, 0.1],
-            "hml": [0.67, 0.2],
-            "rf": [0.01, 0.01],
+            "mkt_rf": [0.0123, -0.005],
+            "smb": [-0.0045, 0.001],
+            "hml": [0.0067, 0.002],
+            "rf": [0.0001, 0.0001],
         }
     )
     momentum_df = pd.DataFrame(
         {
             "factor_date": pd.to_datetime(["2026-01-02", "2026-01-05"]),
-            "mom": [0.75, -0.2],
+            "mom": [0.0075, -0.002],
         }
     )
 
@@ -89,6 +90,6 @@ def test_bronze_fama_french_factors_materializes_snapshot(
         "ingested_ts",
     ]
     assert df["factor_date"].dt.strftime("%Y-%m-%d").tolist() == ["2026-01-02", "2026-01-05"]
-    assert df["mom"].tolist() == [0.75, -0.2]
+    assert df["mom"].tolist() == [0.0075, -0.002]
     assert df["source"].nunique() == 1
     assert df["frequency"].tolist() == ["daily", "daily"]

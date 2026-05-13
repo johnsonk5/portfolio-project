@@ -77,6 +77,9 @@ STRATEGY_RETURNS_COLUMNS: list[tuple[str, str]] = [
     ("drawdown", "DOUBLE"),
     ("turnover", "DOUBLE"),
     ("holdings_count", "INTEGER"),
+    ("held_symbols_expected", "INTEGER"),
+    ("held_symbols_with_returns", "INTEGER"),
+    ("missing_symbols", "VARCHAR"),
     ("asof_ts", "TIMESTAMP"),
 ]
 
@@ -108,6 +111,26 @@ class StrategyConfig:
     end_date: date | None
     config: dict[str, Any]
     run_id: str
+
+
+@dataclass(frozen=True)
+class SimulationTypeConfig:
+    simulation_type_id: int | None
+    simulation_type_code: str
+    fill_price_basis: str
+    slippage_model: str
+    slippage_bps: float
+    slippage_params: dict[str, Any]
+
+
+DEFAULT_SIMULATION_TYPE = SimulationTypeConfig(
+    simulation_type_id=None,
+    simulation_type_code="close_no_cost",
+    fill_price_basis="close",
+    slippage_model="none",
+    slippage_bps=0.0,
+    slippage_params={},
+)
 
 
 def _now_utc_naive() -> datetime:
@@ -151,6 +174,64 @@ def _safe_json_loads(raw_value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _simulation_type_for_run(con, run_id: str) -> SimulationTypeConfig:
+    if not _table_exists(con, "silver", "strategy_runs"):
+        return DEFAULT_SIMULATION_TYPE
+
+    run_row = con.execute(
+        """
+        SELECT run_type_id, simulation_type_id
+        FROM silver.strategy_runs
+        WHERE run_id = ?
+        LIMIT 1
+        """,
+        [run_id],
+    ).fetchone()
+    if run_row is None:
+        return DEFAULT_SIMULATION_TYPE
+
+    run_type_id = str(run_row[0] or "").strip().lower()
+    simulation_type_id = run_row[1]
+    if run_type_id != "simulation" or simulation_type_id is None:
+        return DEFAULT_SIMULATION_TYPE
+    if not _table_exists(con, "ref", "simulation_types"):
+        raise ValueError(
+            f"Strategy run {run_id} has simulation_type_id={simulation_type_id}, "
+            "but ref.simulation_types is not materialized."
+        )
+
+    type_row = con.execute(
+        """
+        SELECT
+            simulation_type_id,
+            simulation_type_code,
+            fill_price_basis,
+            slippage_model,
+            slippage_bps,
+            slippage_params_json
+        FROM ref.simulation_types
+        WHERE simulation_type_id = ?
+          AND is_active = TRUE
+        LIMIT 1
+        """,
+        [simulation_type_id],
+    ).fetchone()
+    if type_row is None:
+        raise ValueError(
+            f"Strategy run {run_id} references inactive or unknown "
+            f"simulation_type_id={simulation_type_id}."
+        )
+
+    return SimulationTypeConfig(
+        simulation_type_id=int(type_row[0]),
+        simulation_type_code=str(type_row[1]).strip().lower(),
+        fill_price_basis=str(type_row[2]).strip().lower(),
+        slippage_model=str(type_row[3]).strip().lower(),
+        slippage_bps=float(type_row[4] or 0.0),
+        slippage_params=_safe_json_loads(type_row[5]),
+    )
+
+
 def _coerce_parameter_value(raw_value: Any, parameter_type: str) -> Any:
     if raw_value is None:
         return None
@@ -170,6 +251,43 @@ def _strategy_run_id(context: AssetExecutionContext, strategy_id: str) -> str:
     if run_id:
         return f"{run_id}:{strategy_id}"
     return f"manual:{strategy_id}"
+
+
+def _pending_strategy_run_ids(con, strategy_id: str) -> list[str]:
+    if not _table_exists(con, "silver", "strategy_runs"):
+        return []
+    rows = con.execute(
+        """
+        SELECT run_id
+        FROM silver.strategy_runs
+        WHERE strategy_id = ?
+          AND run_type_id = 'simulation'
+          AND run_status IN ('pending', 'running')
+        ORDER BY asof_ts DESC NULLS LAST,
+                 started_at DESC NULLS LAST,
+                 run_id DESC
+        """,
+        [strategy_id],
+    ).fetchall()
+    return [str(row[0]) for row in rows if row[0] not in (None, "")]
+
+
+def _simulation_strategy_run_exists(con, run_id: str) -> bool:
+    if not _table_exists(con, "silver", "strategy_runs"):
+        return False
+    return (
+        con.execute(
+            """
+            SELECT 1
+            FROM silver.strategy_runs
+            WHERE run_id = ?
+              AND run_type_id = 'simulation'
+            LIMIT 1
+            """,
+            [run_id],
+        ).fetchone()
+        is not None
+    )
 
 
 def _active_strategies(con, context: AssetExecutionContext) -> list[StrategyConfig]:
@@ -196,7 +314,10 @@ def _active_strategies(con, context: AssetExecutionContext) -> list[StrategyConf
     strategies: list[StrategyConfig] = []
     for row in rows:
         strategy_id = str(row[0])
-        strategies.append(
+        run_ids = _pending_strategy_run_ids(con, strategy_id) or [
+            _strategy_run_id(context, strategy_id)
+        ]
+        strategy_configs = [
             StrategyConfig(
                 strategy_id=strategy_id,
                 rebalance_frequency=str(row[1]),
@@ -207,7 +328,14 @@ def _active_strategies(con, context: AssetExecutionContext) -> list[StrategyConf
                 start_date=row[6],
                 end_date=row[7],
                 config=_safe_json_loads(row[8]),
-                run_id=_strategy_run_id(context, strategy_id),
+                run_id=run_id,
+            )
+            for run_id in run_ids
+        ]
+        strategies.extend(
+            sorted(
+                strategy_configs,
+                key=lambda strategy_config: strategy_config.run_id,
             )
         )
     return strategies
@@ -247,11 +375,26 @@ def _strategies_with_latest_run_ids(
             SELECT run_id
             FROM gold.{_quote_identifier(source_table)}
             WHERE strategy_id = ?
-            ORDER BY asof_ts DESC, run_id DESC
+              AND run_id = ?
+            ORDER BY asof_ts DESC
             LIMIT 1
             """,
-            [strategy.strategy_id],
+            [strategy.strategy_id, strategy.run_id],
         ).fetchone()
+        if row is None or row[0] in (None, ""):
+            if _simulation_strategy_run_exists(con, strategy.run_id):
+                resolved.append(strategy)
+                continue
+            row = con.execute(
+                f"""
+                SELECT run_id
+                FROM gold.{_quote_identifier(source_table)}
+                WHERE strategy_id = ?
+                ORDER BY asof_ts DESC, run_id DESC
+                LIMIT 1
+                """,
+                [strategy.strategy_id],
+            ).fetchone()
         if row is None or row[0] in (None, ""):
             resolved.append(strategy)
             continue
@@ -279,18 +422,32 @@ def _filter_missing_strategies(
     if not strategies or not _table_exists(con, "gold", "strategy_performance"):
         return strategies
 
-    completed_strategy_ids = {
+    pending_simulation_run_ids = {
         str(row[0])
         for row in con.execute(
             """
-            SELECT DISTINCT strategy_id
+            SELECT DISTINCT run_id
+            FROM silver.strategy_runs
+            WHERE run_id IS NOT NULL
+              AND lower(trim(coalesce(run_type_id, ''))) = 'simulation'
+              AND lower(trim(coalesce(run_status, ''))) IN ('pending', 'running')
+            """
+        ).fetchall()
+    }
+    completed_run_ids = {
+        str(row[0])
+        for row in con.execute(
+            """
+            SELECT DISTINCT run_id
             FROM gold.strategy_performance
-            WHERE strategy_id IS NOT NULL
+            WHERE run_id IS NOT NULL
             """
         ).fetchall()
     }
     return [
-        strategy for strategy in strategies if strategy.strategy_id not in completed_strategy_ids
+        strategy
+        for strategy in strategies
+        if strategy.run_id in pending_simulation_run_ids or strategy.run_id not in completed_run_ids
     ]
 
 
@@ -433,13 +590,13 @@ def _build_rankings_for_strategy(
                    AND upper(trim(u.symbol)) = upper(trim(s.symbol))
                 WHERE CAST(s.date AS DATE) = ?
             """
-            params = [rebalance_date]
+            random_params: list[Any] = [rebalance_date]
             min_avg_dollar_volume_21d = parameters.get("min_avg_dollar_volume_21d")
             if min_avg_dollar_volume_21d is not None:
                 sql += " AND CAST(s.avg_dollar_volume_21d AS DOUBLE) >= ?"
-                params.append(float(min_avg_dollar_volume_21d))
+                random_params.append(float(min_avg_dollar_volume_21d))
             sql += " ORDER BY symbol"
-            candidate_rows = con.execute(sql, params).fetchall()
+            candidate_rows = con.execute(sql, random_params).fetchall()
         else:
             secondary_select_sql = ""
             secondary_not_null_sql = ""
@@ -488,16 +645,18 @@ def _build_rankings_for_strategy(
                 continue
             random_seed = int(parameters.get("random_seed") or 0)
             candidate_df["score"] = candidate_df["symbol"].map(
-                lambda symbol: int.from_bytes(
-                    hashlib.sha256(
-                        f"{strategy.strategy_id}|{rebalance_date.isoformat()}|{random_seed}|{symbol}".encode(
-                            "utf-8"
-                        )
-                    ).digest()[:8],
-                    byteorder="big",
-                    signed=False,
+                lambda symbol: (
+                    int.from_bytes(
+                        hashlib.sha256(
+                            f"{strategy.strategy_id}|{rebalance_date.isoformat()}|{random_seed}|{symbol}".encode(
+                                "utf-8"
+                            )
+                        ).digest()[:8],
+                        byteorder="big",
+                        signed=False,
+                    )
+                    / float(2**64 - 1)
                 )
-                / float(2**64 - 1)
             )
         else:
             candidate_columns = (
@@ -510,6 +669,7 @@ def _build_rankings_for_strategy(
                 continue
 
             if secondary_signal_column and score_method == "zscore_sum":
+
                 def _zscore(series: pd.Series) -> pd.Series:
                     std = series.std(ddof=0)
                     if pd.isna(std) or std == 0:
@@ -624,6 +784,8 @@ def _ensure_strategy_run_rows(
             {
                 "run_id": strategy.run_id,
                 "strategy_id": strategy.strategy_id,
+                "run_type_id": "backtest",
+                "simulation_type_id": None,
                 "run_status": run_status,
                 "dataset_version": dataset_version,
                 "code_version": None,
@@ -665,6 +827,7 @@ def _ensure_strategy_run_rows(
         UPDATE silver.strategy_runs AS target
         SET
             run_status = seed.run_status,
+            run_type_id = coalesce(target.run_type_id, seed.run_type_id),
             dataset_version = seed.dataset_version,
             started_at = coalesce(target.started_at, seed.started_at),
             asof_ts = seed.asof_ts,
@@ -764,6 +927,404 @@ def _update_strategy_runs_failure(
         WHERE run_id = ANY(?)
         """,
         [asof_ts, error_message, asof_ts, run_ids],
+    )
+
+
+def _log_dq_count_check(
+    *,
+    observability_con,
+    check_name: str,
+    measured_value: float,
+    details: dict[str, Any],
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+    severity: str = "RED",
+) -> None:
+    write_dq_log(
+        con=observability_con,
+        check_name=check_name,
+        severity=severity,
+        status="PASS" if measured_value == 0.0 else "FAIL",
+        measured_value=measured_value,
+        threshold_value=0.0,
+        details=details,
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
+
+
+def _log_skipped_dq_check(
+    *,
+    observability_con,
+    check_name: str,
+    details: dict[str, Any],
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> None:
+    write_dq_log(
+        con=observability_con,
+        check_name=check_name,
+        severity="YELLOW",
+        status="SKIPPED",
+        measured_value=None,
+        threshold_value=None,
+        details=details,
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
+
+
+def _log_strategy_run_contract_checks(
+    *,
+    measured_con,
+    observability_con,
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> None:
+    if not _table_exists(measured_con, "silver", "strategy_runs"):
+        return
+
+    duplicate_rows = measured_con.execute(
+        """
+        SELECT run_id, count(*) AS row_count
+        FROM silver.strategy_runs
+        WHERE run_id IS NOT NULL
+        GROUP BY run_id
+        HAVING count(*) > 1
+        ORDER BY run_id
+        """
+    ).fetchall()
+    duplicate_run_ids = [
+        {"run_id": str(row[0]), "row_count": int(row[1] or 0)} for row in duplicate_rows
+    ]
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_silver_strategy_runs_unique_run_id",
+        measured_value=float(sum(row["row_count"] - 1 for row in duplicate_run_ids)),
+        details={
+            "table": "silver.strategy_runs",
+            "duplicate_run_ids": duplicate_run_ids,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+    if not _table_exists(measured_con, "ref", "run_types"):
+        _log_skipped_dq_check(
+            observability_con=observability_con,
+            check_name="dq_silver_strategy_runs_valid_run_type",
+            details={
+                "table": "silver.strategy_runs",
+                "required_reference_table": "ref.run_types",
+            },
+            run_id=run_id,
+            job_name=job_name,
+            partition_key=partition_key,
+        )
+    else:
+        invalid_run_type_rows = measured_con.execute(
+            """
+            SELECT sr.run_id, sr.run_type_id
+            FROM silver.strategy_runs AS sr
+            LEFT JOIN ref.run_types AS rt
+                ON lower(trim(sr.run_type_id)) = lower(trim(rt.run_type_code))
+               AND rt.is_active = TRUE
+            WHERE sr.run_type_id IS NULL
+               OR trim(sr.run_type_id) = ''
+               OR rt.run_type_code IS NULL
+            ORDER BY sr.run_id
+            """
+        ).fetchall()
+        invalid_run_types = [
+            {"run_id": str(row[0]), "run_type_id": None if row[1] is None else str(row[1])}
+            for row in invalid_run_type_rows
+        ]
+        _log_dq_count_check(
+            observability_con=observability_con,
+            check_name="dq_silver_strategy_runs_valid_run_type",
+            measured_value=float(len(invalid_run_types)),
+            details={
+                "table": "silver.strategy_runs",
+                "reference_table": "ref.run_types",
+                "invalid_run_types": invalid_run_types,
+            },
+            run_id=run_id,
+            job_name=job_name,
+            partition_key=partition_key,
+        )
+
+    requirement_rows = measured_con.execute(
+        """
+        SELECT run_id, run_type_id, simulation_type_id
+        FROM silver.strategy_runs
+        WHERE (
+                lower(trim(coalesce(run_type_id, ''))) = 'simulation'
+                AND simulation_type_id IS NULL
+              )
+           OR (
+                lower(trim(coalesce(run_type_id, ''))) <> 'simulation'
+                AND simulation_type_id IS NOT NULL
+              )
+        ORDER BY run_id
+        """
+    ).fetchall()
+    requirement_failures = [
+        {
+            "run_id": str(row[0]),
+            "run_type_id": None if row[1] is None else str(row[1]),
+            "simulation_type_id": None if row[2] is None else int(row[2]),
+        }
+        for row in requirement_rows
+    ]
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_silver_strategy_runs_simulation_type_required_scope",
+        measured_value=float(len(requirement_failures)),
+        details={
+            "table": "silver.strategy_runs",
+            "rule": "simulation_type_id is required for simulation runs and null otherwise",
+            "failing_runs": requirement_failures,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+    if not _table_exists(measured_con, "ref", "simulation_types"):
+        for check_name in (
+            "dq_silver_strategy_runs_simulation_type_exists",
+            "dq_silver_strategy_runs_simulation_type_active",
+            "dq_silver_strategy_runs_reportable_simulations_lookahead_safe",
+        ):
+            _log_skipped_dq_check(
+                observability_con=observability_con,
+                check_name=check_name,
+                details={
+                    "table": "silver.strategy_runs",
+                    "required_reference_table": "ref.simulation_types",
+                },
+                run_id=run_id,
+                job_name=job_name,
+                partition_key=partition_key,
+            )
+        return
+
+    missing_type_rows = measured_con.execute(
+        """
+        SELECT sr.run_id, sr.simulation_type_id
+        FROM silver.strategy_runs AS sr
+        LEFT JOIN ref.simulation_types AS st
+            ON sr.simulation_type_id = st.simulation_type_id
+        WHERE lower(trim(coalesce(sr.run_type_id, ''))) = 'simulation'
+          AND sr.simulation_type_id IS NOT NULL
+          AND st.simulation_type_id IS NULL
+        ORDER BY sr.run_id
+        """
+    ).fetchall()
+    missing_types = [
+        {"run_id": str(row[0]), "simulation_type_id": int(row[1])} for row in missing_type_rows
+    ]
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_silver_strategy_runs_simulation_type_exists",
+        measured_value=float(len(missing_types)),
+        details={
+            "table": "silver.strategy_runs",
+            "reference_table": "ref.simulation_types",
+            "failing_runs": missing_types,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+    inactive_type_rows = measured_con.execute(
+        """
+        SELECT
+            sr.run_id,
+            sr.simulation_type_id,
+            st.simulation_type_code,
+            st.is_active
+        FROM silver.strategy_runs AS sr
+        INNER JOIN ref.simulation_types AS st
+            ON sr.simulation_type_id = st.simulation_type_id
+        WHERE lower(trim(coalesce(sr.run_type_id, ''))) = 'simulation'
+          AND coalesce(st.is_active, FALSE) = FALSE
+        ORDER BY sr.run_id
+        """
+    ).fetchall()
+    inactive_types = [
+        {
+            "run_id": str(row[0]),
+            "simulation_type_id": int(row[1]),
+            "simulation_type_code": None if row[2] is None else str(row[2]),
+            "is_active": bool(row[3]),
+        }
+        for row in inactive_type_rows
+    ]
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_silver_strategy_runs_simulation_type_active",
+        measured_value=float(len(inactive_types)),
+        details={
+            "table": "silver.strategy_runs",
+            "reference_table": "ref.simulation_types",
+            "failing_runs": inactive_types,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+    unsafe_rows = measured_con.execute(
+        """
+        SELECT
+            sr.run_id,
+            sr.simulation_type_id,
+            st.simulation_type_code,
+            st.lookahead_safe_flag
+        FROM silver.strategy_runs AS sr
+        INNER JOIN ref.simulation_types AS st
+            ON sr.simulation_type_id = st.simulation_type_id
+        WHERE lower(trim(coalesce(sr.run_type_id, ''))) = 'simulation'
+          AND coalesce(sr.persist, TRUE) = TRUE
+          AND coalesce(st.lookahead_safe_flag, FALSE) = FALSE
+        ORDER BY sr.run_id
+        """
+    ).fetchall()
+    unsafe_reportable_runs = [
+        {
+            "run_id": str(row[0]),
+            "simulation_type_id": int(row[1]),
+            "simulation_type_code": None if row[2] is None else str(row[2]),
+            "lookahead_safe_flag": bool(row[3]),
+        }
+        for row in unsafe_rows
+    ]
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_silver_strategy_runs_reportable_simulations_lookahead_safe",
+        measured_value=float(len(unsafe_reportable_runs)),
+        details={
+            "table": "silver.strategy_runs",
+            "reference_table": "ref.simulation_types",
+            "rule": "persisted simulation runs must use lookahead-safe simulation types",
+            "failing_runs": unsafe_reportable_runs,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+
+def _log_simulation_result_checks(
+    *,
+    measured_con,
+    observability_con,
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> None:
+    if not _table_exists(measured_con, "silver", "strategy_runs"):
+        return
+
+    result_tables = [
+        ("gold.strategy_rankings", "strategy_rankings", "rebalance_date"),
+        ("gold.strategy_holdings", "strategy_holdings", "rebalance_date"),
+        ("gold.strategy_returns", "strategy_returns", "date"),
+    ]
+
+    future_results: list[dict[str, Any]] = []
+    for table_label, table_name, date_column in result_tables:
+        if not _table_exists(measured_con, "gold", table_name):
+            continue
+        rows = measured_con.execute(
+            f"""
+            SELECT
+                '{table_label}' AS table_name,
+                sr.run_id,
+                r.strategy_id,
+                CAST(r.{_quote_identifier(date_column)} AS DATE) AS result_date
+            FROM gold.{_quote_identifier(table_name)} AS r
+            INNER JOIN silver.strategy_runs AS sr
+                ON r.run_id = sr.run_id
+            WHERE lower(trim(coalesce(sr.run_type_id, ''))) = 'simulation'
+              AND CAST(r.{_quote_identifier(date_column)} AS DATE) > current_date
+            ORDER BY table_name, sr.run_id, result_date
+            """
+        ).fetchall()
+        future_results.extend(
+            {
+                "table": str(row[0]),
+                "run_id": str(row[1]),
+                "strategy_id": str(row[2]),
+                "result_date": str(row[3]),
+            }
+            for row in rows
+        )
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_gold_strategy_simulation_results_no_future_dates",
+        measured_value=float(len(future_results)),
+        details={
+            "tables": [table_label for table_label, _, _ in result_tables],
+            "failing_rows": future_results,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+    failed_run_outputs: list[dict[str, Any]] = []
+    for table_label, table_name in (
+        ("gold.strategy_holdings", "strategy_holdings"),
+        ("gold.strategy_returns", "strategy_returns"),
+    ):
+        if not _table_exists(measured_con, "gold", table_name):
+            continue
+        rows = measured_con.execute(
+            f"""
+            SELECT
+                '{table_label}' AS table_name,
+                sr.run_id,
+                r.strategy_id,
+                count(*) AS row_count
+            FROM gold.{_quote_identifier(table_name)} AS r
+            INNER JOIN silver.strategy_runs AS sr
+                ON r.run_id = sr.run_id
+            WHERE lower(trim(coalesce(sr.run_status, ''))) = 'failed'
+            GROUP BY sr.run_id, r.strategy_id
+            ORDER BY table_name, sr.run_id, r.strategy_id
+            """
+        ).fetchall()
+        failed_run_outputs.extend(
+            {
+                "table": str(row[0]),
+                "run_id": str(row[1]),
+                "strategy_id": str(row[2]),
+                "row_count": int(row[3] or 0),
+            }
+            for row in rows
+        )
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_gold_strategy_failed_runs_no_holdings_or_returns",
+        measured_value=float(sum(row["row_count"] for row in failed_run_outputs)),
+        details={
+            "tables": ["gold.strategy_holdings", "gold.strategy_returns"],
+            "failing_groups": failed_run_outputs,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
     )
 
 
@@ -932,10 +1493,8 @@ def _log_holdings_weight_sum_check(
         }
         for row in failing_rows
     ]
-    max_abs_deviation = max(
-        (group["abs_deviation"] for group in failing_groups),
-        default=0.0,
-    )
+    abs_deviations = [float(row[4]) for row in failing_rows]
+    max_abs_deviation = max(abs_deviations, default=0.0)
 
     write_dq_log(
         con=observability_con,
@@ -1078,14 +1637,44 @@ def _load_price_history(
     end_date: date,
 ) -> pd.DataFrame:
     if not symbols:
-        return pd.DataFrame(columns=["trade_date", "symbol", "price"])
+        return pd.DataFrame(
+            columns=["trade_date", "symbol", "open", "close", "close_fill", "vwap", "price"]
+        )
+    schema_rows = con.execute(
+        "DESCRIBE SELECT * FROM read_parquet(?, union_by_name = true)",
+        [PRICE_GLOB],
+    ).fetchall()
+    available_columns = {str(row[0]).lower() for row in schema_rows}
+    adjustment_ratio_expr = """
+        CASE
+            WHEN adjusted_close IS NOT NULL
+             AND close IS NOT NULL
+             AND CAST(close AS DOUBLE) > 0
+            THEN CAST(adjusted_close AS DOUBLE) / CAST(close AS DOUBLE)
+            ELSE 1.0
+        END
+    """
+    open_expr = (
+        f"CAST(open AS DOUBLE) * ({adjustment_ratio_expr})"
+        if "open" in available_columns
+        else "NULL::DOUBLE"
+    )
+    vwap_expr = (
+        f"CAST(vwap AS DOUBLE) * ({adjustment_ratio_expr})"
+        if "vwap" in available_columns
+        else "NULL::DOUBLE"
+    )
     return con.execute(
-        """
+        f"""
         SELECT
             CAST(trade_date AS DATE) AS trade_date,
             upper(trim(symbol)) AS symbol,
+            {open_expr} AS open,
+            CAST(close AS DOUBLE) AS close,
+            CAST(coalesce(adjusted_close, close) AS DOUBLE) AS close_fill,
+            {vwap_expr} AS vwap,
             CAST(coalesce(adjusted_close, close) AS DOUBLE) AS price
-        FROM read_parquet(?)
+        FROM read_parquet(?, union_by_name = true)
         WHERE upper(trim(symbol)) = ANY(?)
           AND CAST(trade_date AS DATE) >= ?
           AND CAST(trade_date AS DATE) <= ?
@@ -1133,12 +1722,101 @@ def _daily_symbol_returns(price_df: pd.DataFrame) -> pd.DataFrame:
     frame.loc[valid_prices, "asset_return"] = (
         frame.loc[valid_prices, "price"] / frame.loc[valid_prices, "prev_price"]
     ) - 1.0
-    extreme_mask = (
-        frame["asset_return"].notna()
-        & (frame["asset_return"].abs() > MAX_ABS_DAILY_SECURITY_RETURN)
+    extreme_mask = frame["asset_return"].notna() & (
+        frame["asset_return"].abs() > MAX_ABS_DAILY_SECURITY_RETURN
     )
     frame.loc[extreme_mask, "asset_return"] = pd.NA
     return frame[["trade_date", "symbol", "asset_return"]]
+
+
+def _fill_price_column(fill_price_basis: str) -> str:
+    normalized_basis = fill_price_basis.strip().lower()
+    if normalized_basis in {"open", "next_open"}:
+        return "open"
+    if normalized_basis == "vwap":
+        return "vwap"
+    return "close_fill"
+
+
+def _simulation_trade_price_returns(
+    price_df: pd.DataFrame,
+    *,
+    simulation_type: SimulationTypeConfig,
+) -> pd.DataFrame:
+    if price_df.empty:
+        return pd.DataFrame(columns=["trade_date", "symbol", "asset_return"])
+
+    frame = price_df.sort_values(["symbol", "trade_date"], kind="stable").copy()
+    fill_column = _fill_price_column(simulation_type.fill_price_basis)
+    frame["entry_price"] = pd.to_numeric(frame[fill_column], errors="coerce")
+    frame["close_fill"] = pd.to_numeric(frame["close_fill"], errors="coerce")
+    frame["prev_close"] = frame.groupby("symbol")["close_fill"].shift(1)
+
+    same_session_fill = simulation_type.fill_price_basis == "close"
+    entry_basis = frame["prev_close"] if same_session_fill else frame["entry_price"]
+    valid_prices = (
+        frame["close_fill"].notna()
+        & entry_basis.notna()
+        & frame["close_fill"].gt(0)
+        & entry_basis.gt(0)
+    )
+    frame["asset_return"] = pd.NA
+    frame.loc[valid_prices, "asset_return"] = (
+        frame.loc[valid_prices, "close_fill"] / entry_basis.loc[valid_prices]
+    ) - 1.0
+    extreme_mask = frame["asset_return"].notna() & (
+        frame["asset_return"].abs() > MAX_ABS_DAILY_SECURITY_RETURN
+    )
+    frame.loc[extreme_mask, "asset_return"] = pd.NA
+    return frame[["trade_date", "symbol", "asset_return"]]
+
+
+def _volatility_slippage_bps(
+    returns_df: pd.DataFrame,
+    *,
+    trade_day: date,
+    symbols: list[str],
+    simulation_type: SimulationTypeConfig,
+) -> float:
+    params = simulation_type.slippage_params
+    window_days = int(params.get("volatility_window_days") or 21)
+    base_bps = float(params.get("base_bps") or 0.0)
+    volatility_multiplier = float(params.get("volatility_multiplier") or 0.0)
+    history = returns_df[
+        (pd.to_datetime(returns_df["trade_date"]).dt.date < trade_day)
+        & (returns_df["symbol"].isin(symbols))
+    ].copy()
+    if history.empty:
+        return base_bps
+    recent = history.sort_values("trade_date", kind="stable").groupby("symbol").tail(window_days)
+    realized_vol = pd.to_numeric(recent["asset_return"], errors="coerce").dropna().std(ddof=0)
+    if pd.isna(realized_vol):
+        return base_bps
+    return base_bps + (float(realized_vol) * 10_000.0 * volatility_multiplier)
+
+
+def _slippage_bps_for_trade(
+    returns_df: pd.DataFrame,
+    *,
+    trade_day: date,
+    symbols: list[str],
+    simulation_type: SimulationTypeConfig,
+) -> float:
+    if simulation_type.slippage_model == "none":
+        return 0.0
+    if simulation_type.slippage_model == "fixed_bps":
+        return simulation_type.slippage_bps
+    if simulation_type.slippage_model == "volatility_based":
+        return _volatility_slippage_bps(
+            returns_df,
+            trade_day=trade_day,
+            symbols=symbols,
+            simulation_type=simulation_type,
+        )
+    raise ValueError(
+        "Unsupported slippage_model for "
+        f"{simulation_type.simulation_type_code}: {simulation_type.slippage_model}"
+    )
 
 
 def _next_trading_date(dates: list[date], current_date: date) -> date | None:
@@ -1154,24 +1832,34 @@ def _expected_return_dates_for_strategy(
 ) -> list[date]:
     holdings_rows = con.execute(
         """
-        SELECT DISTINCT rebalance_date
+        SELECT DISTINCT rebalance_date, symbol
         FROM gold.strategy_holdings
         WHERE run_id = ?
-        ORDER BY rebalance_date
+        ORDER BY rebalance_date, symbol
         """,
         [strategy.run_id],
     ).fetchall()
-    rebalance_dates = [
-        pd.Timestamp(row[0]).date() for row in holdings_rows if row[0] is not None
-    ]
+    rebalance_dates = sorted(
+        {pd.Timestamp(row[0]).date() for row in holdings_rows if row[0] is not None}
+    )
     if not rebalance_dates:
         return []
 
+    symbols = sorted(
+        {
+            strategy.benchmark_symbol.strip().upper(),
+            *[
+                str(row[1]).strip().upper()
+                for row in holdings_rows
+                if row[1] not in (None, "")
+            ],
+        }
+    )
     trading_dates = _load_distinct_trading_dates(
         con,
         start_date=rebalance_dates[0],
         end_date=strategy.end_date or date(2999, 12, 31),
-        symbols=[strategy.benchmark_symbol.strip().upper()],
+        symbols=symbols,
     )
     if not trading_dates:
         return []
@@ -1197,6 +1885,7 @@ def _build_returns_for_strategy(
     strategy: StrategyConfig,
     asof_ts: datetime,
 ) -> list[dict[str, Any]]:
+    simulation_type = _simulation_type_for_run(con, strategy.run_id)
     holdings_rows = con.execute(
         """
         SELECT rebalance_date, symbol, target_weight
@@ -1227,8 +1916,12 @@ def _build_returns_for_strategy(
     if price_df.empty:
         return []
 
-    returns_df = _daily_symbol_returns(price_df)
-    trading_dates = sorted(pd.to_datetime(returns_df["trade_date"]).dt.date.unique().tolist())
+    close_returns_df = _daily_symbol_returns(price_df)
+    trade_returns_df = _simulation_trade_price_returns(
+        price_df,
+        simulation_type=simulation_type,
+    )
+    trading_dates = sorted(pd.to_datetime(close_returns_df["trade_date"]).dt.date.unique().tolist())
     holdings_df["rebalance_date"] = pd.to_datetime(holdings_df["rebalance_date"]).dt.date
 
     rebalance_dates = sorted(holdings_df["rebalance_date"].unique().tolist())
@@ -1249,12 +1942,14 @@ def _build_returns_for_strategy(
         }
         if previous_weights is None:
             turnover = 0.0
+            trade_notional = sum(abs(weight) for weight in current_weights.values())
         else:
             all_symbols = set(previous_weights) | set(current_weights)
-            turnover = 0.5 * sum(
+            trade_notional = sum(
                 abs(current_weights.get(symbol, 0.0) - previous_weights.get(symbol, 0.0))
                 for symbol in all_symbols
             )
+            turnover = 0.5 * trade_notional
         previous_weights = current_weights
         periods.append(
             {
@@ -1262,35 +1957,34 @@ def _build_returns_for_strategy(
                 "effective_end": next_rebalance,
                 "weights": current_weights,
                 "turnover": turnover,
+                "trade_notional": trade_notional,
             }
         )
 
     if not periods:
         return []
 
-    asset_return_wide = returns_df.pivot(
+    trade_return_wide = trade_returns_df.pivot(
+        index="trade_date",
+        columns="symbol",
+        values="asset_return",
+    )
+    close_return_wide = close_returns_df.pivot(
         index="trade_date",
         columns="symbol",
         values="asset_return",
     )
     benchmark_returns = (
-        asset_return_wide[benchmark_symbol]
-        if benchmark_symbol in asset_return_wide.columns
+        close_return_wide[benchmark_symbol]
+        if benchmark_symbol in close_return_wide.columns
         else pd.Series(dtype="float64")
     )
-    benchmark_trade_dates = (
-        sorted(pd.to_datetime(benchmark_returns.dropna().index).date.tolist())
-        if not benchmark_returns.empty
-        else []
-    )
-    if not benchmark_trade_dates:
-        return []
     daily_rows: list[dict[str, Any]] = []
     cumulative_wealth = 1.0
     peak_wealth = 1.0
 
     for period in periods:
-        for trade_day in benchmark_trade_dates:
+        for trade_day in trading_dates:
             if trade_day < period["effective_start"]:
                 continue
             if period["effective_end"] is not None and trade_day >= period["effective_end"]:
@@ -1298,19 +1992,52 @@ def _build_returns_for_strategy(
             trade_date = pd.Timestamp(trade_day)
             weights = period["weights"]
             weighted_returns = []
+            held_symbols_expected = len(weights)
+            held_symbols_with_returns = 0
+            missing_symbols: list[str] = []
+            period_return_wide = (
+                trade_return_wide if trade_day == period["effective_start"] else close_return_wide
+            )
             for symbol, weight in weights.items():
-                symbol_return = asset_return_wide.at[trade_date, symbol]
-                weighted_returns.append(
-                    weight * (0.0 if pd.isna(symbol_return) else float(symbol_return))
+                missing_return_row = (
+                    symbol not in period_return_wide.columns
+                    or trade_date not in period_return_wide.index
                 )
-            portfolio_return = float(sum(weighted_returns))
+                if missing_return_row:
+                    symbol_return = pd.NA
+                else:
+                    symbol_return = period_return_wide.at[trade_date, symbol]
+                if pd.isna(symbol_return):
+                    missing_symbols.append(symbol)
+                    continue
+                held_symbols_with_returns += 1
+                weighted_returns.append(weight * float(symbol_return))
+            portfolio_return = None if missing_symbols else float(sum(weighted_returns))
+            if (
+                portfolio_return is not None
+                and trade_day == period["effective_start"]
+                and period["trade_notional"]
+            ):
+                traded_symbols = sorted(weights)
+                slippage_bps = _slippage_bps_for_trade(
+                    close_returns_df,
+                    trade_day=trade_day,
+                    symbols=traded_symbols,
+                    simulation_type=simulation_type,
+                )
+                portfolio_return -= float(period["trade_notional"]) * (slippage_bps / 10_000.0)
             benchmark_return = None
             if not benchmark_returns.empty and trade_date in benchmark_returns.index:
                 bench_value = benchmark_returns.loc[trade_date]
                 benchmark_return = None if pd.isna(bench_value) else float(bench_value)
-            cumulative_wealth *= 1.0 + portfolio_return
-            peak_wealth = max(peak_wealth, cumulative_wealth)
-            drawdown = (cumulative_wealth / peak_wealth) - 1.0 if peak_wealth else None
+            if portfolio_return is None:
+                cumulative_return = None
+                drawdown = None
+            else:
+                cumulative_wealth *= 1.0 + portfolio_return
+                peak_wealth = max(peak_wealth, cumulative_wealth)
+                cumulative_return = cumulative_wealth - 1.0
+                drawdown = (cumulative_wealth / peak_wealth) - 1.0 if peak_wealth else None
             daily_rows.append(
                 {
                     "run_id": strategy.run_id,
@@ -1319,14 +2046,19 @@ def _build_returns_for_strategy(
                     "portfolio_return": portfolio_return,
                     "benchmark_return": benchmark_return,
                     "excess_return": (
-                        None if benchmark_return is None else portfolio_return - benchmark_return
+                        None
+                        if benchmark_return is None or portfolio_return is None
+                        else portfolio_return - benchmark_return
                     ),
-                    "cumulative_return": cumulative_wealth - 1.0,
+                    "cumulative_return": cumulative_return,
                     "drawdown": drawdown,
                     "turnover": (
                         period["turnover"] if trade_day == period["effective_start"] else 0.0
                     ),
                     "holdings_count": len(weights),
+                    "held_symbols_expected": held_symbols_expected,
+                    "held_symbols_with_returns": held_symbols_with_returns,
+                    "missing_symbols": ",".join(sorted(missing_symbols)) or None,
                     "asof_ts": asof_ts,
                 }
             )
@@ -1369,6 +2101,9 @@ def _materialize_returns(
             "drawdown",
             "turnover",
             "holdings_count",
+            "held_symbols_expected",
+            "held_symbols_with_returns",
+            "missing_symbols",
             "asof_ts",
         ]
     ]
@@ -1531,6 +2266,67 @@ def _log_strategy_benchmark_series_check(
     return measured_value == 0.0
 
 
+def _log_strategy_held_return_coverage_check(
+    *,
+    measured_con,
+    observability_con,
+    strategies: list[StrategyConfig],
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> bool:
+    run_ids = _current_run_ids(strategies)
+    if not run_ids:
+        return True
+
+    missing_rows = measured_con.execute(
+        """
+        SELECT
+            run_id,
+            strategy_id,
+            date,
+            held_symbols_expected,
+            held_symbols_with_returns,
+            missing_symbols
+        FROM gold.strategy_returns
+        WHERE run_id = ANY(?)
+          AND coalesce(held_symbols_with_returns, 0) < coalesce(held_symbols_expected, 0)
+        ORDER BY run_id, date
+        """,
+        [run_ids],
+    ).fetchall()
+    failing_dates = [
+        {
+            "run_id": str(row[0]),
+            "strategy_id": str(row[1]),
+            "date": str(row[2]),
+            "held_symbols_expected": int(row[3] or 0),
+            "held_symbols_with_returns": int(row[4] or 0),
+            "missing_symbols": [] if row[5] in (None, "") else str(row[5]).split(","),
+        }
+        for row in missing_rows
+    ]
+    measured_value = float(len(failing_dates))
+    write_dq_log(
+        con=observability_con,
+        check_name="dq_gold_strategy_returns_held_symbol_return_coverage",
+        severity="RED",
+        status="PASS" if measured_value == 0.0 else "FAIL",
+        measured_value=measured_value,
+        threshold_value=0.0,
+        details={
+            "table": "gold.strategy_returns",
+            "run_ids": run_ids,
+            "failing_dates": failing_dates,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
+    return measured_value == 0.0
+
+
 def _annualized_return(total_return: float, periods: int) -> float | None:
     if periods <= 0 or (1.0 + total_return) <= 0:
         return None
@@ -1544,6 +2340,7 @@ def _performance_row(
     asof_ts: datetime,
 ) -> dict[str, Any]:
     frame = returns_df.sort_values("date", kind="stable").copy()
+    frame = frame.dropna(subset=["portfolio_return", "cumulative_return"])
     portfolio = frame["portfolio_return"].astype(float)
     benchmark = frame["benchmark_return"].astype(float)
     excess = frame["excess_return"].astype(float)
@@ -1569,11 +2366,7 @@ def _performance_row(
     alpha = (
         float(excess.mean()) * 252.0
         if periods and math.isfinite(float(excess.mean()))
-        else (
-            (cagr - benchmark_cagr)
-            if cagr is not None and benchmark_cagr is not None
-            else None
-        )
+        else ((cagr - benchmark_cagr) if cagr is not None and benchmark_cagr is not None else None)
     )
     return {
         "run_id": run_id,
@@ -1714,6 +2507,13 @@ def gold_strategy_holdings(context: AssetExecutionContext) -> None:
     )
     asof_ts = _now_utc_naive()
     try:
+        _log_strategy_run_contract_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
         row_count = _materialize_holdings(con, strategies, asof_ts=asof_ts)
         _update_strategy_run_row_counts(
             con,
@@ -1758,8 +2558,22 @@ def gold_strategy_holdings(context: AssetExecutionContext) -> None:
             job_name=_safe_job_name(context),
             partition_key=_safe_partition_key(context),
         )
+        _log_simulation_result_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
     except Exception as exc:
         _update_strategy_runs_failure(con, strategies, asof_ts=asof_ts, error_message=str(exc))
+        _log_simulation_result_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
         raise
     context.add_output_metadata(
         {
@@ -1788,6 +2602,13 @@ def gold_strategy_returns(context: AssetExecutionContext) -> None:
     )
     asof_ts = _now_utc_naive()
     try:
+        _log_strategy_run_contract_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
         row_count = _materialize_returns(con, strategies, asof_ts=asof_ts)
         _update_strategy_run_row_counts(
             con,
@@ -1804,8 +2625,30 @@ def gold_strategy_returns(context: AssetExecutionContext) -> None:
             job_name=_safe_job_name(context),
             partition_key=_safe_partition_key(context),
         )
+        _log_strategy_held_return_coverage_check(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            strategies=strategies,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
+        _log_simulation_result_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
     except Exception as exc:
         _update_strategy_runs_failure(con, strategies, asof_ts=asof_ts, error_message=str(exc))
+        _log_simulation_result_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
         raise
     context.add_output_metadata(
         {
@@ -1834,6 +2677,13 @@ def gold_strategy_performance(context: AssetExecutionContext) -> None:
     )
     asof_ts = _now_utc_naive()
     try:
+        _log_strategy_run_contract_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
         benchmark_series_ready = _log_strategy_benchmark_series_check(
             measured_con=con,
             observability_con=context.resources.duckdb,
@@ -1856,8 +2706,22 @@ def gold_strategy_performance(context: AssetExecutionContext) -> None:
             asof_ts=asof_ts,
         )
         _update_strategy_runs_success(con, strategies, asof_ts=asof_ts)
+        _log_simulation_result_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
     except Exception as exc:
         _update_strategy_runs_failure(con, strategies, asof_ts=asof_ts, error_message=str(exc))
+        _log_simulation_result_checks(
+            measured_con=con,
+            observability_con=context.resources.duckdb,
+            run_id=_safe_run_id(context),
+            job_name=_safe_job_name(context),
+            partition_key=_safe_partition_key(context),
+        )
         raise
     context.add_output_metadata(
         {

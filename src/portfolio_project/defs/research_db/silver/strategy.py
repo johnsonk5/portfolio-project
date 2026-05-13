@@ -34,6 +34,8 @@ STRATEGY_DEFINITIONS_COLUMNS: list[tuple[str, str]] = [
 STRATEGY_RUNS_COLUMNS: list[tuple[str, str]] = [
     ("run_id", "VARCHAR"),
     ("strategy_id", "VARCHAR"),
+    ("run_type_id", "VARCHAR"),
+    ("simulation_type_id", "INTEGER"),
     ("run_status", "VARCHAR"),
     ("dataset_version", "VARCHAR"),
     ("code_version", "VARCHAR"),
@@ -570,6 +572,16 @@ def _table_metadata(con, *, schema: str, table: str) -> dict[str, int]:
     }
 
 
+def _backfill_strategy_run_defaults(con) -> None:
+    con.execute(
+        """
+        UPDATE silver.strategy_runs
+        SET run_type_id = 'backtest'
+        WHERE run_type_id IS NULL
+        """
+    )
+
+
 @asset(
     name="strategy_definitions",
     key_prefix=["silver"],
@@ -623,6 +635,7 @@ def silver_strategy_runs(context: AssetExecutionContext) -> None:
         table="strategy_runs",
         columns=STRATEGY_RUNS_COLUMNS,
     )
+    _backfill_strategy_run_defaults(con)
     table_metadata = _table_metadata(con, schema="silver", table="strategy_runs")
     context.add_output_metadata({"table": "silver.strategy_runs", **table_metadata})
 
