@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 
 import duckdb
@@ -5,6 +6,7 @@ import pytest
 from dagster import build_asset_context
 
 import portfolio_project.defs.research_db.ref.simulation as simulation_ref_module
+import portfolio_project.defs.research_db.ref.trading_days as trading_days_ref_module
 
 TEST_SIMULATION_REFERENCE_YAML = """
 simulation_types:
@@ -116,6 +118,37 @@ def test_simulation_reference_assets_seed_ref_tables_from_yaml(
         ("live", True),
         ("paper", True),
         ("simulation", True),
+    ]
+
+
+def test_invalid_trading_days_reference_asset_seeds_ref_table() -> None:
+    con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con})
+
+    trading_days_ref_module.ref_invalid_trading_days(context)
+
+    assert _describe_columns(con, "invalid_trading_days") == (
+        trading_days_ref_module.INVALID_TRADING_DAYS_COLUMNS
+    )
+    rows = con.execute(
+        """
+        SELECT invalid_date, reason_code
+        FROM ref.invalid_trading_days
+        ORDER BY invalid_date
+        """
+    ).fetchall()
+    assert rows == [
+        (date(2001, 9, 11), "special_market_closure"),
+        (date(2001, 9, 12), "special_market_closure"),
+        (date(2001, 9, 13), "special_market_closure"),
+        (date(2001, 9, 14), "special_market_closure"),
+        (date(2004, 6, 11), "special_market_closure"),
+        (date(2005, 6, 15), "bad_source_partition"),
+        (date(2007, 1, 2), "special_market_closure"),
+        (date(2012, 10, 29), "special_market_closure"),
+        (date(2012, 10, 30), "special_market_closure"),
+        (date(2018, 12, 5), "special_market_closure"),
+        (date(2025, 1, 9), "special_market_closure"),
     ]
 
 

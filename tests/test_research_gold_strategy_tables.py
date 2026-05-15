@@ -1097,9 +1097,9 @@ def test_strategy_returns_use_held_symbol_calendar_and_flag_missing_benchmark(
     ).to_parquet(month_dir_mar / "date=2024-03-01.parquet", index=False)
     pd.DataFrame(
         [
-            {"trade_date": "2024-03-29", "symbol": "AAA", "close": 106.0, "adjusted_close": 106.0},
+            {"trade_date": "2024-03-28", "symbol": "AAA", "close": 106.0, "adjusted_close": 106.0},
         ]
-    ).to_parquet(month_dir_mar / "date=2024-03-29.parquet", index=False)
+    ).to_parquet(month_dir_mar / "date=2024-03-28.parquet", index=False)
 
     gold_strategy_module.gold_strategy_rankings(context)
     gold_strategy_module.gold_strategy_holdings(context)
@@ -1118,7 +1118,7 @@ def test_strategy_returns_use_held_symbol_calendar_and_flag_missing_benchmark(
         """
         SELECT strategy_id, portfolio_return, benchmark_return, missing_symbols
         FROM gold.strategy_returns
-        WHERE date = DATE '2024-03-29'
+        WHERE date = DATE '2024-03-28'
         ORDER BY strategy_id
         """
     ).fetchall()
@@ -2208,3 +2208,86 @@ def test_composite_underrated_momentum_ranking_requires_positive_momentum() -> N
     ranked_symbols = [row["symbol"] for row in ranking_rows]
     assert ranked_symbols == ["AAA", "BBB"]
     assert all(row["score"] is not None for row in ranking_rows)
+
+
+def test_strategy_calendar_helpers_exclude_market_holidays(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA IF NOT EXISTS silver")
+    signals_df = pd.DataFrame(
+        [
+            {"date": "2026-02-13", "symbol": "AAA"},
+            {"date": "2026-02-16", "symbol": "AAA"},
+            {"date": "2026-02-17", "symbol": "AAA"},
+        ]
+    )
+    con.register("signals_df", signals_df)
+    con.execute("CREATE TABLE silver.signals_daily AS SELECT * FROM signals_df")
+
+    strategy = gold_strategy_module.StrategyConfig(
+        strategy_id="strategy_a",
+        rebalance_frequency="Daily",
+        benchmark_symbol="SPY",
+        target_count=1,
+        weighting_method="equal",
+        long_short_flag=False,
+        start_date=date(2026, 2, 13),
+        end_date=date(2026, 2, 17),
+        config={},
+        run_id="run-1:strategy_a",
+    )
+
+    assert gold_strategy_module._rebalance_dates_for_strategy(con, strategy) == [
+        date(2026, 2, 13),
+        date(2026, 2, 17),
+    ]
+
+    price_dir = tmp_path / "silver" / "research_daily_prices" / "month=2026-02"
+    price_dir.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "trade_date": "2026-02-13",
+                "symbol": "AAA",
+                "close": 100.0,
+                "adjusted_close": 100.0,
+            },
+            {
+                "trade_date": "2026-02-16",
+                "symbol": "AAA",
+                "close": 101.0,
+                "adjusted_close": 101.0,
+            },
+            {
+                "trade_date": "2026-02-17",
+                "symbol": "AAA",
+                "close": 102.0,
+                "adjusted_close": 102.0,
+            },
+        ]
+    ).to_parquet(price_dir / "date=2026-02-13.parquet", index=False)
+    monkeypatch.setattr(
+        gold_strategy_module,
+        "PRICE_GLOB",
+        (tmp_path / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet").as_posix(),
+    )
+
+    assert gold_strategy_module._load_distinct_trading_dates(
+        con,
+        start_date=date(2026, 2, 13),
+        end_date=date(2026, 2, 17),
+        symbols=["AAA"],
+    ) == [date(2026, 2, 13), date(2026, 2, 17)]
+
+    price_df = gold_strategy_module._load_price_history(
+        con,
+        symbols=["AAA"],
+        start_date=date(2026, 2, 13),
+        end_date=date(2026, 2, 17),
+    )
+    assert pd.to_datetime(price_df["trade_date"]).dt.date.tolist() == [
+        date(2026, 2, 13),
+        date(2026, 2, 17),
+    ]

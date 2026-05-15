@@ -30,6 +30,10 @@ from portfolio_project.defs.research_db.silver.strategy import (
     silver_strategy_runs,
 )
 from portfolio_project.defs.research_db.silver.universe import silver_universe_membership_daily
+from portfolio_project.defs.research_db.trading_calendar import (
+    filter_us_trading_days,
+    is_us_trading_day,
+)
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 PRICE_GLOB = (
@@ -510,7 +514,7 @@ def _rebalance_dates_for_strategy(con, strategy: StrategyConfig) -> list[date]:
             """,
             [start_date, end_date],
         ).fetchall()
-        return [row[0] for row in rows if row[0] is not None]
+        return [row[0] for row in rows if row[0] is not None and is_us_trading_day(row[0])]
 
     if rebalance_frequency == "weekly":
         rows = con.execute(
@@ -528,7 +532,7 @@ def _rebalance_dates_for_strategy(con, strategy: StrategyConfig) -> list[date]:
             """,
             [start_date, end_date],
         ).fetchall()
-        return [row[0] for row in rows if row[0] is not None]
+        return [row[0] for row in rows if row[0] is not None and is_us_trading_day(row[0])]
 
     rows = con.execute(
         """
@@ -545,7 +549,7 @@ def _rebalance_dates_for_strategy(con, strategy: StrategyConfig) -> list[date]:
         """,
         [start_date, end_date],
     ).fetchall()
-    return [row[0] for row in rows if row[0] is not None]
+    return [row[0] for row in rows if row[0] is not None and is_us_trading_day(row[0])]
 
 
 def _build_rankings_for_strategy(
@@ -1664,7 +1668,7 @@ def _load_price_history(
         if "vwap" in available_columns
         else "NULL::DOUBLE"
     )
-    return con.execute(
+    price_df = con.execute(
         f"""
         SELECT
             CAST(trade_date AS DATE) AS trade_date,
@@ -1683,6 +1687,7 @@ def _load_price_history(
         """,
         [PRICE_GLOB, symbols, start_date, end_date],
     ).fetch_df()
+    return filter_us_trading_days(price_df, "trade_date")
 
 
 def _load_distinct_trading_dates(
@@ -1704,7 +1709,7 @@ def _load_distinct_trading_dates(
         params.append(symbols)
     sql += "\nORDER BY trade_date"
     rows = con.execute(sql, params).fetchall()
-    return [row[0] for row in rows if row[0] is not None]
+    return [row[0] for row in rows if row[0] is not None and is_us_trading_day(row[0])]
 
 
 def _daily_symbol_returns(price_df: pd.DataFrame) -> pd.DataFrame:
@@ -1848,11 +1853,7 @@ def _expected_return_dates_for_strategy(
     symbols = sorted(
         {
             strategy.benchmark_symbol.strip().upper(),
-            *[
-                str(row[1]).strip().upper()
-                for row in holdings_rows
-                if row[1] not in (None, "")
-            ],
+            *[str(row[1]).strip().upper() for row in holdings_rows if row[1] not in (None, "")],
         }
     )
     trading_dates = _load_distinct_trading_dates(

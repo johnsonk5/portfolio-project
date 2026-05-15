@@ -249,3 +249,59 @@ def test_universe_eligibility_filters_no_metadata_artifacts(
         """
     ).fetchall()
     assert members == [("AAPL",)]
+
+
+def test_universe_eligibility_excludes_market_holidays(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root = tmp_path / "data"
+    monkeypatch.setattr(universe_module, "DATA_ROOT", data_root)
+    monkeypatch.setattr(universe_module, "LIQUIDITY_LOOKBACK_DAYS", 2)
+    monkeypatch.setattr(universe_module, "UNIVERSE_SIZE", 10)
+    monkeypatch.setattr(universe_module, "ELIGIBILITY_MIN_CLOSE", 5.0)
+    monkeypatch.setattr(universe_module, "ELIGIBILITY_MIN_AVG_DOLLAR_VOLUME_63D", 1.0)
+    monkeypatch.setattr(universe_module, "ELIGIBILITY_CONTINUITY_LOOKBACK_DAYS", 2)
+    monkeypatch.setattr(universe_module, "ELIGIBILITY_MIN_TRADING_DAYS_252D", 1)
+    monkeypatch.setattr(universe_module, "ELIGIBILITY_MIN_POSITIVE_VOLUME_DAYS_252D", 1)
+
+    for partition_key in ["2026-02-13", "2026-02-16", "2026-02-17"]:
+        _write_silver_prices_daily(
+            data_root,
+            partition_key,
+            pd.DataFrame(
+                {
+                    "symbol": ["AAPL"],
+                    "timestamp": [f"{partition_key}T21:00:00Z"],
+                    "trade_date": [partition_key],
+                    "close": [100.0],
+                    "volume": [1000],
+                    "dollar_volume": [100000.0],
+                    "source": ["eodhd"],
+                    "ingested_ts": [f"{partition_key}T22:00:00Z"],
+                }
+            ),
+        )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con, "duckdb": obs_con})
+    universe_module.silver_universe_membership_daily(context)
+
+    dates = con.execute(
+        """
+        SELECT DISTINCT date
+        FROM silver.universe_eligibility_daily
+        ORDER BY date
+        """
+    ).fetchall()
+    assert dates == [(date(2026, 2, 13),), (date(2026, 2, 17),)]
+
+    members = con.execute(
+        """
+        SELECT DISTINCT member_date
+        FROM silver.universe_membership_daily
+        ORDER BY member_date
+        """
+    ).fetchall()
+    assert members == [(date(2026, 2, 13),), (date(2026, 2, 17),)]

@@ -28,3 +28,13 @@
 | `run_type_code` | `object` | Run type: `backtest`, `simulation`, `paper`, or `live`. |
 | `description` | `object` | Human-readable description. |
 | `is_active` | `bool` | Active run type flag. |
+
+## `ref.invalid_trading_days`
+
+*DuckDB Table in ref schema*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `invalid_date` | `date` | Date excluded from research trading calendars. |
+| `reason_code` | `object` | Exclusion category, such as `special_market_closure` or `bad_source_partition`. |
+| `description` | `object` | Human-readable reason for excluding the date. |
