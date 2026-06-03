@@ -126,6 +126,41 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | `source` | `object` | Source label (`alpaca`). |
 | `ingested_ts` | `timestamp` | Ingest timestamp. |
 
+## `silver.signals_daily`
+
+*DuckDB Table in the research DuckDB silver schema*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `date` | `date` | Trading date for the signal row. |
+| `symbol` | `object` | Canonical ticker symbol. |
+| `close` | `float` | Daily close used for price-level signals. |
+| `adjusted_close` | `float` | Adjusted close when available, otherwise close. |
+| `returns_1d` | `float` | 1-day return. |
+| `returns_5d` | `float` | 5-day return. |
+| `returns_10d` | `float` | 10-day return. |
+| `returns_21d` | `float` | 21-day return. |
+| `returns_63d` | `float` | 63-day return. |
+| `returns_126d` | `float` | 126-day return. |
+| `returns_252d` | `float` | 252-day return. |
+| `momentum_12_1` | `float` | 12-1 momentum using the t-21 and t-252 return prices. |
+| `sma_20` | `float` | 20-day simple moving average of close. |
+| `sma_50` | `float` | 50-day simple moving average of close. |
+| `sma_200` | `float` | 200-day simple moving average of close. |
+| `price_to_sma_50` | `float` | `close / sma_50`. |
+| `price_to_sma_200` | `float` | `close / sma_200`. |
+| `sma_50_to_200` | `float` | `sma_50 / sma_200`. |
+| `realized_vol_21d` | `float` | 21-day annualized realized volatility. |
+| `realized_vol_63d` | `float` | 63-day annualized realized volatility. |
+| `drawdown_from_252d_high` | `float` | `close / rolling_252d_high - 1`. |
+| `pct_below_52w_high` | `float` | `(rolling_252d_high - close) / rolling_252d_high`. |
+| `rolling_252d_high` | `float` | Rolling 252-trading-day high of close. |
+| `rolling_252d_low` | `float` | Rolling 252-trading-day low of close. |
+| `avg_dollar_volume_21d` | `float` | Rolling 21-day average dollar volume. |
+| `avg_dollar_volume_63d` | `float` | Rolling 63-day average dollar volume. |
+| `signal_version` | `object` | Signal definition version. |
+| `load_timestamp` | `timestamp` | Signal table load timestamp. |
+
 ## `silver.universe_membership_events`
 
 *DuckDB Table in silver schema*

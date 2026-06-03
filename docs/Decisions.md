@@ -1,6 +1,6 @@
 # Decisions
 
-This document records important architecture, tech stack, and operating decisions that are already in effect or explicitly planned for Phase 2.
+This document records important architecture, tech stack, and operating decisions that are already in effect.
 
 ## Current Decisions
 
@@ -16,7 +16,7 @@ This document records important architecture, tech stack, and operating decision
 - Why: The repo and docs are organized around Bronze, Silver, Gold, and Observability layers. This separates raw ingestion, normalized datasets, curated analytics, and operational monitoring.
 - Current shape:
   - Bronze: source-like raw outputs in partitioned parquet.
-  - Silver: normalized, join-ready datasets, mostly in parquet with DuckDB references/views.
+  - Silver: normalized, join-ready datasets. Storage varies between partitioned parquet and DuckDB tables based on data volume and access pattern.
   - Gold: analytics and dashboard-serving tables in DuckDB.
   - Observability: run logs, freshness checks, and data quality checks in DuckDB.
 
@@ -52,11 +52,12 @@ This document records important architecture, tech stack, and operating decision
   - The current client supports historical market data plus trading/asset metadata access.
 
 ### 7. EODHD is the historical research daily price provider
-- Status: Accepted for implementation
+- Status: Accepted
 - Why: The research layer needs broad daily US equity history back to 2000, and EODHD provides bulk historical end-of-day coverage without relying on Yahoo Finance scraping.
 - Notes:
   - API credentials are provided via environment variables.
   - Bronze research daily prices are stored separately from the Alpaca recent-window dataset.
+  - EODHD is treated as a historical/backfill source rather than a scheduled live ingestion source.
 
 ### 8. Reliability is treated as a first-class platform concern
 - Status: Accepted
@@ -84,23 +85,23 @@ This document records important architecture, tech stack, and operating decision
   - `daily_news_schedule`: `0 9 * * *`
   - `wikipedia_daily_schedule`: `45 8 * * *`
 
-## Phase 2 Decisions
+## Research Decisions
 
 ### 11. Research workloads will live in a separate DuckDB database
-- Status: Accepted for implementation
-- Why: Phase 2 introduces research ingestion, factor data, backtesting, and strategy outputs that should not share the same database lifecycle as the live/app-serving store.
+- Status: Accepted
+- Why: Research ingestion, factor data, backtesting, and strategy outputs should not share the same database lifecycle as the live/app-serving store.
 - Intent:
   - Keep research assets distinct from the current live/app database
   - Keep observability centralized in the portfolio/app database instead of adding a separate research observability schema
   - Reduce coupling between experimental strategy work and the existing app data model
 
 ### 12. Research data will extend the historical window back to 2000
-- Status: Accepted for implementation
+- Status: Accepted
 - Why: The strategy framework needs a materially longer daily history for historical testing and factor analysis than the current app-focused daily pipelines provide.
 
 ### 13. The initial factor model is Carhart 4-factor
-- Status: Accepted for implementation
-- Why: Phase 2 strategy evaluation is planned around market, size, value, and momentum exposures, which supports alpha estimation and factor-based comparison.
+- Status: Accepted
+- Why: Strategy evaluation uses market, size, value, and momentum exposures, which supports alpha estimation and factor-based comparison.
 - Included factors:
   - `MKT-RF`
   - `SMB`
@@ -108,13 +109,13 @@ This document records important architecture, tech stack, and operating decision
   - `MOM`
 
 ### 14. Fama-French factor data will come from the Kenneth R. French Data Library
-- Status: Accepted for implementation
-- Why: The Phase 2 strategy plan explicitly standardizes factor ingestion on this source for the research layer.
+- Status: Accepted
+- Why: The research layer standardizes factor ingestion on this source.
 
 ### 15. Strategy definitions and strategy runs are separate concerns
-- Status: Accepted for implementation
+- Status: Accepted
 - Why: Strategy configuration should remain independent from execution outputs so runs can be repeated, compared, and audited without overwriting definitions.
-- Intended tables:
+- Tables:
   - `silver.strategy_definitions`
   - `silver.strategy_runs`
   - `silver.strategy_parameters`
@@ -124,29 +125,44 @@ This document records important architecture, tech stack, and operating decision
   - `gold.strategy_performance`
 
 ### 16. Strategy runs should be historical and reproducible
-- Status: Accepted for implementation
-- Why: Phase 2 requires backtests and reruns that can be compared over time.
-- Expected implication:
+- Status: Accepted
+- Why: Backtests and reruns need to be compared over time.
+- Implication:
   - Use run-level identifiers
   - Preserve prior strategy outputs instead of overwriting them in place
 
 ### 17. Research pricing will be sourced from separate bronze datasets by provider
-- Status: Accepted for implementation
+- Status: Accepted
 - Why: Historical coverage and recent overlap differ by provider, so the bronze layer keeps EODHD and Alpaca daily prices separate and leaves provider-priority logic to downstream consumers.
 - Current implementation:
-  - `2000-01-01` onward: ingest bulk EODHD daily prices into `bronze.eodhd_prices_daily`.
-  - `2016-01-01` onward: ingest Alpaca daily prices into `bronze.alpaca_prices_daily`.
+  - The shared research daily price partition start is controlled by `RESEARCH_PRICES_PARTITIONS_START_DATE`, defaulting to `RESEARCH_EODHD_PRICES_PARTITIONS_START_DATE` (`2000-01-01` by default).
+  - `bronze.eodhd_prices_daily` is retained for historical/backfill partitions and gap filling.
+  - `bronze.alpaca_prices_daily` is the scheduled recent/live research refresh source.
   - Where both providers overlap, downstream research logic should prefer Alpaca and fall back to EODHD elsewhere.
 - Tradeoff:
   - Provider-specific bronze storage preserves auditability, while the silver layer owns precedence and liquidity-universe logic.
 
 ### 18. Research universe membership is derived from price liquidity, not a static constituent file
-- Status: Accepted for implementation
+- Status: Accepted
 - Why: The research workflows need a broad, reproducible investable universe that can evolve with market liquidity instead of inheriting a hand-maintained historical index file.
 - Current implementation:
   - `silver.research_daily_prices` merges daily research prices and prefers Alpaca over EODHD on overlapping symbol-days.
   - `silver.universe_membership_daily` selects the top 500 symbols by trailing average dollar volume.
   - `silver.universe_membership_events` records adds and removals versus the prior trading day.
+
+### 19. Reusable research signals are materialized in DuckDB
+- Status: Accepted
+- Why: Strategy selection and analysis need stable daily features without recomputing rolling metrics from parquet for every downstream asset.
+- Current implementation:
+  - `silver.signals_daily` is rebuilt from `silver.research_daily_prices`.
+  - The table includes return horizons, moving averages, momentum, volatility, drawdown, 52-week high/low, and liquidity signals.
+
+### 20. Simulation and run type references are catalog-driven
+- Status: Accepted
+- Why: Backtest and simulation semantics should be explicit, reusable, and validated before strategy outputs are built.
+- Current implementation:
+  - `ref.run_types` and `ref.simulation_types` are loaded from `src/portfolio_project/config/simulation_reference.yaml`.
+  - `silver.strategy_runs` stores run type and simulation type references for downstream strategy outputs.
 
 ## Open Items
 
@@ -154,5 +170,5 @@ These are not decided yet and should remain out of scope for this file until exp
 
 - Final layout for the `src/portfolio_project` reorganization
 - Whether multiple DuckDB resources should be registered explicitly in `Definitions` or composed from environment-specific config
-- How the research universe should be derived from the historical price coverage once the pricing layer is stabilized
-- Final alert severity policy once Phase 2 research pipelines are live
+- Whether EODHD historical backfill should remain manual-only or get a dedicated unscheduled backfill job wrapper
+- Final alert severity policy for research and strategy workflows

@@ -122,6 +122,8 @@ strategy_backfill_selection = AssetSelection.assets(
     ref_run_types,
     ref_simulation_types,
     ref_invalid_trading_days,
+    silver_universe_membership_daily,
+    silver_security_master,
     silver_strategy_definitions,
     silver_strategy_runs,
     silver_strategy_parameters,

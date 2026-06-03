@@ -638,7 +638,53 @@ def test_strategy_run_contract_dq_checks_validate_simulation_metadata() -> None:
             ('dup-run', 'strategy_a', 'simulation', 3, 'pending', NULL, NULL, NULL, NULL,
                 NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp),
             ('dup-run', 'strategy_b', 'simulation', 3, 'pending', NULL, NULL, NULL, NULL,
-                NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp)
+                NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp),
+            ('pending-completed', 'strategy_a', 'backtest', NULL, 'pending', NULL, NULL,
+                NULL, current_timestamp, NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp),
+            ('running-error', 'strategy_a', 'backtest', NULL, 'running', NULL, NULL,
+                NULL, NULL, 'stale error', NULL, NULL, NULL, NULL, TRUE, current_timestamp),
+            ('pending-backtest-output', 'strategy_a', 'backtest', NULL, 'pending', NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp),
+            ('success-missing-performance', 'strategy_a', 'backtest', NULL, 'success', NULL,
+                NULL, NULL, current_timestamp, NULL, NULL, NULL, NULL, NULL, TRUE,
+                current_timestamp),
+            ('success-with-performance', 'strategy_a', 'backtest', NULL, 'success', NULL, NULL,
+                NULL, current_timestamp, NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp),
+            ('transient-success', 'strategy_a', 'simulation', 3, 'success', NULL, NULL,
+                NULL, current_timestamp, NULL, NULL, NULL, NULL, NULL, FALSE,
+                current_timestamp),
+            ('simulation-pending-output', 'strategy_a', 'simulation', 3, 'pending', NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp),
+            ('backtest-success-extra-output', 'strategy_a', 'backtest', NULL, 'success', NULL, NULL,
+                NULL, current_timestamp, NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp),
+            ('simulation-success-extra-output', 'strategy_a', 'simulation', 3, 'success', NULL,
+                NULL, NULL, current_timestamp, NULL, NULL, NULL, NULL, NULL, TRUE,
+                current_timestamp),
+            ('failed-no-output', 'strategy_a', 'backtest', NULL, 'failed', NULL, NULL,
+                NULL, current_timestamp, 'expected failure', NULL, NULL, NULL, NULL, TRUE,
+                current_timestamp),
+            ('running-clean', 'strategy_a', 'backtest', NULL, 'running', NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL, TRUE, current_timestamp)
+        """
+    )
+    con.execute("CREATE SCHEMA IF NOT EXISTS gold")
+    con.execute(
+        """
+        CREATE TABLE gold.strategy_performance (
+            run_id VARCHAR,
+            strategy_id VARCHAR
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO gold.strategy_performance
+        VALUES
+            ('pending-backtest-output', 'strategy_a'),
+            ('success-with-performance', 'strategy_a'),
+            ('simulation-pending-output', 'strategy_a'),
+            ('backtest-success-extra-output', 'strategy_a'),
+            ('simulation-success-extra-output', 'strategy_a')
         """
     )
 
@@ -666,6 +712,10 @@ def test_strategy_run_contract_dq_checks_validate_simulation_metadata() -> None:
     assert dq_rows["dq_silver_strategy_runs_simulation_type_active"] == 1.0
     assert dq_rows["dq_silver_strategy_runs_unique_run_id"] == 1.0
     assert dq_rows["dq_silver_strategy_runs_reportable_simulations_lookahead_safe"] == 1.0
+    assert dq_rows["dq_silver_strategy_runs_active_status_has_completed_at"] == 1.0
+    assert dq_rows["dq_silver_strategy_runs_active_status_has_error"] == 1.0
+    assert dq_rows["dq_silver_strategy_runs_pending_backtests_have_performance_outputs"] == 1.0
+    assert dq_rows["dq_silver_strategy_runs_success_runs_have_performance"] == 1.0
 
     status_rows = dict(
         obs_con.execute(
@@ -2210,6 +2260,114 @@ def test_composite_underrated_momentum_ranking_requires_positive_momentum() -> N
     assert all(row["score"] is not None for row in ranking_rows)
 
 
+def test_strategy_rankings_require_universe_eligibility_and_investable_security() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA IF NOT EXISTS silver")
+    con.execute(
+        """
+        CREATE TABLE silver.signals_daily AS
+        SELECT *
+        FROM (
+            VALUES
+                ('2024-01-31', 'AAA', 0.4, 5000000.0),
+                ('2024-01-31', 'BBB', 0.9, 5000000.0),
+                ('2024-01-31', 'CCC', 0.8, 5000000.0)
+        ) AS t(date, symbol, momentum_12_1, avg_dollar_volume_21d)
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE silver.universe_membership_daily AS
+        SELECT *
+        FROM (
+            VALUES
+                ('2024-01-31', 'AAA', 1, 5000000.0, 'test', current_timestamp),
+                ('2024-01-31', 'BBB', 2, 5000000.0, 'test', current_timestamp),
+                ('2024-01-31', 'CCC', 3, 5000000.0, 'test', current_timestamp)
+        ) AS t(member_date, symbol, liquidity_rank, rolling_avg_dollar_volume, source, ingested_ts)
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE silver.universe_eligibility_daily AS
+        SELECT *
+        FROM (
+            VALUES
+                ('AAA', '2024-01-31', TRUE),
+                ('BBB', '2024-01-31', FALSE),
+                ('CCC', '2024-01-31', TRUE)
+        ) AS t(symbol, date, is_eligible_research_universe)
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE silver.security_master AS
+        SELECT *
+        FROM (
+            VALUES
+                ('AAA', 'AAA', TRUE),
+                ('BBB', 'BBB', TRUE),
+                ('CCC', 'CCC', FALSE)
+        ) AS t(symbol, canonical_symbol, is_investable_common_equity)
+        """
+    )
+    strategy_parameters_df = pd.DataFrame(
+        [
+            {
+                "strategy_id": "momentum_top_1",
+                "parameter_name": "signal_column",
+                "parameter_value": "momentum_12_1",
+                "parameter_type": "string",
+                "effective_start_date": "2000-01-01",
+                "effective_end_date": None,
+                "is_active": True,
+                "description": "",
+                "ingest_ts": pd.Timestamp("2024-01-01"),
+                "asof_ts": pd.Timestamp("2024-01-01"),
+                "run_id": "run-001",
+            },
+            {
+                "strategy_id": "momentum_top_1",
+                "parameter_name": "ranking_direction",
+                "parameter_value": "desc",
+                "parameter_type": "string",
+                "effective_start_date": "2000-01-01",
+                "effective_end_date": None,
+                "is_active": True,
+                "description": "",
+                "ingest_ts": pd.Timestamp("2024-01-01"),
+                "asof_ts": pd.Timestamp("2024-01-01"),
+                "run_id": "run-001",
+            },
+        ]
+    )
+    con.register("strategy_parameters_df", strategy_parameters_df)
+    con.execute("CREATE TABLE silver.strategy_parameters AS SELECT * FROM strategy_parameters_df")
+
+    strategy = gold_strategy_module.StrategyConfig(
+        strategy_id="momentum_top_1",
+        rebalance_frequency="Monthly",
+        benchmark_symbol="SPY",
+        target_count=1,
+        weighting_method="equal",
+        long_short_flag=False,
+        start_date=date(2024, 1, 1),
+        end_date=None,
+        config={"universe": "universe_membership_daily", "selection_mode": "top_n"},
+        run_id="run-001",
+    )
+
+    ranking_rows = gold_strategy_module._build_rankings_for_strategy(
+        con,
+        strategy,
+        gold_strategy_module._now_utc_naive(),
+    )
+
+    assert [(row["symbol"], row["rank"], row["selected_flag"]) for row in ranking_rows] == [
+        ("AAA", 1, True)
+    ]
+
+
 def test_strategy_calendar_helpers_exclude_market_holidays(
     tmp_path: Path,
     monkeypatch,
@@ -2291,3 +2449,77 @@ def test_strategy_calendar_helpers_exclude_market_holidays(
         date(2026, 2, 13),
         date(2026, 2, 17),
     ]
+
+
+def test_strategy_calendar_helpers_exclude_ref_invalid_trading_days(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA IF NOT EXISTS silver")
+    con.execute("CREATE SCHEMA IF NOT EXISTS ref")
+    con.execute(
+        """
+        CREATE TABLE silver.signals_daily AS
+        SELECT *
+        FROM (
+            VALUES
+                ('2024-01-31', 'AAA'),
+                ('2024-02-29', 'AAA')
+        ) AS t(date, symbol)
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE ref.invalid_trading_days AS
+        SELECT DATE '2024-02-29' AS invalid_date,
+               'bad_source_partition' AS reason_code,
+               'test invalid day' AS description
+        """
+    )
+
+    strategy = gold_strategy_module.StrategyConfig(
+        strategy_id="strategy_a",
+        rebalance_frequency="Monthly",
+        benchmark_symbol="SPY",
+        target_count=1,
+        weighting_method="equal",
+        long_short_flag=False,
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 2, 29),
+        config={},
+        run_id="run-1:strategy_a",
+    )
+
+    assert gold_strategy_module._rebalance_dates_for_strategy(con, strategy) == [date(2024, 1, 31)]
+
+    price_dir = tmp_path / "silver" / "research_daily_prices" / "month=2024-02"
+    price_dir.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "trade_date": "2024-02-28",
+                "symbol": "AAA",
+                "close": 100.0,
+                "adjusted_close": 100.0,
+            },
+            {
+                "trade_date": "2024-02-29",
+                "symbol": "AAA",
+                "close": 101.0,
+                "adjusted_close": 101.0,
+            },
+        ]
+    ).to_parquet(price_dir / "date=2024-02-28.parquet", index=False)
+    monkeypatch.setattr(
+        gold_strategy_module,
+        "PRICE_GLOB",
+        (tmp_path / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet").as_posix(),
+    )
+
+    assert gold_strategy_module._load_distinct_trading_dates(
+        con,
+        start_date=date(2024, 2, 28),
+        end_date=date(2024, 2, 29),
+        symbols=["AAA"],
+    ) == [date(2024, 2, 28)]
