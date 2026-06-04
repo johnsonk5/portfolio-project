@@ -28,6 +28,84 @@
 | `dist_sma_200` | `float` | `(close / sma_200) - 1`. |
 | `sentiment_score` | `float` | Weighted 7-day headline sentiment score. |
 
+## `gold.fundamentals_quarterly`
+
+*DuckDB Table in the research DuckDB gold schema*
+
+One row per `asset_id`, `cik`, and quarterly reporting period after canonical SEC statement items have been pivoted into research-ready fields. The natural key is `asset_id`, `cik`, `fiscal_year`, `fiscal_quarter`, and `period_end_date`.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases. |
+| `symbol` | `object` | Canonical project ticker symbol. |
+| `cik` | `object` | SEC Central Index Key without left-padding. |
+| `fiscal_year` | `int` | Fiscal year reported by SEC. |
+| `fiscal_quarter` | `object` | Fiscal quarter label, normally `Q1`, `Q2`, `Q3`, or `Q4`. |
+| `period_start_date` | `date` | Reporting period start date when available. |
+| `period_end_date` | `date` | Reporting period end date. |
+| `filing_date` | `date` | SEC filing date for the source filing. |
+| `acceptance_datetime` | `timestamp` | SEC acceptance datetime when available, stored in UTC. |
+| `availability_date` | `date` | First date fundamentals may be used in research; derived from `acceptance_datetime` date when available, otherwise `filing_date`. |
+| `accession_number` | `object` | Source SEC filing accession number. |
+| `form` | `object` | Source filing form, typically `10-Q`, `10-K`, or an amendment. |
+| `revenue` | `float` | Quarterly revenue. |
+| `net_income` | `float` | Quarterly net income. |
+| `assets` | `float` | Total assets at period end. |
+| `liabilities` | `float` | Total liabilities at period end. |
+| `equity` | `float` | Total shareholders' equity at period end. |
+| `debt` | `float` | Total debt or debt-like obligations at period end when mapped. |
+| `cash` | `float` | Cash and cash equivalents at period end. |
+| `operating_cash_flow` | `float` | Quarterly operating cash flow. |
+| `capex` | `float` | Quarterly capital expenditures. |
+| `diluted_shares` | `float` | Diluted weighted-average shares outstanding for the period. |
+| `diluted_eps` | `float` | Diluted earnings per share for the period. |
+| `source_snapshot_date` | `date` | SEC bulk snapshot date represented by the source silver rows. |
+| `statement_items_count` | `int` | Number of curated statement items used to populate the row. |
+| `load_timestamp` | `timestamp` | Gold table load timestamp. |
+
+## `gold.fundamental_signals_daily`
+
+*DuckDB Table in the research DuckDB gold schema*
+
+Point-in-time daily fundamental features joined to research trading dates and prices. A row must not expose a quarterly fundamental before `date >= availability_date`; rows before the first available filing for an asset should either be absent or have `has_fundamentals = false`.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `date` | `date` | Trading date for the signal row. |
+| `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases. |
+| `symbol` | `object` | Canonical project ticker symbol. |
+| `cik` | `object` | SEC Central Index Key without left-padding. |
+| `fiscal_year` | `int` | Fiscal year of the latest available quarterly fundamentals as of `date`. |
+| `fiscal_quarter` | `object` | Fiscal quarter of the latest available fundamentals as of `date`. |
+| `period_end_date` | `date` | Reporting period end date of the latest available fundamentals. |
+| `filing_date` | `date` | SEC filing date of the latest available source filing. |
+| `acceptance_datetime` | `timestamp` | SEC acceptance datetime of the latest available source filing when available. |
+| `availability_date` | `date` | First date the selected fundamentals were allowed into the signal set. |
+| `days_since_filing` | `int` | Calendar days between `date` and `availability_date`. |
+| `has_fundamentals` | `bool` | Whether point-in-time fundamentals are available for the asset on `date`. |
+| `is_stale_fundamentals` | `bool` | Whether the latest available filing is older than the configured freshness threshold. |
+| `close` | `float` | Daily close used for price-linked valuation features. |
+| `market_cap` | `float` | `close * diluted_shares` when diluted shares are trustworthy. |
+| `revenue_ttm` | `float` | Trailing four-quarter revenue as of `date`. |
+| `net_income_ttm` | `float` | Trailing four-quarter net income as of `date`. |
+| `operating_cash_flow_ttm` | `float` | Trailing four-quarter operating cash flow as of `date`. |
+| `capex_ttm` | `float` | Trailing four-quarter capital expenditures as of `date`. |
+| `free_cash_flow_ttm` | `float` | `operating_cash_flow_ttm - capex_ttm`. |
+| `diluted_eps_ttm` | `float` | Trailing four-quarter diluted EPS as of `date`. |
+| `revenue_growth_yoy` | `float` | Year-over-year quarterly revenue growth. |
+| `net_income_growth_yoy` | `float` | Year-over-year quarterly net income growth. |
+| `eps_growth_yoy` | `float` | Year-over-year quarterly diluted EPS growth. |
+| `net_margin_ttm` | `float` | `net_income_ttm / revenue_ttm`. |
+| `return_on_equity` | `float` | `net_income_ttm / equity` using latest available equity. |
+| `debt_to_equity` | `float` | `debt / equity` using latest available balance sheet values. |
+| `cash_to_assets` | `float` | `cash / assets` using latest available balance sheet values. |
+| `price_to_sales` | `float` | `market_cap / revenue_ttm`. |
+| `price_to_earnings` | `float` | `market_cap / net_income_ttm`. |
+| `price_to_book` | `float` | `market_cap / equity`. |
+| `free_cash_flow_yield` | `float` | `free_cash_flow_ttm / market_cap`. |
+| `signal_version` | `object` | Fundamental signal definition version. |
+| `load_timestamp` | `timestamp` | Gold table load timestamp. |
+
 ## `gold.headlines`
 
 | Column | Type | Description |
