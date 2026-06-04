@@ -169,6 +169,7 @@ Strategy research workspace for side-by-side comparisons built on the research D
 - Exposures are estimated with ordinary least squares on daily strategy excess returns:
   - dependent variable: `portfolio_return - rf`
   - regressors: `mkt_rf`, `smb`, `hml`, `mom`
+- `silver.vw_factors` is a DuckDB view over `data/silver/factors/factors.parquet`; the view SQL lives in `queries/view_defs/silver_factors_parquet_view.sql`. The view must exist in the research DuckDB before The Lab can load factor exposures.
 
 ### Strategy Detail
 - Single-strategy definition view sourced from `silver.strategy_definitions` and `silver.strategy_parameters`.

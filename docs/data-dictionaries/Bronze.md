@@ -75,6 +75,24 @@ All of the tables in this layer are partitioned parquet files unless otherwise s
 | `source` | `object` | Upstream source (`eodhd`). |
 | `ingested_ts` | `timestamp` | Ingest timestamp. |
 
+## `bronze.alpaca_corporate_actions`
+
+*Single parquet file at `data/bronze/alpaca_corporate_actions/actions.parquet`; updated by effective-date partition.*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `action_id` | `object` | Alpaca corporate action identifier when provided. |
+| `symbol` | `object` | Canonical ticker symbol. |
+| `action_type` | `object` | Corporate action type, such as `forward_splits`, `reverse_splits`, or `cash_dividends`. |
+| `effective_date` | `date` | Effective or ex-date used for the action. |
+| `process_date` | `date` | Process date reported by Alpaca. |
+| `old_rate` | `float` | Old share rate for split actions. |
+| `new_rate` | `float` | New share rate for split actions. |
+| `cash_rate` | `float` | Cash dividend rate for dividend actions. |
+| `split_ratio` | `float` | `new_rate / old_rate` for split actions. |
+| `source` | `object` | Upstream source (`alpaca`). |
+| `ingested_ts` | `timestamp` | Ingest timestamp. |
+
 ## `bronze.sp500_companies`
 
 | Column | Type | Description |

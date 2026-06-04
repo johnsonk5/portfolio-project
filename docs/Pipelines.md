@@ -15,14 +15,22 @@ split-adjusted close. Refresh corporate actions through `research_daily_prices_j
 `scripts/backfill_portfolio_adjusted_close.py`; they are not materialized inside
 `daily_prices_job` because the research corporate-action asset uses a different partition range.
 
+### Schedule
+- `daily_prices_schedule`: `30 9 * * *` America/New_York.
+- Uses previous US trading day as partition key.
+
 ## Research Daily Prices Assets
 
 ### Purpose
 Build merged research daily prices and a liquidity-based universe history.
 
 ### Flow
-- `bronze_eodhd_prices_daily` + `bronze_alpaca_prices_daily` -> `silver.research_daily_prices`
+- Historical/backfill EODHD partitions in `bronze_eodhd_prices_daily` plus recent Alpaca partitions in `bronze_alpaca_prices_daily` -> `silver.research_daily_prices`
 - `silver.research_daily_prices` -> `silver.universe_membership_daily` -> `silver.universe_membership_events`
+
+EODHD ingestion is registered as a Dagster asset for historical backfill and gap filling, but it is
+not part of the scheduled live refresh jobs. The scheduled research refresh currently uses Alpaca
+daily prices and any already-seeded EODHD history.
 
 ## `research_daily_prices_job`
 
@@ -48,10 +56,6 @@ Refresh the recent-window research price history from Alpaca and rebuild the dow
 
 ### Schedule
 - `research_daily_prices_schedule`: `35 9 * * *` America/New_York.
-- Uses previous US trading day as partition key.
-
-### Schedule
-- `daily_prices_schedule`: `30 9 * * *` America/New_York.
 - Uses previous US trading day as partition key.
 
 ## `prices_compaction_job`

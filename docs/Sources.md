@@ -23,16 +23,17 @@ This document describes each source, what it powers, and important operational d
 ## EODHD API
 
 ### What We Use
-- Bulk US end-of-day equity prices for the historical research bronze dataset at `bronze.eodhd_prices_daily`.
+- Bulk US end-of-day equity prices for the historical research bronze dataset at `bronze.eodhd_prices_daily`. This is primarily used to fill historical gaps and older data outside the preferred Alpaca window.
 
 ### Why It Matters
-- Extends research price coverage back to 2000 without relying on Yahoo Finance scraping.
+- Extends research price coverage back to 2000.
 - Provides broad US-symbol daily history that can be used wherever Alpaca does not have overlapping data.
 
 ### Operational Notes
-- The current implementation hits EODHD's bulk end-of-day endpoint for the configured exchange, defaulting to `US`.
+- The implementation hits EODHD's bulk end-of-day endpoint for the configured exchange, defaulting to `US`, when the EODHD asset is materialized.
 - Research daily prices from EODHD are written under `data/bronze/eodhd_prices_daily/date=YYYY-MM-DD/prices.parquet`.
 - EODHD fills the historical gaps in the merged `silver.research_daily_prices` dataset wherever Alpaca does not have overlapping coverage.
+- EODHD is not part of the scheduled live research refresh. It is retained as a historical/backfill source so the recurring pipeline can keep using already-seeded EODHD partitions without requiring ongoing live EODHD ingestion.
 
 ## Yahoo Finance Search API
 
@@ -61,13 +62,13 @@ This document describes each source, what it powers, and important operational d
 - Reliability checks account for this using partition-level thresholds and explicit freshness checks.
 
 ### Notes on Edits Data
-- Wikipedia edits were evaluated and intentionally not included in V1.
+- Wikipedia edits were evaluated and intentionally not included.
 - Main reasons: weaker signal value and lower and less consistent timeliness for daily workflows.
 
 ## Tranco
 
 ### What We Use
-- Top domains snapshot (`rank`, `domain`) from monthly CSV snapshots.
+- Top domains snapshot (`rank`, `domain`) from monthly CSV snapshots. Tranco tells us which publishers are getting seen by more people so that we can weight their relevance for assessing hype and interest in certain stocks.
 
 ### Why It Matters
 - Provides a ranking-based signal for `publisher_weight` in `silver.ref_publishers`.

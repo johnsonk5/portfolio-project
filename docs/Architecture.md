@@ -5,8 +5,8 @@ This document describes the system architecture and storage layout.
 ## High-Level Flow
 
 1. Pull source data from APIs and snapshot feeds.
-2. Persist bronze outputs in partitioned parquet.
-3. Normalize into silver assets/tables and silver parquet partitions.
+2. Store bronze outputs in partitioned parquet.
+3. Normalize into silver DuckDB tables and silver parquet partitions.
 4. Build gold analytics tables in DuckDB.
 5. Serve dashboards from gold and observability schemas.
 
@@ -25,7 +25,8 @@ This document describes the system architecture and storage layout.
 
 ### Silver
 - Join-ready and normalized data.
-- `silver.assets` and references in DuckDB.
+- Silver data exists in parquet and in DuckDB.
+- Security/market reference tables such as `silver.assets` live in DuckDB.
 - Prices, news, and Wikipedia are written as partitioned parquet datasets under `data/silver`.
 
 ### Gold

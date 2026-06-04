@@ -8,6 +8,7 @@ from portfolio_project.defs.research_db.dq_checks import log_required_field_null
 from portfolio_project.defs.research_db.silver.research_prices import (
     silver_research_daily_prices,
 )
+from portfolio_project.defs.research_db.trading_calendar import create_valid_trading_dates_table
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 SIGNAL_VERSION = os.getenv("RESEARCH_SIGNALS_VERSION", "v1")
@@ -26,18 +27,23 @@ def _signals_select_sql() -> str:
     return """
         WITH prices AS (
             SELECT
-                CAST(trade_date AS DATE) AS date,
-                upper(trim(symbol)) AS symbol,
-                CAST(close AS DOUBLE) AS close,
-                COALESCE(CAST(adjusted_close AS DOUBLE), CAST(close AS DOUBLE)) AS adjusted_close,
-                CAST(volume AS BIGINT) AS volume,
-                CAST(dollar_volume AS DOUBLE) AS dollar_volume,
-                COALESCE(CAST(adjusted_close AS DOUBLE), CAST(close AS DOUBLE)) AS return_price
-            FROM read_parquet(?)
-            WHERE trade_date IS NOT NULL
-              AND symbol IS NOT NULL
-              AND trim(symbol) <> ''
-              AND abs(hash(upper(trim(symbol)))) % ? = ?
+                CAST(p.trade_date AS DATE) AS date,
+                upper(trim(p.symbol)) AS symbol,
+                CAST(p.close AS DOUBLE) AS close,
+                COALESCE(
+                    CAST(p.adjusted_close AS DOUBLE),
+                    CAST(p.close AS DOUBLE)
+                ) AS adjusted_close,
+                CAST(p.volume AS BIGINT) AS volume,
+                CAST(p.dollar_volume AS DOUBLE) AS dollar_volume,
+                COALESCE(CAST(p.adjusted_close AS DOUBLE), CAST(p.close AS DOUBLE)) AS return_price
+            FROM read_parquet(?) AS p
+            INNER JOIN valid_research_trading_dates AS trading_dates
+                ON trading_dates.trade_date = CAST(p.trade_date AS DATE)
+            WHERE p.trade_date IS NOT NULL
+              AND p.symbol IS NOT NULL
+              AND trim(p.symbol) <> ''
+              AND abs(hash(upper(trim(p.symbol)))) % ? = ?
         ),
         returns_base AS (
             SELECT
@@ -210,6 +216,7 @@ def silver_signals_daily(context: AssetExecutionContext) -> None:
     ).as_posix()
     select_sql = _signals_select_sql()
 
+    create_valid_trading_dates_table(con, prices_glob)
     con.execute("DROP TABLE IF EXISTS silver.signals_daily")
     con.execute(
         f"""

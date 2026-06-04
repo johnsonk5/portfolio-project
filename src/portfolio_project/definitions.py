@@ -74,6 +74,7 @@ from portfolio_project.defs.research_db.ref.simulation import (
     ref_run_types,
     ref_simulation_types,
 )
+from portfolio_project.defs.research_db.ref.trading_days import ref_invalid_trading_days
 from portfolio_project.defs.research_db.silver.corporate_actions import (
     silver_alpaca_corporate_actions,
 )
@@ -120,6 +121,9 @@ research_prices_selection = AssetSelection.assets(
 strategy_backfill_selection = AssetSelection.assets(
     ref_run_types,
     ref_simulation_types,
+    ref_invalid_trading_days,
+    silver_universe_membership_daily,
+    silver_security_master,
     silver_strategy_definitions,
     silver_strategy_runs,
     silver_strategy_parameters,
@@ -421,6 +425,7 @@ defs = Definitions(
         silver_strategy_parameters,
         ref_run_types,
         ref_simulation_types,
+        ref_invalid_trading_days,
         silver_universe_membership_events,
         silver_universe_membership_daily,
         silver_security_master,

@@ -15,10 +15,12 @@ from portfolio_project.defs.portfolio_db.observability.observability_modules imp
     write_dq_log,
 )
 from portfolio_project.defs.research_db.dq_checks import log_duplicate_row_check
+from portfolio_project.defs.research_db.ref.trading_days import ref_invalid_trading_days
 from portfolio_project.defs.research_db.silver.research_prices import (
     RESEARCH_DAILY_PRICES_DATASET,
     silver_research_daily_prices,
 )
+from portfolio_project.defs.research_db.silver.security_master import silver_security_master
 from portfolio_project.defs.research_db.silver.signals import silver_signals_daily
 from portfolio_project.defs.research_db.silver.strategy import (
     STRATEGY_RUNS_COLUMNS,
@@ -30,6 +32,12 @@ from portfolio_project.defs.research_db.silver.strategy import (
     silver_strategy_runs,
 )
 from portfolio_project.defs.research_db.silver.universe import silver_universe_membership_daily
+from portfolio_project.defs.research_db.trading_calendar import (
+    INVALID_TRADING_DAY_RECORDS,
+    create_valid_trading_dates_table,
+    filter_us_trading_days,
+    is_us_trading_day,
+)
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 PRICE_GLOB = (
@@ -41,6 +49,7 @@ MAX_ABS_DAILY_SECURITY_RETURN = float(
 STRATEGY_HOLDINGS_WEIGHT_SUM_TOLERANCE = float(
     os.getenv("RESEARCH_STRATEGY_HOLDINGS_WEIGHT_SUM_TOLERANCE", "1e-6")
 )
+DUCKDB_STRATEGY_THREADS = int(os.getenv("RESEARCH_STRATEGY_DUCKDB_THREADS", "2"))
 MISSING_STRATEGIES_JOB_NAME = "strategy_missing_backfill_job"
 
 STRATEGY_RANKINGS_COLUMNS: list[tuple[str, str]] = [
@@ -165,6 +174,88 @@ def _table_exists(con, schema: str, table: str) -> bool:
         ).fetchone()
         is not None
     )
+
+
+def _table_columns(con, schema: str, table: str) -> set[str]:
+    if not _table_exists(con, schema, table):
+        return set()
+    rows = con.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = ?
+          AND table_name = ?
+        """,
+        [schema, table],
+    ).fetchall()
+    return {str(row[0]).lower() for row in rows if row[0] is not None}
+
+
+def _invalid_research_trading_dates(con) -> set[date]:
+    invalid_dates = {
+        pd.Timestamp(record["invalid_date"]).date()
+        for record in INVALID_TRADING_DAY_RECORDS
+        if record.get("invalid_date")
+    }
+    if _table_exists(con, "ref", "invalid_trading_days"):
+        invalid_dates.update(
+            pd.Timestamp(row[0]).date()
+            for row in con.execute(
+                """
+                SELECT DISTINCT invalid_date
+                FROM ref.invalid_trading_days
+                WHERE invalid_date IS NOT NULL
+                """
+            ).fetchall()
+            if row[0] is not None
+        )
+    return invalid_dates
+
+
+def _filter_valid_research_trading_days(con, values: list[date]) -> list[date]:
+    invalid_dates = _invalid_research_trading_dates(con)
+    return [
+        value
+        for value in values
+        if value is not None and is_us_trading_day(value) and value not in invalid_dates
+    ]
+
+
+def _filter_valid_research_trading_frame(
+    con,
+    frame: pd.DataFrame,
+    date_column: str,
+) -> pd.DataFrame:
+    frame = filter_us_trading_days(frame, date_column)
+    if frame.empty or date_column not in frame.columns:
+        return frame
+    invalid_dates = _invalid_research_trading_dates(con)
+    if not invalid_dates:
+        return frame
+    dates = pd.to_datetime(frame[date_column], errors="coerce").dt.date
+    return frame.loc[~dates.isin(invalid_dates)].copy()
+
+
+def _candidate_eligibility_join_sql(con) -> str:
+    joins: list[str] = []
+    if _table_exists(con, "silver", "universe_eligibility_daily"):
+        joins.append(
+            """
+                INNER JOIN silver.universe_eligibility_daily AS ue
+                    ON CAST(ue.date AS DATE) = CAST(s.date AS DATE)
+                   AND upper(trim(ue.symbol)) = upper(trim(s.symbol))
+                   AND coalesce(ue.is_eligible_research_universe, FALSE) = TRUE
+            """
+        )
+    if _table_exists(con, "silver", "security_master"):
+        joins.append(
+            """
+                INNER JOIN silver.security_master AS sm
+                    ON upper(trim(coalesce(sm.canonical_symbol, sm.symbol))) = upper(trim(s.symbol))
+                   AND coalesce(sm.is_investable_common_equity, FALSE) = TRUE
+            """
+        )
+    return "\n".join(joins)
 
 
 def _safe_json_loads(raw_value: Any) -> dict[str, Any]:
@@ -510,7 +601,7 @@ def _rebalance_dates_for_strategy(con, strategy: StrategyConfig) -> list[date]:
             """,
             [start_date, end_date],
         ).fetchall()
-        return [row[0] for row in rows if row[0] is not None]
+        return _filter_valid_research_trading_days(con, [row[0] for row in rows])
 
     if rebalance_frequency == "weekly":
         rows = con.execute(
@@ -528,7 +619,7 @@ def _rebalance_dates_for_strategy(con, strategy: StrategyConfig) -> list[date]:
             """,
             [start_date, end_date],
         ).fetchall()
-        return [row[0] for row in rows if row[0] is not None]
+        return _filter_valid_research_trading_days(con, [row[0] for row in rows])
 
     rows = con.execute(
         """
@@ -545,7 +636,7 @@ def _rebalance_dates_for_strategy(con, strategy: StrategyConfig) -> list[date]:
         """,
         [start_date, end_date],
     ).fetchall()
-    return [row[0] for row in rows if row[0] is not None]
+    return _filter_valid_research_trading_days(con, [row[0] for row in rows])
 
 
 def _build_rankings_for_strategy(
@@ -582,14 +673,16 @@ def _build_rankings_for_strategy(
                 [rebalance_date, fixed_symbol],
             ).fetchall()
         elif ranking_method == "random_selection":
+            eligibility_join_sql = _candidate_eligibility_join_sql(con)
             sql = """
                 SELECT upper(trim(s.symbol)) AS symbol
                 FROM silver.signals_daily AS s
                 INNER JOIN silver.universe_membership_daily AS u
                     ON CAST(u.member_date AS DATE) = CAST(s.date AS DATE)
                    AND upper(trim(u.symbol)) = upper(trim(s.symbol))
+                {eligibility_join_sql}
                 WHERE CAST(s.date AS DATE) = ?
-            """
+            """.format(eligibility_join_sql=eligibility_join_sql)
             random_params: list[Any] = [rebalance_date]
             min_avg_dollar_volume_21d = parameters.get("min_avg_dollar_volume_21d")
             if min_avg_dollar_volume_21d is not None:
@@ -598,6 +691,7 @@ def _build_rankings_for_strategy(
             sql += " ORDER BY symbol"
             candidate_rows = con.execute(sql, random_params).fetchall()
         else:
+            eligibility_join_sql = _candidate_eligibility_join_sql(con)
             secondary_select_sql = ""
             secondary_not_null_sql = ""
             if secondary_signal_column:
@@ -617,6 +711,7 @@ def _build_rankings_for_strategy(
                 INNER JOIN silver.universe_membership_daily AS u
                     ON CAST(u.member_date AS DATE) = CAST(s.date AS DATE)
                    AND upper(trim(u.symbol)) = upper(trim(s.symbol))
+                {eligibility_join_sql}
                 WHERE CAST(s.date AS DATE) = ?
                   AND CAST(s.{_quote_identifier(signal_column)} AS DOUBLE) IS NOT NULL
                   {secondary_not_null_sql}
@@ -736,6 +831,152 @@ def _register_temp_df(con, name: str, df: pd.DataFrame) -> None:
     except Exception:
         pass
     con.register(name, df)
+
+
+def _temp_table_exists(con, table_name: str) -> bool:
+    try:
+        con.execute(f"SELECT 1 FROM {_quote_identifier(table_name)} LIMIT 0")
+    except Exception:
+        return False
+    return True
+
+
+def _strategy_rebalance_plan_records(
+    con,
+    strategies: list[StrategyConfig],
+) -> list[dict[str, Any]]:
+    ranking_methods = {
+        strategy.strategy_id: _ranking_method_for_strategy(con, strategy.strategy_id)
+        for strategy in strategies
+    }
+    records: list[dict[str, Any]] = []
+    for strategy in strategies:
+        ranking_method = ranking_methods.get(strategy.strategy_id, "")
+        for rebalance_date in _rebalance_dates_for_strategy(con, strategy):
+            parameters = _active_parameters_by_date(
+                con,
+                strategy.strategy_id,
+                rebalance_date,
+            )
+            records.append(
+                {
+                    "run_id": strategy.run_id,
+                    "strategy_id": strategy.strategy_id,
+                    "rebalance_date": rebalance_date,
+                    "ranking_method": ranking_method,
+                    "benchmark_symbol": strategy.benchmark_symbol.strip().upper(),
+                    "target_count": strategy.target_count,
+                    "weighting_method": strategy.weighting_method.strip().lower(),
+                    "long_short_flag": strategy.long_short_flag,
+                    "signal_column": str(parameters.get("signal_column") or "momentum_12_1")
+                    .strip()
+                    .lower(),
+                    "secondary_signal_column": str(parameters.get("secondary_signal_column") or "")
+                    .strip()
+                    .lower(),
+                    "ranking_direction": str(parameters.get("ranking_direction") or "desc")
+                    .strip()
+                    .lower(),
+                    "score_method": str(parameters.get("score_method") or "").strip().lower(),
+                    "universe_name": str(strategy.config.get("universe") or "").strip().lower(),
+                    "selection_mode": str(strategy.config.get("selection_mode") or "")
+                    .strip()
+                    .lower(),
+                    "fixed_symbol": str(parameters.get("symbol") or strategy.benchmark_symbol)
+                    .strip()
+                    .upper(),
+                    "min_avg_dollar_volume_21d": parameters.get("min_avg_dollar_volume_21d"),
+                    "min_price_to_sma_200": parameters.get("min_price_to_sma_200"),
+                    "min_momentum_12_1": parameters.get("min_momentum_12_1"),
+                    "max_pct_below_52w_high": parameters.get("max_pct_below_52w_high"),
+                    "random_seed": int(parameters.get("random_seed") or 0),
+                }
+            )
+    return records
+
+
+def _ensure_strategy_rebalance_plan(
+    con,
+    strategies: list[StrategyConfig],
+) -> int:
+    columns = [
+        "run_id",
+        "strategy_id",
+        "rebalance_date",
+        "ranking_method",
+        "benchmark_symbol",
+        "target_count",
+        "weighting_method",
+        "long_short_flag",
+        "signal_column",
+        "secondary_signal_column",
+        "ranking_direction",
+        "score_method",
+        "universe_name",
+        "selection_mode",
+        "fixed_symbol",
+        "min_avg_dollar_volume_21d",
+        "min_price_to_sma_200",
+        "min_momentum_12_1",
+        "max_pct_below_52w_high",
+        "random_seed",
+    ]
+    plan_df = pd.DataFrame(_strategy_rebalance_plan_records(con, strategies), columns=columns)
+    _register_temp_df(con, "strategy_rebalance_plan_df", plan_df)
+    con.execute(
+        """
+        CREATE OR REPLACE TEMPORARY TABLE temp_strategy_rebalance_plan AS
+        SELECT
+            CAST(run_id AS VARCHAR) AS run_id,
+            CAST(strategy_id AS VARCHAR) AS strategy_id,
+            CAST(rebalance_date AS DATE) AS rebalance_date,
+            CAST(ranking_method AS VARCHAR) AS ranking_method,
+            CAST(benchmark_symbol AS VARCHAR) AS benchmark_symbol,
+            CAST(target_count AS INTEGER) AS target_count,
+            CAST(weighting_method AS VARCHAR) AS weighting_method,
+            CAST(long_short_flag AS BOOLEAN) AS long_short_flag,
+            CAST(signal_column AS VARCHAR) AS signal_column,
+            CAST(secondary_signal_column AS VARCHAR) AS secondary_signal_column,
+            CAST(ranking_direction AS VARCHAR) AS ranking_direction,
+            CAST(score_method AS VARCHAR) AS score_method,
+            CAST(universe_name AS VARCHAR) AS universe_name,
+            CAST(selection_mode AS VARCHAR) AS selection_mode,
+            CAST(fixed_symbol AS VARCHAR) AS fixed_symbol,
+            CAST(min_avg_dollar_volume_21d AS DOUBLE) AS min_avg_dollar_volume_21d,
+            CAST(min_price_to_sma_200 AS DOUBLE) AS min_price_to_sma_200,
+            CAST(min_momentum_12_1 AS DOUBLE) AS min_momentum_12_1,
+            CAST(max_pct_below_52w_high AS DOUBLE) AS max_pct_below_52w_high,
+            CAST(random_seed AS INTEGER) AS random_seed
+        FROM strategy_rebalance_plan_df
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TEMPORARY TABLE temp_strategy_expected_rebalance_dates AS
+        SELECT DISTINCT run_id, strategy_id, rebalance_date
+        FROM temp_strategy_rebalance_plan
+        """
+    )
+    return int(len(plan_df))
+
+
+def _expected_rebalance_dates_for_strategy(
+    con,
+    strategy: StrategyConfig,
+) -> list[date]:
+    if _temp_table_exists(con, "temp_strategy_expected_rebalance_dates"):
+        rows = con.execute(
+            """
+            SELECT rebalance_date
+            FROM temp_strategy_expected_rebalance_dates
+            WHERE run_id = ?
+              AND strategy_id = ?
+            ORDER BY rebalance_date
+            """,
+            [strategy.run_id, strategy.strategy_id],
+        ).fetchall()
+        return [row[0] for row in rows if row[0] is not None]
+    return _rebalance_dates_for_strategy(con, strategy)
 
 
 def _purge_non_persistent_run_rows(con) -> None:
@@ -1098,6 +1339,157 @@ def _log_strategy_run_contract_checks(
         partition_key=partition_key,
     )
 
+    active_status_completed_rows = measured_con.execute(
+        """
+        SELECT run_id, run_type_id, run_status, completed_at
+        FROM silver.strategy_runs
+        WHERE lower(trim(coalesce(run_status, ''))) IN ('pending', 'running')
+          AND completed_at IS NOT NULL
+        ORDER BY run_id
+        """
+    ).fetchall()
+    active_status_completed_runs = [
+        {
+            "run_id": str(row[0]),
+            "run_type_id": None if row[1] is None else str(row[1]),
+            "run_status": None if row[2] is None else str(row[2]),
+            "completed_at": None if row[3] is None else str(row[3]),
+        }
+        for row in active_status_completed_rows
+    ]
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_silver_strategy_runs_active_status_has_completed_at",
+        measured_value=float(len(active_status_completed_runs)),
+        details={
+            "table": "silver.strategy_runs",
+            "rule": "pending/running runs must not have completed_at populated",
+            "failing_runs": active_status_completed_runs,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+    active_status_error_rows = measured_con.execute(
+        """
+        SELECT run_id, run_type_id, run_status, error_message
+        FROM silver.strategy_runs
+        WHERE lower(trim(coalesce(run_status, ''))) IN ('pending', 'running')
+          AND nullif(trim(coalesce(error_message, '')), '') IS NOT NULL
+        ORDER BY run_id
+        """
+    ).fetchall()
+    active_status_error_runs = [
+        {
+            "run_id": str(row[0]),
+            "run_type_id": None if row[1] is None else str(row[1]),
+            "run_status": None if row[2] is None else str(row[2]),
+            "error_message": None if row[3] is None else str(row[3]),
+        }
+        for row in active_status_error_rows
+    ]
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_silver_strategy_runs_active_status_has_error",
+        measured_value=float(len(active_status_error_runs)),
+        details={
+            "table": "silver.strategy_runs",
+            "rule": "pending/running runs must not have error_message populated",
+            "failing_runs": active_status_error_runs,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+    pending_backtest_performance_runs: list[dict[str, Any]] = []
+    if _table_exists(measured_con, "gold", "strategy_performance"):
+        pending_backtest_performance_rows = measured_con.execute(
+            """
+            SELECT sr.run_id, sr.run_status, count(*) AS performance_row_count
+            FROM silver.strategy_runs AS sr
+            INNER JOIN gold.strategy_performance AS gp
+                ON gp.run_id = sr.run_id
+            WHERE lower(trim(coalesce(sr.run_type_id, ''))) = 'backtest'
+              AND lower(trim(coalesce(sr.run_status, ''))) IN ('pending', 'running')
+            GROUP BY sr.run_id, sr.run_status
+            ORDER BY sr.run_id
+            """
+        ).fetchall()
+        pending_backtest_performance_runs = [
+            {
+                "run_id": str(row[0]),
+                "run_status": None if row[1] is None else str(row[1]),
+                "performance_row_count": int(row[2] or 0),
+            }
+            for row in pending_backtest_performance_rows
+        ]
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_silver_strategy_runs_pending_backtests_have_performance_outputs",
+        measured_value=float(len(pending_backtest_performance_runs)),
+        details={
+            "table": "silver.strategy_runs",
+            "result_table": "gold.strategy_performance",
+            "rule": "pending/running backtest runs must not already have performance rows",
+            "failing_runs": pending_backtest_performance_runs,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+    success_missing_performance_runs: list[dict[str, Any]]
+    if _table_exists(measured_con, "gold", "strategy_performance"):
+        success_missing_performance_rows = measured_con.execute(
+            """
+            SELECT sr.run_id, sr.run_type_id, sr.run_status, coalesce(sr.persist, TRUE) AS persist
+            FROM silver.strategy_runs AS sr
+            LEFT JOIN gold.strategy_performance AS gp
+                ON gp.run_id = sr.run_id
+            WHERE lower(trim(coalesce(sr.run_status, ''))) = 'success'
+              AND lower(trim(coalesce(sr.run_type_id, ''))) IN ('backtest', 'simulation')
+              AND coalesce(sr.persist, TRUE) = TRUE
+              AND gp.run_id IS NULL
+            ORDER BY sr.run_id
+            """
+        ).fetchall()
+    else:
+        success_missing_performance_rows = measured_con.execute(
+            """
+            SELECT run_id, run_type_id, run_status, coalesce(persist, TRUE) AS persist
+            FROM silver.strategy_runs
+            WHERE lower(trim(coalesce(run_status, ''))) = 'success'
+              AND lower(trim(coalesce(run_type_id, ''))) IN ('backtest', 'simulation')
+              AND coalesce(persist, TRUE) = TRUE
+            ORDER BY run_id
+            """
+        ).fetchall()
+    success_missing_performance_runs = [
+        {
+            "run_id": str(row[0]),
+            "run_type_id": None if row[1] is None else str(row[1]),
+            "run_status": None if row[2] is None else str(row[2]),
+            "persist": bool(row[3]),
+        }
+        for row in success_missing_performance_rows
+    ]
+    _log_dq_count_check(
+        observability_con=observability_con,
+        check_name="dq_silver_strategy_runs_success_runs_have_performance",
+        measured_value=float(len(success_missing_performance_runs)),
+        details={
+            "table": "silver.strategy_runs",
+            "result_table": "gold.strategy_performance",
+            "rule": "persisted successful backtest/simulation runs must have performance rows",
+            "failing_runs": success_missing_performance_runs,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
     if not _table_exists(measured_con, "ref", "simulation_types"):
         for check_name in (
             "dq_silver_strategy_runs_simulation_type_exists",
@@ -1343,32 +1735,321 @@ def _materialize_rankings(
     _purge_non_persistent_run_rows(con)
     run_ids = _current_run_ids(strategies)
     _delete_rows_for_run_ids(con, "strategy_rankings", run_ids)
-
-    ranking_rows: list[dict[str, Any]] = []
-    for strategy in strategies:
-        ranking_rows.extend(_build_rankings_for_strategy(con, strategy, asof_ts))
-
-    if not ranking_rows:
+    if not strategies:
         return 0
 
-    ranking_df = pd.DataFrame(ranking_rows)
-    _register_temp_df(con, "strategy_rankings_df", ranking_df)
+    _ensure_strategy_rebalance_plan(con, strategies)
+    if (con.execute("SELECT count(*) FROM temp_strategy_rebalance_plan").fetchone()[0] or 0) == 0:
+        return 0
+
     con.execute(
         """
         INSERT INTO gold.strategy_rankings
         SELECT
-            run_id,
-            strategy_id,
-            rebalance_date,
-            symbol,
-            score,
-            rank,
-            selected_flag,
-            asof_ts
-        FROM strategy_rankings_df
-        """
+            p.run_id,
+            p.strategy_id,
+            p.rebalance_date,
+            upper(trim(s.symbol)) AS symbol,
+            1.0 AS score,
+            1 AS rank,
+            TRUE AS selected_flag,
+            ? AS asof_ts
+        FROM temp_strategy_rebalance_plan AS p
+        INNER JOIN silver.signals_daily AS s
+            ON CAST(s.date AS DATE) = p.rebalance_date
+           AND upper(trim(s.symbol)) = p.fixed_symbol
+        WHERE p.selection_mode = 'fixed_symbol'
+           OR p.universe_name = 'benchmark_only'
+        """,
+        [asof_ts],
     )
-    return int(len(ranking_df))
+
+    ranking_groups = con.execute(
+        """
+        SELECT DISTINCT
+            signal_column,
+            secondary_signal_column,
+            score_method,
+            ranking_direction
+        FROM temp_strategy_rebalance_plan
+        WHERE ranking_method <> 'random_selection'
+          AND selection_mode <> 'fixed_symbol'
+          AND universe_name <> 'benchmark_only'
+        ORDER BY signal_column, secondary_signal_column, score_method, ranking_direction
+        """
+    ).fetchall()
+    eligibility_join_sql = _candidate_eligibility_join_sql(con)
+    signal_table_columns = _table_columns(con, "silver", "signals_daily")
+    filter_sql_by_column = {
+        "avg_dollar_volume_21d": (
+            """
+                  AND (
+                        p.min_avg_dollar_volume_21d IS NULL
+                        OR CAST(s.avg_dollar_volume_21d AS DOUBLE)
+                           >= p.min_avg_dollar_volume_21d
+                  )
+            """
+            if "avg_dollar_volume_21d" in signal_table_columns
+            else " AND p.min_avg_dollar_volume_21d IS NULL"
+        ),
+        "price_to_sma_200": (
+            """
+                  AND (
+                        p.min_price_to_sma_200 IS NULL
+                        OR CAST(s.price_to_sma_200 AS DOUBLE) >= p.min_price_to_sma_200
+                  )
+            """
+            if "price_to_sma_200" in signal_table_columns
+            else " AND p.min_price_to_sma_200 IS NULL"
+        ),
+        "momentum_12_1": (
+            """
+                  AND (
+                        p.min_momentum_12_1 IS NULL
+                        OR CAST(s.momentum_12_1 AS DOUBLE) > p.min_momentum_12_1
+                  )
+            """
+            if "momentum_12_1" in signal_table_columns
+            else " AND p.min_momentum_12_1 IS NULL"
+        ),
+        "pct_below_52w_high": (
+            """
+                  AND (
+                        p.max_pct_below_52w_high IS NULL
+                        OR CAST(s.pct_below_52w_high AS DOUBLE)
+                           <= p.max_pct_below_52w_high
+                  )
+            """
+            if "pct_below_52w_high" in signal_table_columns
+            else " AND p.max_pct_below_52w_high IS NULL"
+        ),
+    }
+    for signal_column, secondary_signal_column, score_method, ranking_direction in ranking_groups:
+        signal_identifier = _quote_identifier(str(signal_column))
+        secondary_signal = str(secondary_signal_column or "")
+        secondary_identifier = _quote_identifier(secondary_signal) if secondary_signal else ""
+        secondary_select_sql = (
+            f", CAST(s.{secondary_identifier} AS DOUBLE) AS secondary_score"
+            if secondary_signal
+            else ", NULL::DOUBLE AS secondary_score"
+        )
+        secondary_not_null_sql = (
+            f"AND CAST(s.{secondary_identifier} AS DOUBLE) IS NOT NULL" if secondary_signal else ""
+        )
+        ratio_filter_sql = (
+            "WHERE secondary_score IS NOT NULL AND secondary_score > 0"
+            if secondary_signal and str(score_method) == "ratio"
+            else ""
+        )
+        if secondary_signal and str(score_method) == "zscore_sum":
+            score_sql = """
+                (
+                    CASE
+                        WHEN stddev_pop(primary_score) OVER score_window IS NULL
+                          OR stddev_pop(primary_score) OVER score_window = 0
+                        THEN 0.0
+                        ELSE (
+                            primary_score - avg(primary_score) OVER score_window
+                        ) / stddev_pop(primary_score) OVER score_window
+                    END
+                    +
+                    CASE
+                        WHEN stddev_pop(secondary_score) OVER score_window IS NULL
+                          OR stddev_pop(secondary_score) OVER score_window = 0
+                        THEN 0.0
+                        ELSE (
+                            secondary_score - avg(secondary_score) OVER score_window
+                        ) / stddev_pop(secondary_score) OVER score_window
+                    END
+                )
+            """
+        elif secondary_signal and str(score_method) == "ratio":
+            score_sql = "primary_score / secondary_score"
+        else:
+            score_sql = "primary_score"
+
+        rank_direction_sql = "ASC" if str(ranking_direction).lower() == "asc" else "DESC"
+        con.execute(
+            f"""
+            INSERT INTO gold.strategy_rankings
+            WITH candidates AS (
+                SELECT
+                    p.run_id,
+                    p.strategy_id,
+                    p.rebalance_date,
+                    p.target_count,
+                    upper(trim(s.symbol)) AS symbol,
+                    CAST(s.{signal_identifier} AS DOUBLE) AS primary_score
+                    {secondary_select_sql}
+                FROM temp_strategy_rebalance_plan AS p
+                INNER JOIN silver.signals_daily AS s
+                    ON CAST(s.date AS DATE) = p.rebalance_date
+                INNER JOIN silver.universe_membership_daily AS u
+                    ON CAST(u.member_date AS DATE) = CAST(s.date AS DATE)
+                   AND upper(trim(u.symbol)) = upper(trim(s.symbol))
+                {eligibility_join_sql}
+                WHERE p.signal_column = ?
+                  AND p.secondary_signal_column = ?
+                  AND p.score_method = ?
+                  AND p.ranking_direction = ?
+                  AND p.ranking_method <> 'random_selection'
+                  AND p.selection_mode <> 'fixed_symbol'
+                  AND p.universe_name <> 'benchmark_only'
+                  AND CAST(s.{signal_identifier} AS DOUBLE) IS NOT NULL
+                  {secondary_not_null_sql}
+                  {filter_sql_by_column["avg_dollar_volume_21d"]}
+                  {filter_sql_by_column["price_to_sma_200"]}
+                  {filter_sql_by_column["momentum_12_1"]}
+                  {filter_sql_by_column["pct_below_52w_high"]}
+            ),
+            filtered AS (
+                SELECT *
+                FROM candidates
+                {ratio_filter_sql}
+            ),
+            scored AS (
+                SELECT
+                    run_id,
+                    strategy_id,
+                    rebalance_date,
+                    target_count,
+                    symbol,
+                    {score_sql} AS score
+                FROM filtered
+                WINDOW score_window AS (PARTITION BY run_id, rebalance_date)
+            ),
+            ranked AS (
+                SELECT
+                    run_id,
+                    strategy_id,
+                    rebalance_date,
+                    symbol,
+                    score,
+                    row_number() OVER (
+                        PARTITION BY run_id, rebalance_date
+                        ORDER BY score {rank_direction_sql}, symbol ASC
+                    ) AS rank,
+                    target_count
+                FROM scored
+            )
+            SELECT
+                run_id,
+                strategy_id,
+                rebalance_date,
+                symbol,
+                score,
+                CAST(rank AS INTEGER) AS rank,
+                rank <= target_count AS selected_flag,
+                ? AS asof_ts
+            FROM ranked
+            """,
+            [
+                signal_column,
+                secondary_signal_column,
+                score_method,
+                ranking_direction,
+                asof_ts,
+            ],
+        )
+
+    random_candidate_rows = con.execute(
+        f"""
+        SELECT
+            p.run_id,
+            p.strategy_id,
+            p.rebalance_date,
+            p.target_count,
+            p.random_seed,
+            upper(trim(s.symbol)) AS symbol
+        FROM temp_strategy_rebalance_plan AS p
+        INNER JOIN silver.signals_daily AS s
+            ON CAST(s.date AS DATE) = p.rebalance_date
+        INNER JOIN silver.universe_membership_daily AS u
+            ON CAST(u.member_date AS DATE) = CAST(s.date AS DATE)
+           AND upper(trim(u.symbol)) = upper(trim(s.symbol))
+        {eligibility_join_sql}
+        WHERE p.ranking_method = 'random_selection'
+          {filter_sql_by_column["avg_dollar_volume_21d"]}
+        ORDER BY p.run_id, p.rebalance_date, symbol
+        """
+    ).fetchall()
+    if random_candidate_rows:
+        random_df = pd.DataFrame(
+            random_candidate_rows,
+            columns=[
+                "run_id",
+                "strategy_id",
+                "rebalance_date",
+                "target_count",
+                "random_seed",
+                "symbol",
+            ],
+        )
+        random_df["score"] = random_df.apply(
+            lambda row: (
+                int.from_bytes(
+                    hashlib.sha256(
+                        (
+                            f"{row['strategy_id']}|"
+                            f"{pd.Timestamp(row['rebalance_date']).date().isoformat()}|"
+                            f"{int(row['random_seed'])}|{row['symbol']}"
+                        ).encode("utf-8")
+                    ).digest()[:8],
+                    byteorder="big",
+                    signed=False,
+                )
+                / float(2**64 - 1)
+            ),
+            axis=1,
+        )
+        random_df = random_df.sort_values(
+            ["run_id", "rebalance_date", "score", "symbol"],
+            ascending=[True, True, False, True],
+            kind="stable",
+        )
+        random_df["rank"] = (
+            random_df.groupby(["run_id", "rebalance_date"], sort=False).cumcount() + 1
+        )
+        random_df["selected_flag"] = random_df["rank"] <= random_df["target_count"]
+        random_df["asof_ts"] = asof_ts
+        random_df = random_df[
+            [
+                "run_id",
+                "strategy_id",
+                "rebalance_date",
+                "symbol",
+                "score",
+                "rank",
+                "selected_flag",
+                "asof_ts",
+            ]
+        ]
+        _register_temp_df(con, "strategy_random_rankings_df", random_df)
+        con.execute(
+            """
+            INSERT INTO gold.strategy_rankings
+            SELECT
+                CAST(run_id AS VARCHAR),
+                CAST(strategy_id AS VARCHAR),
+                CAST(rebalance_date AS DATE),
+                CAST(symbol AS VARCHAR),
+                CAST(score AS DOUBLE),
+                CAST(rank AS INTEGER),
+                CAST(selected_flag AS BOOLEAN),
+                CAST(asof_ts AS TIMESTAMP)
+            FROM strategy_random_rankings_df
+            """
+        )
+
+    row = con.execute(
+        """
+        SELECT count(*)
+        FROM gold.strategy_rankings
+        WHERE run_id = ANY(?)
+        """,
+        [run_ids],
+    )
+    return int(row.fetchone()[0] or 0)
 
 
 def _materialize_holdings(
@@ -1385,44 +2066,27 @@ def _materialize_holdings(
     )
     run_ids = _current_run_ids(strategies)
     _delete_rows_for_run_ids(con, "strategy_holdings", run_ids)
-
-    holding_rows: list[dict[str, Any]] = []
-    for strategy in strategies:
-        selected_rows = con.execute(
-            """
-            SELECT rebalance_date, symbol, rank, score
-            FROM gold.strategy_rankings
-            WHERE run_id = ?
-              AND selected_flag = TRUE
-            ORDER BY rebalance_date, rank, symbol
-            """,
-            [strategy.run_id],
-        ).fetchall()
-        if not selected_rows:
-            continue
-        selected_df = pd.DataFrame(
-            selected_rows,
-            columns=["rebalance_date", "symbol", "entry_rank", "signal_value"],
-        )
-        counts = selected_df.groupby("rebalance_date")["symbol"].transform("count")
-        if strategy.weighting_method.strip().lower() != "equal":
-            raise ValueError(
-                "Unsupported weighting_method for "
-                f"{strategy.strategy_id}: {strategy.weighting_method}"
-            )
-        selected_df["target_weight"] = 1.0 / counts
-        selected_df["run_id"] = strategy.run_id
-        selected_df["strategy_id"] = strategy.strategy_id
-        selected_df["side"] = "SHORT" if strategy.long_short_flag else "LONG"
-        selected_df["asof_ts"] = asof_ts
-        holding_rows.extend(selected_df.to_dict(orient="records"))
-
-    if not holding_rows:
+    if not strategies:
         return 0
 
-    holding_df = pd.DataFrame(holding_rows)
-    holding_df = holding_df[
-        [
+    _ensure_strategy_rebalance_plan(con, strategies)
+    unsupported_weighting = con.execute(
+        """
+        SELECT strategy_id, weighting_method
+        FROM temp_strategy_rebalance_plan
+        WHERE weighting_method <> 'equal'
+        LIMIT 1
+        """
+    ).fetchone()
+    if unsupported_weighting is not None:
+        raise ValueError(
+            "Unsupported weighting_method for "
+            f"{unsupported_weighting[0]}: {unsupported_weighting[1]}"
+        )
+
+    con.execute(
+        """
+        INSERT INTO gold.strategy_holdings (
             "run_id",
             "strategy_id",
             "rebalance_date",
@@ -1431,18 +2095,51 @@ def _materialize_holdings(
             "side",
             "entry_rank",
             "signal_value",
-            "asof_ts",
-        ]
-    ]
-    _register_temp_df(con, "strategy_holdings_df", holding_df)
-    con.execute(
-        """
-        INSERT INTO gold.strategy_holdings
-        SELECT *
-        FROM strategy_holdings_df
-        """
+            "asof_ts"
+        )
+        WITH selected_rankings AS (
+            SELECT
+                r.run_id,
+                r.strategy_id,
+                r.rebalance_date,
+                r.symbol,
+                r.rank,
+                r.score,
+                count(*) OVER (
+                    PARTITION BY r.run_id, r.rebalance_date
+                ) AS holding_count
+            FROM gold.strategy_rankings AS r
+            WHERE r.run_id = ANY(?)
+              AND r.selected_flag = TRUE
+        )
+        SELECT
+            r.run_id,
+            r.strategy_id,
+            r.rebalance_date,
+            r.symbol,
+            1.0 / r.holding_count AS target_weight,
+            CASE WHEN p.long_short_flag THEN 'SHORT' ELSE 'LONG' END AS side,
+            r.rank AS entry_rank,
+            r.score AS signal_value,
+            ? AS asof_ts
+        FROM selected_rankings AS r
+        INNER JOIN temp_strategy_rebalance_plan AS p
+            ON p.run_id = r.run_id
+           AND p.strategy_id = r.strategy_id
+           AND p.rebalance_date = r.rebalance_date
+        ORDER BY r.run_id, r.rebalance_date, r.rank, r.symbol
+        """,
+        [run_ids, asof_ts],
     )
-    return int(len(holding_df))
+    row = con.execute(
+        """
+        SELECT count(*)
+        FROM gold.strategy_holdings
+        WHERE run_id = ANY(?)
+        """,
+        [run_ids],
+    )
+    return int(row.fetchone()[0] or 0)
 
 
 def _log_holdings_weight_sum_check(
@@ -1590,7 +2287,7 @@ def _log_rebalance_dates_present_check(
     failing_strategies: list[dict[str, Any]] = []
     measured_value = 0.0
     for strategy in strategies:
-        expected_dates = set(_rebalance_dates_for_strategy(measured_con, strategy))
+        expected_dates = set(_expected_rebalance_dates_for_strategy(measured_con, strategy))
         actual_dates = actual_dates_by_strategy.get(strategy.strategy_id, set())
         missing_dates = sorted(expected_dates - actual_dates)
         unexpected_dates = sorted(actual_dates - expected_dates)
@@ -1664,7 +2361,7 @@ def _load_price_history(
         if "vwap" in available_columns
         else "NULL::DOUBLE"
     )
-    return con.execute(
+    price_df = con.execute(
         f"""
         SELECT
             CAST(trade_date AS DATE) AS trade_date,
@@ -1683,6 +2380,7 @@ def _load_price_history(
         """,
         [PRICE_GLOB, symbols, start_date, end_date],
     ).fetch_df()
+    return _filter_valid_research_trading_frame(con, price_df, "trade_date")
 
 
 def _load_distinct_trading_dates(
@@ -1704,7 +2402,7 @@ def _load_distinct_trading_dates(
         params.append(symbols)
     sql += "\nORDER BY trade_date"
     rows = con.execute(sql, params).fetchall()
-    return [row[0] for row in rows if row[0] is not None]
+    return _filter_valid_research_trading_days(con, [row[0] for row in rows])
 
 
 def _daily_symbol_returns(price_df: pd.DataFrame) -> pd.DataFrame:
@@ -1830,6 +2528,19 @@ def _expected_return_dates_for_strategy(
     con,
     strategy: StrategyConfig,
 ) -> list[date]:
+    if _temp_table_exists(con, "temp_strategy_expected_return_dates"):
+        rows = con.execute(
+            """
+            SELECT date
+            FROM temp_strategy_expected_return_dates
+            WHERE run_id = ?
+              AND strategy_id = ?
+            ORDER BY date
+            """,
+            [strategy.run_id, strategy.strategy_id],
+        ).fetchall()
+        return [row[0] for row in rows if row[0] is not None]
+
     holdings_rows = con.execute(
         """
         SELECT DISTINCT rebalance_date, symbol
@@ -1848,11 +2559,7 @@ def _expected_return_dates_for_strategy(
     symbols = sorted(
         {
             strategy.benchmark_symbol.strip().upper(),
-            *[
-                str(row[1]).strip().upper()
-                for row in holdings_rows
-                if row[1] not in (None, "")
-            ],
+            *[str(row[1]).strip().upper() for row in holdings_rows if row[1] not in (None, "")],
         }
     )
     trading_dates = _load_distinct_trading_dates(
@@ -2066,6 +2773,424 @@ def _build_returns_for_strategy(
     return daily_rows
 
 
+def _ensure_strategy_run_config_table(
+    con,
+    strategies: list[StrategyConfig],
+) -> None:
+    rows = []
+    for strategy in strategies:
+        simulation_type = _simulation_type_for_run(con, strategy.run_id)
+        rows.append(
+            {
+                "run_id": strategy.run_id,
+                "strategy_id": strategy.strategy_id,
+                "benchmark_symbol": strategy.benchmark_symbol.strip().upper(),
+                "end_date": strategy.end_date,
+                "fill_price_basis": simulation_type.fill_price_basis,
+                "slippage_model": simulation_type.slippage_model,
+                "slippage_bps": simulation_type.slippage_bps,
+                "volatility_window_days": int(
+                    simulation_type.slippage_params.get("volatility_window_days") or 21
+                ),
+                "volatility_base_bps": float(
+                    simulation_type.slippage_params.get("base_bps") or 0.0
+                ),
+                "volatility_multiplier": float(
+                    simulation_type.slippage_params.get("volatility_multiplier") or 0.0
+                ),
+            }
+        )
+    config_df = pd.DataFrame(
+        rows,
+        columns=[
+            "run_id",
+            "strategy_id",
+            "benchmark_symbol",
+            "end_date",
+            "fill_price_basis",
+            "slippage_model",
+            "slippage_bps",
+            "volatility_window_days",
+            "volatility_base_bps",
+            "volatility_multiplier",
+        ],
+    )
+    _register_temp_df(con, "strategy_run_config_df", config_df)
+    con.execute(
+        """
+        CREATE OR REPLACE TEMPORARY TABLE temp_strategy_run_config AS
+        SELECT
+            CAST(run_id AS VARCHAR) AS run_id,
+            CAST(strategy_id AS VARCHAR) AS strategy_id,
+            CAST(benchmark_symbol AS VARCHAR) AS benchmark_symbol,
+            CAST(end_date AS DATE) AS end_date,
+            CAST(fill_price_basis AS VARCHAR) AS fill_price_basis,
+            CAST(slippage_model AS VARCHAR) AS slippage_model,
+            CAST(slippage_bps AS DOUBLE) AS slippage_bps,
+            CAST(volatility_window_days AS INTEGER) AS volatility_window_days,
+            CAST(volatility_base_bps AS DOUBLE) AS volatility_base_bps,
+            CAST(volatility_multiplier AS DOUBLE) AS volatility_multiplier
+        FROM strategy_run_config_df
+        """
+    )
+
+
+def _price_history_select_sql(con) -> str:
+    schema_rows = con.execute(
+        "DESCRIBE SELECT * FROM read_parquet(?, union_by_name = true)",
+        [PRICE_GLOB],
+    ).fetchall()
+    available_columns = {str(row[0]).lower() for row in schema_rows}
+    adjustment_ratio_expr = """
+        CASE
+            WHEN adjusted_close IS NOT NULL
+             AND close IS NOT NULL
+             AND CAST(close AS DOUBLE) > 0
+            THEN CAST(adjusted_close AS DOUBLE) / CAST(close AS DOUBLE)
+            ELSE 1.0
+        END
+    """
+    open_expr = (
+        f"CAST(open AS DOUBLE) * ({adjustment_ratio_expr})"
+        if "open" in available_columns
+        else "NULL::DOUBLE"
+    )
+    vwap_expr = (
+        f"CAST(vwap AS DOUBLE) * ({adjustment_ratio_expr})"
+        if "vwap" in available_columns
+        else "NULL::DOUBLE"
+    )
+    return f"""
+        SELECT
+            CAST(p.trade_date AS DATE) AS trade_date,
+            upper(trim(p.symbol)) AS symbol,
+            {open_expr} AS open,
+            CAST(p.close AS DOUBLE) AS close,
+            CAST(coalesce(p.adjusted_close, p.close) AS DOUBLE) AS close_fill,
+            {vwap_expr} AS vwap,
+            CAST(coalesce(p.adjusted_close, p.close) AS DOUBLE) AS price
+        FROM read_parquet(?, union_by_name = true) AS p
+        INNER JOIN temp_strategy_symbols AS selected_symbols
+            ON selected_symbols.symbol = upper(trim(p.symbol))
+        INNER JOIN valid_strategy_trading_dates AS trading_dates
+            ON trading_dates.trade_date = CAST(p.trade_date AS DATE)
+        WHERE CAST(p.trade_date AS DATE) >= ?
+          AND CAST(p.trade_date AS DATE) <= ?
+          AND coalesce(p.adjusted_close, p.close) IS NOT NULL
+    """
+
+
+def _ensure_strategy_price_return_tables(
+    con,
+    run_ids: list[str],
+) -> None:
+    con.execute(
+        """
+        CREATE OR REPLACE TEMPORARY TABLE temp_strategy_run_symbols AS
+        SELECT DISTINCT run_id, upper(trim(symbol)) AS symbol
+        FROM gold.strategy_holdings
+        WHERE run_id = ANY(?)
+          AND symbol IS NOT NULL
+          AND trim(symbol) <> ''
+        UNION
+        SELECT DISTINCT run_id, benchmark_symbol AS symbol
+        FROM temp_strategy_run_config
+        WHERE run_id = ANY(?)
+          AND benchmark_symbol IS NOT NULL
+          AND trim(benchmark_symbol) <> ''
+        """,
+        [run_ids, run_ids],
+    )
+    symbol_rows = con.execute(
+        """
+        SELECT DISTINCT symbol
+        FROM temp_strategy_run_symbols
+        ORDER BY symbol
+        """,
+    ).fetchall()
+    symbols = [str(row[0]) for row in symbol_rows if row[0] not in (None, "")]
+    symbol_df = pd.DataFrame({"symbol": symbols})
+    _register_temp_df(con, "strategy_symbols_df", symbol_df)
+    con.execute(
+        """
+        CREATE OR REPLACE TEMPORARY TABLE temp_strategy_symbols AS
+        SELECT CAST(symbol AS VARCHAR) AS symbol
+        FROM strategy_symbols_df
+        """
+    )
+
+    bounds = con.execute(
+        """
+        SELECT min(CAST(rebalance_date AS DATE)), max(coalesce(end_date, DATE '2999-12-31'))
+        FROM gold.strategy_holdings AS h
+        INNER JOIN temp_strategy_run_config AS c
+            ON c.run_id = h.run_id
+        WHERE h.run_id = ANY(?)
+        """,
+        [run_ids],
+    ).fetchone()
+    start_date = bounds[0] if bounds and bounds[0] is not None else date(1900, 1, 1)
+    end_date = bounds[1] if bounds and bounds[1] is not None else date(2999, 12, 31)
+
+    create_valid_trading_dates_table(
+        con,
+        PRICE_GLOB,
+        table_name="valid_strategy_trading_dates",
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMPORARY TABLE temp_strategy_price_history AS
+        {_price_history_select_sql(con)}
+        ORDER BY trade_date, symbol
+        """,
+        [PRICE_GLOB, start_date, end_date],
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMPORARY TABLE temp_strategy_symbol_returns AS
+        WITH base AS (
+            SELECT
+                trade_date,
+                symbol,
+                open,
+                close,
+                close_fill,
+                vwap,
+                price,
+                lag(price) OVER symbol_window AS prev_price,
+                lag(close_fill) OVER symbol_window AS prev_close
+            FROM temp_strategy_price_history
+            WINDOW symbol_window AS (PARTITION BY symbol ORDER BY trade_date)
+        )
+        SELECT
+            trade_date,
+            symbol,
+            CASE
+                WHEN price IS NOT NULL
+                 AND prev_price IS NOT NULL
+                 AND price > 0
+                 AND prev_price > 0
+                 AND abs((price / prev_price) - 1.0) <= {MAX_ABS_DAILY_SECURITY_RETURN}
+                THEN (price / prev_price) - 1.0
+                ELSE NULL
+            END AS close_return,
+            CASE
+                WHEN close_fill IS NOT NULL
+                 AND prev_close IS NOT NULL
+                 AND close_fill > 0
+                 AND prev_close > 0
+                 AND abs((close_fill / prev_close) - 1.0) <= {MAX_ABS_DAILY_SECURITY_RETURN}
+                THEN (close_fill / prev_close) - 1.0
+                ELSE NULL
+            END AS close_fill_return,
+            CASE
+                WHEN close_fill IS NOT NULL
+                 AND open IS NOT NULL
+                 AND close_fill > 0
+                 AND open > 0
+                 AND abs((close_fill / open) - 1.0) <= {MAX_ABS_DAILY_SECURITY_RETURN}
+                THEN (close_fill / open) - 1.0
+                ELSE NULL
+            END AS open_return,
+            CASE
+                WHEN close_fill IS NOT NULL
+                 AND vwap IS NOT NULL
+                 AND close_fill > 0
+                 AND vwap > 0
+                 AND abs((close_fill / vwap) - 1.0) <= {MAX_ABS_DAILY_SECURITY_RETURN}
+                THEN (close_fill / vwap) - 1.0
+                ELSE NULL
+            END AS vwap_return
+        FROM base
+        """
+    )
+
+
+def _create_strategy_return_period_tables(con, run_ids: list[str]) -> None:
+    con.execute(
+        """
+        CREATE OR REPLACE TEMPORARY TABLE temp_strategy_trading_dates AS
+        SELECT DISTINCT
+            rs.run_id,
+            r.trade_date
+        FROM temp_strategy_run_symbols AS rs
+        INNER JOIN temp_strategy_symbol_returns AS r
+            ON r.symbol = rs.symbol
+        ORDER BY run_id, trade_date
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TEMPORARY TABLE temp_strategy_period_base AS
+        WITH rebalances AS (
+            SELECT DISTINCT
+                h.run_id,
+                h.strategy_id,
+                CAST(h.rebalance_date AS DATE) AS rebalance_date,
+                c.end_date,
+                c.benchmark_symbol,
+                c.fill_price_basis,
+                c.slippage_model,
+                c.slippage_bps,
+                c.volatility_window_days,
+                c.volatility_base_bps,
+                c.volatility_multiplier,
+                lag(CAST(h.rebalance_date AS DATE)) OVER (
+                    PARTITION BY h.run_id
+                    ORDER BY CAST(h.rebalance_date AS DATE)
+                ) AS previous_rebalance_date,
+                lead(CAST(h.rebalance_date AS DATE)) OVER (
+                    PARTITION BY h.run_id
+                    ORDER BY CAST(h.rebalance_date AS DATE)
+                ) AS next_rebalance_date
+            FROM gold.strategy_holdings AS h
+            INNER JOIN temp_strategy_run_config AS c
+                ON c.run_id = h.run_id
+            WHERE h.run_id = ANY(?)
+        )
+        SELECT
+            r.*,
+            (
+                SELECT min(trade_date)
+                FROM temp_strategy_trading_dates AS d
+                WHERE d.run_id = r.run_id
+                  AND d.trade_date > r.rebalance_date
+                  AND d.trade_date <= coalesce(r.end_date, DATE '2999-12-31')
+            ) AS effective_start
+        FROM rebalances AS r
+        """,
+        [run_ids],
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TEMPORARY TABLE temp_strategy_period_turnover AS
+        WITH period_symbols AS (
+            SELECT p.run_id, p.rebalance_date, h.symbol
+            FROM temp_strategy_period_base AS p
+            INNER JOIN gold.strategy_holdings AS h
+                ON h.run_id = p.run_id
+               AND CAST(h.rebalance_date AS DATE) = p.rebalance_date
+            UNION
+            SELECT p.run_id, p.rebalance_date, h.symbol
+            FROM temp_strategy_period_base AS p
+            INNER JOIN gold.strategy_holdings AS h
+                ON h.run_id = p.run_id
+               AND CAST(h.rebalance_date AS DATE) = p.previous_rebalance_date
+        ),
+        weighted AS (
+            SELECT
+                ps.run_id,
+                ps.rebalance_date,
+                ps.symbol,
+                coalesce(current_h.target_weight, 0.0) AS current_weight,
+                coalesce(previous_h.target_weight, 0.0) AS previous_weight
+            FROM period_symbols AS ps
+            LEFT JOIN gold.strategy_holdings AS current_h
+                ON current_h.run_id = ps.run_id
+               AND CAST(current_h.rebalance_date AS DATE) = ps.rebalance_date
+               AND current_h.symbol = ps.symbol
+            LEFT JOIN temp_strategy_period_base AS p
+                ON p.run_id = ps.run_id
+               AND p.rebalance_date = ps.rebalance_date
+            LEFT JOIN gold.strategy_holdings AS previous_h
+                ON previous_h.run_id = ps.run_id
+               AND CAST(previous_h.rebalance_date AS DATE) = p.previous_rebalance_date
+               AND previous_h.symbol = ps.symbol
+        )
+        SELECT
+            p.run_id,
+            p.strategy_id,
+            p.rebalance_date,
+            p.previous_rebalance_date,
+            p.next_rebalance_date,
+            p.effective_start,
+            p.end_date,
+            p.benchmark_symbol,
+            p.fill_price_basis,
+            p.slippage_model,
+            p.slippage_bps,
+            p.volatility_window_days,
+            p.volatility_base_bps,
+            p.volatility_multiplier,
+            sum(abs(w.current_weight - w.previous_weight)) AS trade_notional,
+            CASE
+                WHEN p.previous_rebalance_date IS NULL THEN 0.0
+                ELSE 0.5 * sum(abs(w.current_weight - w.previous_weight))
+            END AS turnover
+        FROM temp_strategy_period_base AS p
+        LEFT JOIN weighted AS w
+            ON w.run_id = p.run_id
+           AND w.rebalance_date = p.rebalance_date
+        WHERE p.effective_start IS NOT NULL
+        GROUP BY
+            p.run_id,
+            p.strategy_id,
+            p.rebalance_date,
+            p.previous_rebalance_date,
+            p.next_rebalance_date,
+            p.effective_start,
+            p.end_date,
+            p.benchmark_symbol,
+            p.fill_price_basis,
+            p.slippage_model,
+            p.slippage_bps,
+            p.volatility_window_days,
+            p.volatility_base_bps,
+            p.volatility_multiplier
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TEMPORARY TABLE temp_strategy_period_slippage AS
+        WITH traded_symbols AS (
+            SELECT DISTINCT
+                p.run_id,
+                p.rebalance_date,
+                p.effective_start,
+                p.volatility_window_days,
+                p.volatility_base_bps,
+                p.volatility_multiplier,
+                h.symbol
+            FROM temp_strategy_period_turnover AS p
+            INNER JOIN gold.strategy_holdings AS h
+                ON h.run_id = p.run_id
+               AND CAST(h.rebalance_date AS DATE) = p.rebalance_date
+            WHERE p.slippage_model = 'volatility_based'
+        ),
+        recent_returns AS (
+            SELECT
+                ts.run_id,
+                ts.rebalance_date,
+                r.close_return,
+                row_number() OVER (
+                    PARTITION BY ts.run_id, ts.rebalance_date, ts.symbol
+                    ORDER BY r.trade_date DESC
+                ) AS row_num,
+                ts.volatility_window_days,
+                ts.volatility_base_bps,
+                ts.volatility_multiplier
+            FROM traded_symbols AS ts
+            INNER JOIN temp_strategy_symbol_returns AS r
+                ON r.symbol = ts.symbol
+               AND r.trade_date < ts.effective_start
+               AND r.close_return IS NOT NULL
+        )
+        SELECT
+            run_id,
+            rebalance_date,
+            volatility_base_bps
+              + (
+                    coalesce(stddev_pop(close_return), 0.0)
+                    * 10000.0
+                    * volatility_multiplier
+                ) AS slippage_bps
+        FROM recent_returns
+        WHERE row_num <= volatility_window_days
+        GROUP BY run_id, rebalance_date, volatility_base_bps, volatility_multiplier
+        """
+    )
+
+
 def _materialize_returns(
     con,
     strategies: list[StrategyConfig],
@@ -2080,42 +3205,239 @@ def _materialize_returns(
     )
     run_ids = _current_run_ids(strategies)
     _delete_rows_for_run_ids(con, "strategy_returns", run_ids)
-
-    return_rows: list[dict[str, Any]] = []
-    for strategy in strategies:
-        return_rows.extend(_build_returns_for_strategy(con, strategy, asof_ts))
-
-    if not return_rows:
+    if not strategies:
         return 0
 
-    returns_df = pd.DataFrame(return_rows)
-    returns_df = returns_df[
-        [
-            "run_id",
-            "strategy_id",
-            "date",
-            "portfolio_return",
-            "benchmark_return",
-            "excess_return",
-            "cumulative_return",
-            "drawdown",
-            "turnover",
-            "holdings_count",
-            "held_symbols_expected",
-            "held_symbols_with_returns",
-            "missing_symbols",
-            "asof_ts",
-        ]
-    ]
-    _register_temp_df(con, "strategy_returns_df", returns_df)
+    con.execute("SET preserve_insertion_order=false")
+    con.execute(f"SET threads={DUCKDB_STRATEGY_THREADS}")
+    _ensure_strategy_run_config_table(con, strategies)
+    holdings_count = con.execute(
+        """
+        SELECT count(*)
+        FROM gold.strategy_holdings
+        WHERE run_id = ANY(?)
+        """,
+        [run_ids],
+    ).fetchone()[0]
+    if not holdings_count:
+        return 0
+
+    _ensure_strategy_price_return_tables(con, run_ids)
+    _create_strategy_return_period_tables(con, run_ids)
     con.execute(
         """
-        INSERT INTO gold.strategy_returns
-        SELECT *
-        FROM strategy_returns_df
+        CREATE OR REPLACE TEMPORARY TABLE temp_strategy_expected_return_dates AS
+        SELECT DISTINCT
+            p.run_id,
+            p.strategy_id,
+            d.trade_date AS date
+        FROM temp_strategy_period_turnover AS p
+        INNER JOIN temp_strategy_trading_dates AS d
+            ON d.run_id = p.run_id
+           AND d.trade_date >= p.effective_start
+           AND (
+                p.next_rebalance_date IS NULL
+                OR d.trade_date < p.next_rebalance_date
+           )
+           AND d.trade_date <= coalesce(p.end_date, DATE '2999-12-31')
         """
     )
-    return int(len(returns_df))
+    for run_id in run_ids:
+        con.execute(
+            """
+            INSERT INTO gold.strategy_returns (
+                "run_id",
+                "strategy_id",
+                "date",
+                "portfolio_return",
+                "benchmark_return",
+                "excess_return",
+                "cumulative_return",
+                "drawdown",
+                "turnover",
+                "holdings_count",
+                "held_symbols_expected",
+                "held_symbols_with_returns",
+                "missing_symbols",
+                "asof_ts"
+            )
+            WITH daily_holdings AS (
+                SELECT
+                    p.run_id,
+                    p.strategy_id,
+                    p.rebalance_date,
+                    d.trade_date,
+                    p.effective_start,
+                    p.benchmark_symbol,
+                    p.fill_price_basis,
+                    p.slippage_model,
+                    p.slippage_bps,
+                    p.volatility_base_bps,
+                    p.trade_notional,
+                    p.turnover,
+                    h.symbol,
+                    h.target_weight,
+                    CASE
+                        WHEN d.trade_date = p.effective_start
+                         AND p.fill_price_basis IN ('open', 'next_open')
+                        THEN r.open_return
+                        WHEN d.trade_date = p.effective_start
+                         AND p.fill_price_basis = 'vwap'
+                        THEN r.vwap_return
+                        ELSE r.close_return
+                    END AS asset_return
+                FROM temp_strategy_period_turnover AS p
+                INNER JOIN temp_strategy_trading_dates AS d
+                    ON d.run_id = p.run_id
+                   AND d.trade_date >= p.effective_start
+                   AND (
+                        p.next_rebalance_date IS NULL
+                        OR d.trade_date < p.next_rebalance_date
+                   )
+                   AND d.trade_date <= coalesce(p.end_date, DATE '2999-12-31')
+                INNER JOIN gold.strategy_holdings AS h
+                    ON h.run_id = p.run_id
+                   AND CAST(h.rebalance_date AS DATE) = p.rebalance_date
+                LEFT JOIN temp_strategy_symbol_returns AS r
+                    ON r.trade_date = d.trade_date
+                   AND r.symbol = h.symbol
+                WHERE p.run_id = ?
+            ),
+            aggregated AS (
+                SELECT
+                    run_id,
+                    strategy_id,
+                    rebalance_date,
+                    trade_date,
+                    effective_start,
+                    benchmark_symbol,
+                    fill_price_basis,
+                    slippage_model,
+                    slippage_bps,
+                    volatility_base_bps,
+                    trade_notional,
+                    turnover,
+                    count(*) AS held_symbols_expected,
+                    count(asset_return) AS held_symbols_with_returns,
+                    string_agg(
+                        CASE WHEN asset_return IS NULL THEN symbol ELSE NULL END,
+                        ','
+                        ORDER BY symbol
+                    ) AS missing_symbols,
+                    sum(target_weight * asset_return) AS weighted_return
+                FROM daily_holdings
+                GROUP BY ALL
+            ),
+            with_slippage AS (
+                SELECT
+                    a.*,
+                    CASE
+                        WHEN a.held_symbols_with_returns < a.held_symbols_expected THEN NULL
+                        ELSE a.weighted_return
+                          - CASE
+                                WHEN a.trade_date = a.effective_start
+                                 AND coalesce(a.trade_notional, 0.0) <> 0.0
+                                THEN coalesce(a.trade_notional, 0.0)
+                                  * (
+                                        CASE
+                                            WHEN a.slippage_model = 'none' THEN 0.0
+                                            WHEN a.slippage_model = 'fixed_bps'
+                                            THEN coalesce(a.slippage_bps, 0.0)
+                                            WHEN a.slippage_model = 'volatility_based'
+                                            THEN coalesce(
+                                                ps.slippage_bps,
+                                                a.volatility_base_bps,
+                                                0.0
+                                            )
+                                            ELSE 0.0
+                                        END
+                                    ) / 10000.0
+                                ELSE 0.0
+                            END
+                    END AS portfolio_return
+                FROM aggregated AS a
+                LEFT JOIN temp_strategy_period_slippage AS ps
+                    ON ps.run_id = a.run_id
+                   AND ps.rebalance_date = a.rebalance_date
+            ),
+            with_benchmark AS (
+                SELECT
+                    s.*,
+                    b.close_return AS benchmark_return
+                FROM with_slippage AS s
+                LEFT JOIN temp_strategy_symbol_returns AS b
+                    ON b.trade_date = s.trade_date
+                   AND b.symbol = s.benchmark_symbol
+            ),
+            with_wealth AS (
+                SELECT
+                    *,
+                    CASE
+                        WHEN portfolio_return IS NULL THEN NULL
+                        ELSE exp(
+                            sum(
+                                CASE
+                                    WHEN portfolio_return IS NULL THEN NULL
+                                    ELSE ln(1.0 + portfolio_return)
+                                END
+                            ) OVER (
+                                PARTITION BY run_id
+                                ORDER BY trade_date
+                                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                            )
+                        )
+                    END AS cumulative_wealth
+                FROM with_benchmark
+            ),
+            final_rows AS (
+                SELECT
+                    run_id,
+                    strategy_id,
+                    trade_date AS date,
+                    portfolio_return,
+                    benchmark_return,
+                    CASE
+                        WHEN benchmark_return IS NULL OR portfolio_return IS NULL THEN NULL
+                        ELSE portfolio_return - benchmark_return
+                    END AS excess_return,
+                    CASE
+                        WHEN cumulative_wealth IS NULL THEN NULL
+                        ELSE cumulative_wealth - 1.0
+                    END AS cumulative_return,
+                    CASE
+                        WHEN cumulative_wealth IS NULL THEN NULL
+                        ELSE (
+                            cumulative_wealth
+                            / max(cumulative_wealth) OVER (
+                                PARTITION BY run_id
+                                ORDER BY trade_date
+                                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                            )
+                        ) - 1.0
+                    END AS drawdown,
+                    CASE WHEN trade_date = effective_start THEN turnover ELSE 0.0 END AS turnover,
+                    held_symbols_expected AS holdings_count,
+                    held_symbols_expected,
+                    held_symbols_with_returns,
+                    nullif(missing_symbols, '') AS missing_symbols,
+                    ? AS asof_ts
+                FROM with_wealth
+            )
+            SELECT *
+            FROM final_rows
+            ORDER BY date
+            """,
+            [run_id, asof_ts],
+        )
+    row = con.execute(
+        """
+        SELECT count(*)
+        FROM gold.strategy_returns
+        WHERE run_id = ANY(?)
+        """,
+        [run_ids],
+    )
+    return int(row.fetchone()[0] or 0)
 
 
 def _log_strategy_return_continuity_check(
@@ -2398,30 +3720,12 @@ def _materialize_performance(
     )
     run_ids = _current_run_ids(strategies)
     _delete_rows_for_run_ids(con, "strategy_performance", run_ids)
-
-    performance_rows: list[dict[str, Any]] = []
-    for strategy in strategies:
-        returns_df = con.execute(
-            """
-            SELECT *
-            FROM gold.strategy_returns
-            WHERE run_id = ?
-            ORDER BY date
-            """,
-            [strategy.run_id],
-        ).fetch_df()
-        if returns_df.empty:
-            continue
-        performance_rows.append(
-            _performance_row(strategy.run_id, strategy.strategy_id, returns_df, asof_ts)
-        )
-
-    if not performance_rows:
+    if not run_ids:
         return 0
 
-    performance_df = pd.DataFrame(performance_rows)
-    performance_df = performance_df[
-        [
+    con.execute(
+        """
+        INSERT INTO gold.strategy_performance (
             "run_id",
             "strategy_id",
             "cagr",
@@ -2433,29 +3737,156 @@ def _materialize_performance(
             "turnover_avg",
             "benchmark_return",
             "alpha",
-            "asof_ts",
-        ]
-    ]
-    _register_temp_df(con, "strategy_performance_df", performance_df)
-    con.execute(
-        """
-        INSERT INTO gold.strategy_performance
-        SELECT *
-        FROM strategy_performance_df
-        """
+            "asof_ts"
+        )
+        WITH clean AS (
+            SELECT *
+            FROM gold.strategy_returns
+            WHERE run_id = ANY(?)
+              AND portfolio_return IS NOT NULL
+              AND cumulative_return IS NOT NULL
+        ),
+        last_returns AS (
+            SELECT run_id, cumulative_return
+            FROM (
+                SELECT
+                    run_id,
+                    cumulative_return,
+                    row_number() OVER (
+                        PARTITION BY run_id
+                        ORDER BY date DESC
+                    ) AS row_num
+                FROM clean
+            )
+            WHERE row_num = 1
+        ),
+        aggregates AS (
+            SELECT
+                run_id,
+                any_value(strategy_id) AS strategy_id,
+                count(*) AS periods,
+                avg(portfolio_return) AS portfolio_mean,
+                stddev_samp(portfolio_return) AS portfolio_std,
+                stddev_samp(
+                    CASE WHEN portfolio_return < 0 THEN portfolio_return ELSE NULL END
+                ) AS downside_std,
+                min(drawdown) AS max_drawdown,
+                avg(CASE WHEN portfolio_return > 0 THEN 1.0 ELSE 0.0 END) AS hit_rate,
+                avg(turnover) AS turnover_avg,
+                avg(excess_return) AS mean_excess_return,
+                exp(
+                    coalesce(
+                        sum(
+                            CASE
+                                WHEN benchmark_return IS NULL THEN NULL
+                                ELSE ln(1.0 + benchmark_return)
+                            END
+                        ),
+                        0.0
+                    )
+                ) - 1.0 AS benchmark_total_return
+            FROM clean
+            GROUP BY run_id
+        ),
+        metrics AS (
+            SELECT
+                a.run_id,
+                a.strategy_id,
+                CASE
+                    WHEN a.periods <= 0 OR 1.0 + l.cumulative_return <= 0 THEN NULL
+                    ELSE pow(1.0 + l.cumulative_return, 252.0 / a.periods) - 1.0
+                END AS cagr,
+                CASE
+                    WHEN a.portfolio_std IS NOT NULL AND a.portfolio_std > 0
+                    THEN a.portfolio_mean / a.portfolio_std * sqrt(252.0)
+                    ELSE NULL
+                END AS sharpe_ratio,
+                CASE
+                    WHEN a.downside_std IS NOT NULL AND a.downside_std > 0
+                    THEN a.portfolio_mean / a.downside_std * sqrt(252.0)
+                    ELSE NULL
+                END AS sortino_ratio,
+                a.max_drawdown,
+                CASE
+                    WHEN a.portfolio_std IS NOT NULL
+                    THEN a.portfolio_std * sqrt(252.0)
+                    ELSE NULL
+                END AS annualized_volatility,
+                a.hit_rate,
+                a.turnover_avg,
+                a.benchmark_total_return AS benchmark_return,
+                CASE
+                    WHEN a.mean_excess_return IS NOT NULL
+                    THEN a.mean_excess_return * 252.0
+                    WHEN (
+                        CASE
+                            WHEN a.periods <= 0 OR 1.0 + l.cumulative_return <= 0 THEN NULL
+                            ELSE pow(1.0 + l.cumulative_return, 252.0 / a.periods) - 1.0
+                        END
+                    ) IS NOT NULL
+                     AND (
+                        CASE
+                            WHEN a.periods <= 0 OR 1.0 + a.benchmark_total_return <= 0 THEN NULL
+                            ELSE pow(1.0 + a.benchmark_total_return, 252.0 / a.periods) - 1.0
+                        END
+                    ) IS NOT NULL
+                    THEN (
+                        CASE
+                            WHEN a.periods <= 0 OR 1.0 + l.cumulative_return <= 0 THEN NULL
+                            ELSE pow(1.0 + l.cumulative_return, 252.0 / a.periods) - 1.0
+                        END
+                    ) - (
+                        CASE
+                            WHEN a.periods <= 0 OR 1.0 + a.benchmark_total_return <= 0 THEN NULL
+                            ELSE pow(1.0 + a.benchmark_total_return, 252.0 / a.periods) - 1.0
+                        END
+                    )
+                    ELSE NULL
+                END AS alpha
+            FROM aggregates AS a
+            INNER JOIN last_returns AS l
+                ON l.run_id = a.run_id
+        )
+        SELECT
+            run_id,
+            strategy_id,
+            cagr,
+            sharpe_ratio,
+            sortino_ratio,
+            max_drawdown,
+            annualized_volatility,
+            hit_rate,
+            turnover_avg,
+            benchmark_return,
+            alpha,
+            ? AS asof_ts
+        FROM metrics
+        ORDER BY strategy_id, run_id
+        """,
+        [run_ids, asof_ts],
     )
-    return int(len(performance_df))
+    row = con.execute(
+        """
+        SELECT count(*)
+        FROM gold.strategy_performance
+        WHERE run_id = ANY(?)
+        """,
+        [run_ids],
+    )
+    return int(row.fetchone()[0] or 0)
 
 
 @asset(
     name="strategy_rankings",
     key_prefix=["gold"],
     deps=[
+        ref_invalid_trading_days,
         silver_strategy_definitions,
         silver_strategy_parameters,
         silver_strategy_runs,
         silver_signals_daily,
         silver_universe_membership_daily,
+        silver_security_master,
         silver_research_daily_prices,
     ],
     required_resource_keys={"research_duckdb"},

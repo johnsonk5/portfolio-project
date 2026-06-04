@@ -489,6 +489,21 @@ def _is_us_trading_day(partition_key: str) -> bool:
     if day.weekday() >= 5:
         return False
 
+    special_closures = {
+        date(2001, 9, 11),  # September 11 attacks
+        date(2001, 9, 12),
+        date(2001, 9, 13),
+        date(2001, 9, 14),
+        date(2004, 6, 11),  # National day of mourning for President Reagan
+        date(2007, 1, 2),  # National day of mourning for President Ford
+        date(2012, 10, 29),  # Hurricane Sandy
+        date(2012, 10, 30),
+        date(2018, 12, 5),  # National day of mourning for President George H.W. Bush
+        date(2025, 1, 9),  # National day of mourning for President Carter
+    }
+    if day in special_closures:
+        return False
+
     def _observed_fixed_holiday(year: int, month: int, day_of_month: int) -> date:
         holiday = date(year, month, day_of_month)
         if holiday.weekday() == 5:

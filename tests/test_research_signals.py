@@ -7,6 +7,7 @@ import pytest
 from dagster import build_asset_context
 
 import portfolio_project.defs.research_db.silver.signals as signals_module
+from portfolio_project.defs.research_db.trading_calendar import is_us_trading_day
 
 
 def _write_silver_prices_daily(data_root: Path, trade_date: str, frame: pd.DataFrame) -> None:
@@ -26,7 +27,9 @@ def test_signals_daily_builds_expected_metrics(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setattr(signals_module, "DATA_ROOT", data_root)
     monkeypatch.setattr(signals_module, "SIGNAL_VERSION", "test-v1")
 
-    dates = pd.bdate_range("2025-01-01", periods=260)
+    dates = pd.DatetimeIndex(
+        [ts for ts in pd.bdate_range("2025-01-01", periods=280) if is_us_trading_day(ts.date())]
+    )[:260]
     closes = pd.Series([100.0 + (idx * 0.5) for idx in range(len(dates))], dtype="float64")
     adjusted = closes * 1.02
     volumes = pd.Series([1_000_000 + (idx * 1000) for idx in range(len(dates))], dtype="int64")
@@ -252,3 +255,54 @@ def test_signals_daily_fills_missing_adjusted_close_from_close(tmp_path: Path, m
         """
     ).fetchone()
     assert dq_row == ("PASS", 0.0)
+
+
+def test_signals_daily_excludes_market_holidays(tmp_path: Path, monkeypatch) -> None:
+    data_root = tmp_path / "data"
+    monkeypatch.setattr(signals_module, "DATA_ROOT", data_root)
+    monkeypatch.setattr(signals_module, "SIGNALS_SYMBOL_BUCKETS", 1)
+
+    for trade_date, close in [
+        ("2026-02-13", 100.0),
+        ("2026-02-16", 101.0),
+        ("2026-02-17", 102.0),
+    ]:
+        _write_silver_prices_daily(
+            data_root,
+            trade_date,
+            pd.DataFrame(
+                {
+                    "symbol": ["AAPL"],
+                    "timestamp": [pd.Timestamp(f"{trade_date}T21:00:00Z")],
+                    "trade_date": [trade_date],
+                    "open": [close],
+                    "high": [close],
+                    "low": [close],
+                    "close": [close],
+                    "adjusted_close": [close],
+                    "volume": [1000],
+                    "trade_count": [10],
+                    "vwap": [close],
+                    "dollar_volume": [close * 1000],
+                    "source": ["eodhd"],
+                    "ingested_ts": [pd.Timestamp(f"{trade_date}T21:01:00Z")],
+                }
+            ),
+        )
+
+    con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(resources={"research_duckdb": con, "duckdb": obs_con})
+    signals_module.silver_signals_daily(context)
+
+    rows = con.execute(
+        """
+        SELECT date, close, returns_1d
+        FROM silver.signals_daily
+        ORDER BY date
+        """
+    ).fetchall()
+    assert rows == [
+        (pd.Timestamp("2026-02-13").date(), 100.0, None),
+        (pd.Timestamp("2026-02-17").date(), 102.0, pytest.approx(0.02)),
+    ]

@@ -10,6 +10,7 @@ from portfolio_project.defs.research_db.silver.research_prices import (
     RESEARCH_DAILY_PRICES_DATASET,
     silver_research_daily_prices,
 )
+from portfolio_project.defs.research_db.trading_calendar import create_valid_trading_dates_table
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 LIQUIDITY_LOOKBACK_DAYS = int(os.getenv("RESEARCH_UNIVERSE_LIQUIDITY_LOOKBACK_DAYS", "20"))
@@ -90,20 +91,23 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
 
     con.execute("CREATE SCHEMA IF NOT EXISTS silver")
     try:
+        create_valid_trading_dates_table(con, prices_glob)
         con.execute(
             """
             CREATE OR REPLACE TABLE silver.universe_eligibility_daily AS
             WITH prices AS (
                 SELECT
-                    CAST(trade_date AS DATE) AS trade_date,
-                    upper(trim(symbol)) AS symbol,
-                    CAST(close AS DOUBLE) AS close,
-                    CAST(volume AS BIGINT) AS volume,
-                    CAST(dollar_volume AS DOUBLE) AS dollar_volume
-                FROM read_parquet(?)
-                WHERE trade_date IS NOT NULL
-                  AND symbol IS NOT NULL
-                  AND trim(symbol) <> ''
+                    CAST(p.trade_date AS DATE) AS trade_date,
+                    upper(trim(p.symbol)) AS symbol,
+                    CAST(p.close AS DOUBLE) AS close,
+                    CAST(p.volume AS BIGINT) AS volume,
+                    CAST(p.dollar_volume AS DOUBLE) AS dollar_volume
+                FROM read_parquet(?) AS p
+                INNER JOIN valid_research_trading_dates AS trading_dates
+                    ON trading_dates.trade_date = CAST(p.trade_date AS DATE)
+                WHERE p.trade_date IS NOT NULL
+                  AND p.symbol IS NOT NULL
+                  AND trim(p.symbol) <> ''
             ),
             features AS (
                 SELECT

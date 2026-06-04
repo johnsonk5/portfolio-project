@@ -22,8 +22,8 @@ The system automates ingestion, transformation, quality checks, and observabilit
 This project uses a medallion architecture with the following specs:
 
 * Bronze - raw API data stored in partitioned parquet files
-* Silver - Cleaned and normalized datasets stored in partitioned parquet files with views built on top in DuckDB.
-* Gold - Aggregated factors and analytics stored in DuckDB
+* Silver - cleaned and normalized datasets. Storage varies by access pattern: high-volume time-series datasets are partitioned parquet, while reference, universe, signal, and strategy metadata tables live in DuckDB.
+* Gold - aggregated factors and analytics stored in DuckDB
 
 ## Data Sources
 
@@ -109,7 +109,7 @@ This creates and uses `.dagster_home/` in the repository as `DAGSTER_HOME`.
 For environment variables and defaults, use:
 - [`docs/.env.sample`](docs/.env.sample)
 
-Be sure to add your Alpaca API keys and, if running the research daily price assets, your EODHD API key to the `.env` file.
+Be sure to add your Alpaca API keys and, if materializing EODHD historical/backfill price assets, your EODHD API key to the `.env` file.
 
 For reliability behavior (including DuckDB locking, freshness, and data quality checks), see:
 - [`docs/Reliability.md`](docs/Reliability.md)

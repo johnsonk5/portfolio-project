@@ -191,6 +191,18 @@ def test_is_us_trading_day_rejects_good_friday_without_market_calendar_dependenc
     assert _is_us_trading_day("2026-04-06") is True
 
 
+def test_is_us_trading_day_rejects_special_exchange_closures() -> None:
+    assert _is_us_trading_day("2001-09-11") is False
+    assert _is_us_trading_day("2001-09-13") is False
+    assert _is_us_trading_day("2001-09-14") is False
+    assert _is_us_trading_day("2004-06-11") is False
+    assert _is_us_trading_day("2007-01-02") is False
+    assert _is_us_trading_day("2012-10-29") is False
+    assert _is_us_trading_day("2012-10-30") is False
+    assert _is_us_trading_day("2018-12-05") is False
+    assert _is_us_trading_day("2025-01-09") is False
+
+
 def _write_research_partition(tmp_path, partition_key: str, row_count: int) -> None:
     out_path = (
         tmp_path
