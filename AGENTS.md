@@ -88,6 +88,7 @@ uv run mypy
 - Default DuckDB paths are `data/duckdb/portfolio.duckdb` and `data/duckdb/research.duckdb`, overridable with `PORTFOLIO_DUCKDB_PATH` and `PORTFOLIO_RESEARCH_DUCKDB_PATH`.
 - Environment variable examples live in `docs/.env.sample`.
 - Alpaca credentials are required for live market ingestion.
+- SEC ingestion should use a declared `User-Agent` and respect SEC fair-access limits.
 - Demo and local development flows rely on `portfolio-bootstrap` and `seed_demo_data`.
 
 Prefer environment-driven paths over hardcoded paths. Existing modules often resolve paths from `os.getenv(...)` at import time.
@@ -105,6 +106,9 @@ Prefer environment-driven paths over hardcoded paths. Existing modules often res
 
 - Bronze and silver outputs are filesystem datasets; gold and observability data live in DuckDB.
 - Silver prices are partitioned by both `date=YYYY-MM-DD` and `symbol=XYZ`; several tests depend on this structure.
+- SEC fundamentals bronze should preserve raw bulk archives partitioned by ingestion date, plus parsed bronze parquet for downstream processing.
+- SEC-derived silver tables should keep source provenance and effective/valid date fields where mappings or facts can change over time.
+- Fundamental research features must be point-in-time safe: use SEC `filing_date` or `acceptance_datetime` for availability, not just financial period end dates.
 - Prefer idempotent writes. Current patterns clear and rewrite the target day partition before emitting fresh parquet files.
 - Preserve schema stability where possible because dashboard queries and tests assume current column sets.
 
@@ -147,10 +151,12 @@ If a change affects Dagster assets, also consider whether it impacts:
 - observability rows and run metadata
 - partition directory layout
 - Streamlit queries against DuckDB
+- point-in-time correctness for research signals and strategy backtests
 
 ## Practical Guidance For Agents
 
 - Read `README.md` and the relevant file in `docs/` before large changes.
+- For SEC fundamentals work, read `internal_docs/SEC Fundamentals Work Plan.md` before implementation.
 - Prefer small, local changes that match existing patterns over introducing new frameworks or abstractions.
 - Do not commit generated runtime data under `data/`, cache directories, or local lock files.
 - Be careful with module-level globals such as `DATA_ROOT`; tests sometimes monkeypatch these directly.
