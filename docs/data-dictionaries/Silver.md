@@ -54,6 +54,32 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | `is_fund_like` | `bool` | Whether the row appears to be fund-like, including ETFs and trusts. |
 | `is_investable_common_equity` | `bool` | Convenience flag for tradable common equity excluding ETFs, ADRs, OTC names, bankruptcy-related names, derivatives, and fund-like securities. |
 
+## `silver.security_identifiers`
+
+*DuckDB Table in the research DuckDB silver schema*
+
+Stores effective-dated external identifier mappings for project securities. The natural key is `asset_id`, `identifier_source`, `identifier_type`, `identifier_value`, and `valid_from_date`. Current rows have `is_current = true` and `valid_to_date` null.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases. |
+| `source_symbol` | `object` | Ticker symbol as reported by the source system. |
+| `security_name` | `object` | Company or security name from the identifier source. |
+| `identifier_type` | `object` | Identifier namespace such as `cik`, `sec_ticker`, `alpaca_id`, `cusip`, or `isin`. |
+| `identifier_value` | `object` | Identifier value in normalized source form; CIK identifiers are stored without left-padding. |
+| `cik` | `object` | SEC Central Index Key without left-padding when available. |
+| `sec_ticker` | `object` | Ticker reported by SEC company ticker data. |
+| `alpaca_id` | `object` | Alpaca asset identifier when available. |
+| `exchange` | `object` | Exchange reported by the identifier source when available. |
+| `identifier_source` | `object` | Source label such as `sec_company_tickers`, `alpaca_assets`, or `manual_override`. |
+| `source_priority` | `int` | Deterministic priority used to resolve conflicting mappings, where lower values win. |
+| `mapping_confidence` | `float` | Confidence score between 0 and 1 for the symbol-to-identifier mapping. |
+| `valid_from_date` | `date` | First date the mapping is considered valid. |
+| `valid_to_date` | `date` | Last date the mapping is considered valid, null for current mappings. |
+| `is_current` | `bool` | Whether this row is the active mapping for the identifier source and symbol. |
+| `ingestion_date` | `date` | Bronze ingestion date of the source snapshot that produced the mapping. |
+| `ingested_ts` | `timestamp` | ETL ingest timestamp. |
+
 ## `silver.prices`
 
 *Parquet file*
@@ -210,6 +236,97 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 | `avg_dollar_volume_63d` | `float` | Rolling average dollar volume used for liquidity filtering and ranking. |
 | `trading_days_seen_252d` | `int` | Count of recent rows with close observations. |
 | `volume_positive_days_252d` | `int` | Count of recent rows with positive volume. |
+| `ingested_ts` | `timestamp` | ETL ingest timestamp. |
+
+## `silver.sec_submissions`
+
+*DuckDB Table in the research DuckDB silver schema*
+
+One row per SEC filing accession. The natural key is `accession_number`; `cik` and `accession_number` are required. `asset_id` is nullable until a filing CIK can be resolved to a project asset.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases, nullable when the CIK is not mapped. |
+| `cik` | `object` | SEC Central Index Key without left-padding. |
+| `accession_number` | `object` | SEC accession number with dashes. |
+| `accession_number_nodash` | `object` | SEC accession number without dashes for URL construction and joins. |
+| `form` | `object` | SEC form type such as `10-K`, `10-Q`, `8-K`, `10-K/A`, or `10-Q/A`. |
+| `filing_date` | `date` | SEC filing date. |
+| `report_date` | `date` | Fiscal period report date reported by SEC. |
+| `acceptance_datetime` | `timestamp` | SEC acceptance datetime when available, stored in UTC. |
+| `primary_document` | `object` | Primary filing document filename. |
+| `primary_doc_description` | `object` | SEC primary document description. |
+| `file_number` | `object` | SEC file number when available. |
+| `film_number` | `object` | SEC film number when available. |
+| `act` | `object` | SEC act code when available. |
+| `is_amendment` | `bool` | Whether the filing form is an amendment. |
+| `amended_accession_number` | `object` | Prior accession amended by this filing when inferable, otherwise null. |
+| `items` | `object` | SEC item list for applicable forms, stored as source text. |
+| `size_bytes` | `int` | Filing size in bytes when provided by SEC. |
+| `source_url` | `object` | SEC source URL or archive member path for lineage. |
+| `ingestion_date` | `date` | Bronze ingestion date of the submissions snapshot. |
+| `ingested_ts` | `timestamp` | ETL ingest timestamp. |
+
+## `silver.sec_facts_long`
+
+*DuckDB Table in the research DuckDB silver schema*
+
+Normalized long-form XBRL facts from SEC company facts. The deduplication key is `cik`, `accession_number`, `taxonomy`, `tag`, `unit`, `period_start_date`, `period_end_date`, and `frame`, with latest source snapshot metadata retained when duplicate source rows are equivalent. `asset_id` is nullable until a fact CIK can be resolved to a project asset.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases, nullable when the CIK is not mapped. |
+| `cik` | `object` | SEC Central Index Key without left-padding. |
+| `accession_number` | `object` | Filing accession number associated with the fact. |
+| `taxonomy` | `object` | XBRL taxonomy namespace such as `us-gaap`, `dei`, or `ifrs-full`. |
+| `tag` | `object` | XBRL concept tag from the taxonomy. |
+| `label` | `object` | SEC concept label when available. |
+| `description` | `object` | SEC concept description when available. |
+| `unit` | `object` | Unit reported by SEC, such as `USD`, `shares`, or `USD/shares`. |
+| `value` | `float` | Numeric fact value after parser normalization. |
+| `value_raw` | `object` | Raw source value as text for audit and parser troubleshooting. |
+| `decimals` | `object` | SEC decimals field as reported. |
+| `period_start_date` | `date` | Fact period start date for duration facts, null for instant facts. |
+| `period_end_date` | `date` | Fact period end date. |
+| `period_type` | `object` | `instant` or `duration`. |
+| `fiscal_year` | `int` | Fiscal year reported by SEC. |
+| `fiscal_period` | `object` | Fiscal period reported by SEC, such as `FY`, `Q1`, `Q2`, `Q3`, or `Q4`. |
+| `form` | `object` | Filing form that provided the fact. |
+| `filed_date` | `date` | SEC filed date for the fact. |
+| `frame` | `object` | SEC frame identifier when present. |
+| `source_snapshot_date` | `date` | SEC bulk snapshot date represented by the bronze archive. |
+| `ingestion_date` | `date` | Bronze ingestion date of the company facts snapshot. |
+| `ingested_ts` | `timestamp` | ETL ingest timestamp. |
+
+## `silver.sec_statement_items`
+
+*DuckDB Table in the research DuckDB silver schema*
+
+Curated, concept-mapped facts used to build gold fundamentals. The natural key is `asset_id`, `cik`, `accession_number`, `canonical_metric`, `period_end_date`, `fiscal_year`, and `fiscal_period`.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `asset_id` | `int` | Durable project asset key resolved from `silver.security_identifiers`. |
+| `cik` | `object` | SEC Central Index Key without left-padding. |
+| `accession_number` | `object` | Filing accession number associated with the source fact. |
+| `canonical_metric` | `object` | Stable metric name such as `revenue`, `net_income`, `assets`, `liabilities`, `equity`, `debt`, `cash`, `operating_cash_flow`, `capex`, `diluted_shares`, or `diluted_eps`. |
+| `statement_type` | `object` | Statement family such as `income_statement`, `balance_sheet`, `cash_flow`, or `shares`. |
+| `taxonomy` | `object` | XBRL taxonomy namespace of the selected source concept. |
+| `tag` | `object` | Source XBRL concept tag selected for the canonical metric. |
+| `unit` | `object` | Unit of the selected source fact. |
+| `value` | `float` | Curated numeric value for the canonical metric. |
+| `period_start_date` | `date` | Fact period start date for duration metrics, null for instant metrics. |
+| `period_end_date` | `date` | Fact period end date. |
+| `period_type` | `object` | `instant` or `duration`. |
+| `fiscal_year` | `int` | Fiscal year reported by SEC. |
+| `fiscal_period` | `object` | Fiscal period reported by SEC, such as `FY`, `Q1`, `Q2`, `Q3`, or `Q4`. |
+| `form` | `object` | Filing form that provided the selected fact. |
+| `filing_date` | `date` | SEC filing date. |
+| `acceptance_datetime` | `timestamp` | SEC acceptance datetime when available, stored in UTC. |
+| `availability_date` | `date` | First trading-date candidate on which the metric may be used; derived from `acceptance_datetime` date when available, otherwise `filing_date`. |
+| `mapping_version` | `object` | Version identifier for the canonical concept mapping rules. |
+| `mapping_priority` | `int` | Priority of the selected source concept within the canonical metric mapping. |
+| `source_snapshot_date` | `date` | SEC bulk snapshot date represented by the bronze archive. |
 | `ingested_ts` | `timestamp` | ETL ingest timestamp. |
 
 ## `silver.ref_sp500`
