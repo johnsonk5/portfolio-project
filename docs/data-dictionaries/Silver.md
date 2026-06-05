@@ -314,7 +314,9 @@ Curated, concept-mapped facts used to build gold fundamentals. The natural key i
 | `taxonomy` | `object` | XBRL taxonomy namespace of the selected source concept. |
 | `tag` | `object` | Source XBRL concept tag selected for the canonical metric. |
 | `unit` | `object` | Unit of the selected source fact. |
-| `value` | `float` | Curated numeric value for the canonical metric. |
+| `reported_value` | `float` | Numeric source fact value before canonical sign normalization or component-sum derivation. |
+| `value` | `float` | Curated canonical numeric value for the metric after period normalization, sign handling, and component-sum derivation. |
+| `canonical_sign_rule` | `object` | Sign rule applied during canonicalization, such as `preserve_reported_sign` or `positive_cash_outflow`. |
 | `period_start_date` | `date` | Fact period start date for duration metrics, null for instant metrics. |
 | `period_end_date` | `date` | Fact period end date. |
 | `period_type` | `object` | `instant` or `duration`. |
@@ -326,6 +328,17 @@ Curated, concept-mapped facts used to build gold fundamentals. The natural key i
 | `availability_date` | `date` | First trading-date candidate on which the metric may be used; derived from `acceptance_datetime` date when available, otherwise `filing_date`. |
 | `mapping_version` | `object` | Version identifier for the canonical concept mapping rules. |
 | `mapping_priority` | `int` | Priority of the selected source concept within the canonical metric mapping. |
+| `source_expression` | `object` | Direct source concept or component-sum expression used to produce the canonical value. |
+| `source_accession_number` | `object` | Accession number of the selected source fact or primary accession for a component-sum expression. |
+| `source_form` | `object` | Form type of the selected source fact or primary filing for a component-sum expression. |
+| `source_filed_date` | `date` | Filing date of the selected source fact or primary filing for a component-sum expression. |
+| `source_acceptance_datetime` | `timestamp` | Acceptance datetime of the selected source fact or primary filing for a component-sum expression. |
+| `period_match_type` | `object` | Match classification such as `exact_quarter`, `exact_annual`, `ytd_derived_quarter`, or `q4_derived_from_annual`. |
+| `is_component_sum` | `bool` | Whether the value was built from multiple source facts. |
+| `is_fallback_concept` | `bool` | Whether the selected mapping priority was not the preferred concept for the canonical metric. |
+| `is_restricted_cash_included` | `bool` | Whether the cash value includes restricted cash through the selected source concept. |
+| `is_lease_inclusive_debt` | `bool` | Whether the debt value includes capital or finance lease obligations through the selected source concept or expression. |
+| `is_ytd_derived_quarter` | `bool` | Whether the value was derived by subtracting prior YTD values to produce a fiscal-quarter value. |
 | `source_snapshot_date` | `date` | SEC bulk snapshot date represented by the bronze archive. |
 | `ingested_ts` | `timestamp` | ETL ingest timestamp. |
 

@@ -51,7 +51,7 @@ Lookahead rule: a quarterly row describes a historical reporting period, but dow
 | `accession_number` | `object` | Source SEC filing accession number. |
 | `form` | `object` | Source filing form, typically `10-Q`, `10-K`, or an amendment. |
 | `revenue` | `float` | Quarterly revenue. |
-| `net_income` | `float` | Quarterly net income attributable to the registrant or parent when available, otherwise consolidated net income. |
+| `net_income` | `float` | Broad quarterly net income or loss for the reporting entity; common-stockholder income is only used as a fallback when broad net income concepts are unavailable. |
 | `assets` | `float` | Total assets at period end. |
 | `liabilities` | `float` | Total liabilities at period end. |
 | `equity` | `float` | Stockholders' equity attributable to the registrant at period end, excluding noncontrolling interests when available. |
