@@ -176,6 +176,19 @@ This document records important architecture, tech stack, and operating decision
   - Downstream parsing and silver assets should use the manifest to resolve the archive path for a snapshot date.
   - Raw archive files are immutable content blobs, while manifest rows preserve daily retrieval history and source metadata.
 
+### 22. SEC fundamentals enrich the research universe but do not define it
+- Status: Accepted
+- Why: The research universe is based on observed prices and liquidity, while SEC coverage depends on issuer filing status, identifier mappings, and reporting history. Using SEC coverage as an inclusion rule would bias research toward surviving, easily mapped, SEC-reporting issuers.
+- Decision:
+  - Keep `silver.universe_membership_daily` price/liquidity driven.
+  - Treat SEC fundamentals as optional enrichment for mapped SEC registrants.
+  - Preserve securities with missing fundamentals in downstream daily signal outputs and expose missing-fundamentals flags.
+  - Use effective-dated identifier mappings where available so historical CIK, ticker, and symbol relationships do not collapse into only the latest mapping.
+- Implication:
+  - Non-filers, funds, some ADRs, OTC names, inactive or delisted symbols, and unmapped issuers may remain in research datasets without SEC fundamentals.
+  - Strategy code must avoid silently filtering to SEC-covered securities unless a strategy configuration explicitly requests that narrower universe.
+  - Backtests using fundamental fields should account for missing coverage and point-in-time identifier resolution.
+
 ## Open Items
 
 These are not decided yet and should remain out of scope for this file until explicitly chosen:

@@ -68,6 +68,13 @@ Ingest SEC company fundamentals and publish point-in-time research features for 
 - Parsed bronze SEC datasets -> `silver.security_identifiers`, `silver.sec_submissions`, `silver.sec_facts_long`, and `silver.sec_statement_items`
 - `silver.sec_statement_items` -> `gold.fundamentals_quarterly` -> `gold.fundamental_signals_daily`
 
+### Universe And Coverage Assumptions
+- SEC fundamentals are an enrichment layer for securities that can be mapped to SEC registrants; they are not the source of truth for the research universe.
+- `silver.universe_membership_daily` remains driven by research prices and liquidity, so SEC-covered and non-SEC-covered symbols can both appear in the universe.
+- Downstream SEC assets should carry `asset_id` when a CIK can be mapped to a project security and allow nullable `asset_id` for unmapped SEC issuers.
+- Strategy features should keep explicit missing-fundamentals indicators so survivorship bias is not introduced by silently dropping symbols without SEC coverage.
+- Historical joins must preserve source symbols and use effective-dated CIK/ticker mappings where available, because ticker reuse, symbol changes, issuer actions, and delistings can otherwise create survivorship-biased joins.
+
 ### Lookahead Rules
 - Fundamental values become research-usable only on or after their SEC availability date.
 - `availability_date` is derived from `DATE(acceptance_datetime)` when `acceptance_datetime` is present; otherwise it falls back to `filing_date`.
