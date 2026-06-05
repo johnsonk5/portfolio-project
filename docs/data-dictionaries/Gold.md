@@ -34,6 +34,8 @@
 
 One row per `asset_id`, `cik`, and quarterly reporting period after canonical SEC statement items have been pivoted into research-ready fields. The natural key is `asset_id`, `cik`, `fiscal_year`, `fiscal_quarter`, and `period_end_date`.
 
+Lookahead rule: a quarterly row describes a historical reporting period, but downstream research must treat it as unavailable until its `availability_date`. Research may use the row only when the research date is on or after `availability_date`, which is derived from `DATE(acceptance_datetime)` when available and otherwise from `filing_date`.
+
 | Column | Type | Description |
 | --- | --- | --- |
 | `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases. |
@@ -68,6 +70,8 @@ One row per `asset_id`, `cik`, and quarterly reporting period after canonical SE
 *DuckDB Table in the research DuckDB gold schema*
 
 Point-in-time daily fundamental features joined to research trading dates and prices. A row must not expose a quarterly fundamental before `date >= availability_date`; rows before the first available filing for an asset should either be absent or have `has_fundamentals = false`.
+
+Lookahead rule: every selected filing or derived fundamental feature must satisfy `date >= availability_date`. `period_end_date` is the reporting period being described and must not be treated as the date when the market could have known the value.
 
 | Column | Type | Description |
 | --- | --- | --- |

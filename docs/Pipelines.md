@@ -58,6 +58,23 @@ Refresh the recent-window research price history from Alpaca and rebuild the dow
 - `research_daily_prices_schedule`: `35 9 * * *` America/New_York.
 - Uses previous US trading day as partition key.
 
+## SEC Fundamentals Assets
+
+### Purpose
+Ingest SEC company fundamentals and publish point-in-time research features for strategy research.
+
+### Flow
+- Raw SEC bulk archives under `data/bronze/sec/companyfacts/`, `data/bronze/sec/submissions/`, and `data/bronze/sec/company_tickers/` -> parsed bronze datasets under `data/bronze/sec_company_facts/`, `data/bronze/sec_submissions/`, and `data/bronze/sec_company_tickers/`
+- Parsed bronze SEC datasets -> `silver.security_identifiers`, `silver.sec_submissions`, `silver.sec_facts_long`, and `silver.sec_statement_items`
+- `silver.sec_statement_items` -> `gold.fundamentals_quarterly` -> `gold.fundamental_signals_daily`
+
+### Lookahead Rules
+- Fundamental values become research-usable only on or after their SEC availability date.
+- `availability_date` is derived from `DATE(acceptance_datetime)` when `acceptance_datetime` is present; otherwise it falls back to `filing_date`.
+- `gold.fundamental_signals_daily` must only expose a filing on rows where `date >= availability_date`.
+- Reporting period dates such as `period_end_date` are economic-period labels, not availability timestamps, and must not be used to decide when a fundamental could have been known.
+- Strategy rankings, backtests, and promoted signal columns must consume SEC fundamentals through point-in-time daily outputs or apply the same `date >= availability_date` filter.
+
 ## `prices_compaction_job`
 
 ### Purpose
