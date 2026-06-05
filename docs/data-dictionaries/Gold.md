@@ -34,6 +34,10 @@
 
 One row per `asset_id`, `cik`, and quarterly reporting period after canonical SEC statement items have been pivoted into research-ready fields. The natural key is `asset_id`, `cik`, `fiscal_year`, `fiscal_quarter`, and `period_end_date`.
 
+Lookahead rule: a quarterly row describes a historical reporting period, but downstream research must treat it as unavailable until its `availability_date`. Research may use the row only when the research date is on or after `availability_date`, which is derived from `DATE(acceptance_datetime)` when available and otherwise from `filing_date`.
+
+Deduplication rule: build one row per issuer and fiscal quarter by pivoting selected `silver.sec_statement_items`. When multiple filings or amendments describe the same reporting period, prefer the latest available amendment or later accepted filing, ordered by `acceptance_datetime`, then `filing_date`, then `source_snapshot_date`. Point-in-time consumers must only see the selected filing on or after that filing's `availability_date`; before an amendment's `availability_date`, `gold.fundamental_signals_daily` must continue to use the prior available quarterly row. If candidate rows remain tied after filing precedence, keep the row with the larger `statement_items_count`, then the latest load timestamp, and record the tie through a DQ check.
+
 | Column | Type | Description |
 | --- | --- | --- |
 | `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases. |
@@ -49,15 +53,15 @@ One row per `asset_id`, `cik`, and quarterly reporting period after canonical SE
 | `accession_number` | `object` | Source SEC filing accession number. |
 | `form` | `object` | Source filing form, typically `10-Q`, `10-K`, or an amendment. |
 | `revenue` | `float` | Quarterly revenue. |
-| `net_income` | `float` | Quarterly net income. |
+| `net_income` | `float` | Broad quarterly net income or loss for the reporting entity; common-stockholder income is only used as a fallback when broad net income concepts are unavailable. |
 | `assets` | `float` | Total assets at period end. |
 | `liabilities` | `float` | Total liabilities at period end. |
-| `equity` | `float` | Total shareholders' equity at period end. |
-| `debt` | `float` | Total debt or debt-like obligations at period end when mapped. |
+| `equity` | `float` | Stockholders' equity attributable to the registrant at period end, excluding noncontrolling interests when available. |
+| `debt` | `float` | Interest-bearing debt at period end; total liabilities must not be used as a fallback. |
 | `cash` | `float` | Cash and cash equivalents at period end. |
-| `operating_cash_flow` | `float` | Quarterly operating cash flow. |
-| `capex` | `float` | Quarterly capital expenditures. |
-| `diluted_shares` | `float` | Diluted weighted-average shares outstanding for the period. |
+| `operating_cash_flow` | `float` | Quarterly operating cash flow, positive for cash provided and negative for cash used. |
+| `capex` | `float` | Quarterly capital expenditures stored as a positive cash outflow. |
+| `diluted_shares` | `float` | Diluted weighted-average shares outstanding for the period, not point-in-time shares outstanding. |
 | `diluted_eps` | `float` | Diluted earnings per share for the period. |
 | `source_snapshot_date` | `date` | SEC bulk snapshot date represented by the source silver rows. |
 | `statement_items_count` | `int` | Number of curated statement items used to populate the row. |
@@ -68,6 +72,8 @@ One row per `asset_id`, `cik`, and quarterly reporting period after canonical SE
 *DuckDB Table in the research DuckDB gold schema*
 
 Point-in-time daily fundamental features joined to research trading dates and prices. A row must not expose a quarterly fundamental before `date >= availability_date`; rows before the first available filing for an asset should either be absent or have `has_fundamentals = false`.
+
+Lookahead rule: every selected filing or derived fundamental feature must satisfy `date >= availability_date`. `period_end_date` is the reporting period being described and must not be treated as the date when the market could have known the value.
 
 | Column | Type | Description |
 | --- | --- | --- |

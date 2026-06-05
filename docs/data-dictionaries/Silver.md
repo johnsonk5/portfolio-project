@@ -244,6 +244,8 @@ Stores effective-dated external identifier mappings for project securities. The 
 
 One row per SEC filing accession. The natural key is `accession_number`; `cik` and `accession_number` are required. `asset_id` is nullable until a filing CIK can be resolved to a project asset.
 
+Deduplication rule: repeated rows for the same accession across source snapshots collapse to one row when filing metadata is equivalent, retaining the latest source snapshot metadata. If repeated accession rows disagree on core filing metadata such as CIK, form, filing date, report date, acceptance datetime, or primary document, the silver asset keeps the row from the latest SEC source snapshot and records the conflict through a DQ check. Amendments are separate filings keyed by their own accession number; `amended_accession_number` is lineage metadata and does not replace the amendment accession as the row key.
+
 | Column | Type | Description |
 | --- | --- | --- |
 | `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases, nullable when the CIK is not mapped. |
@@ -272,6 +274,8 @@ One row per SEC filing accession. The natural key is `accession_number`; `cik` a
 *DuckDB Table in the research DuckDB silver schema*
 
 Normalized long-form XBRL facts from SEC company facts. The deduplication key is `cik`, `accession_number`, `taxonomy`, `tag`, `unit`, `period_start_date`, `period_end_date`, and `frame`, with latest source snapshot metadata retained when duplicate source rows are equivalent. `asset_id` is nullable until a fact CIK can be resolved to a project asset.
+
+Deduplication rule: exact duplicate source facts collapse to one row while retaining the latest `source_snapshot_date`, `ingestion_date`, and `ingested_ts`. Duplicate detection must normalize null key components, such as null `period_start_date` for instant facts and null `frame`, to sentinel values in comparison queries. If duplicate-key rows disagree on value, decimals, fiscal metadata, form, or filed date, the silver asset keeps the row from the latest SEC source snapshot and records the conflict through a DQ check.
 
 | Column | Type | Description |
 | --- | --- | --- |
@@ -304,6 +308,8 @@ Normalized long-form XBRL facts from SEC company facts. The deduplication key is
 
 Curated, concept-mapped facts used to build gold fundamentals. The natural key is `asset_id`, `cik`, `accession_number`, `canonical_metric`, `period_end_date`, `fiscal_year`, and `fiscal_period`.
 
+Deduplication rule: `asset_id` is expected for mapped project securities. Rows for unmapped SEC issuers may be retained with null `asset_id`, but duplicate checks must coalesce null `asset_id` with CIK so unmapped issuers are still checked. When multiple source facts can populate the same canonical metric, the selection order is lowest `mapping_priority`, exact period matches before derived period matches, direct facts before component-sum expressions, latest `source_acceptance_datetime` or `source_filed_date`, then latest `source_snapshot_date`. Mapping metadata, source accession metadata, period match fields, and derivation flags are retained so the selected canonical value is auditable.
+
 | Column | Type | Description |
 | --- | --- | --- |
 | `asset_id` | `int` | Durable project asset key resolved from `silver.security_identifiers`. |
@@ -314,7 +320,9 @@ Curated, concept-mapped facts used to build gold fundamentals. The natural key i
 | `taxonomy` | `object` | XBRL taxonomy namespace of the selected source concept. |
 | `tag` | `object` | Source XBRL concept tag selected for the canonical metric. |
 | `unit` | `object` | Unit of the selected source fact. |
-| `value` | `float` | Curated numeric value for the canonical metric. |
+| `reported_value` | `float` | Numeric source fact value before canonical sign normalization or component-sum derivation. |
+| `value` | `float` | Curated canonical numeric value for the metric after period normalization, sign handling, and component-sum derivation. |
+| `canonical_sign_rule` | `object` | Sign rule applied during canonicalization, such as `preserve_reported_sign` or `positive_cash_outflow`. |
 | `period_start_date` | `date` | Fact period start date for duration metrics, null for instant metrics. |
 | `period_end_date` | `date` | Fact period end date. |
 | `period_type` | `object` | `instant` or `duration`. |
@@ -326,6 +334,17 @@ Curated, concept-mapped facts used to build gold fundamentals. The natural key i
 | `availability_date` | `date` | First trading-date candidate on which the metric may be used; derived from `acceptance_datetime` date when available, otherwise `filing_date`. |
 | `mapping_version` | `object` | Version identifier for the canonical concept mapping rules. |
 | `mapping_priority` | `int` | Priority of the selected source concept within the canonical metric mapping. |
+| `source_expression` | `object` | Direct source concept or component-sum expression used to produce the canonical value. |
+| `source_accession_number` | `object` | Accession number of the selected source fact or primary accession for a component-sum expression. |
+| `source_form` | `object` | Form type of the selected source fact or primary filing for a component-sum expression. |
+| `source_filed_date` | `date` | Filing date of the selected source fact or primary filing for a component-sum expression. |
+| `source_acceptance_datetime` | `timestamp` | Acceptance datetime of the selected source fact or primary filing for a component-sum expression. |
+| `period_match_type` | `object` | Match classification such as `exact_quarter`, `exact_annual`, `ytd_derived_quarter`, or `q4_derived_from_annual`. |
+| `is_component_sum` | `bool` | Whether the value was built from multiple source facts. |
+| `is_fallback_concept` | `bool` | Whether the selected mapping priority was not the preferred concept for the canonical metric. |
+| `is_restricted_cash_included` | `bool` | Whether the cash value includes restricted cash through the selected source concept. |
+| `is_lease_inclusive_debt` | `bool` | Whether the debt value includes capital or finance lease obligations through the selected source concept or expression. |
+| `is_ytd_derived_quarter` | `bool` | Whether the value was derived by subtracting prior YTD values to produce a fiscal-quarter value. |
 | `source_snapshot_date` | `date` | SEC bulk snapshot date represented by the bronze archive. |
 | `ingested_ts` | `timestamp` | ETL ingest timestamp. |
 

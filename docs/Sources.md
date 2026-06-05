@@ -35,6 +35,30 @@ This document describes each source, what it powers, and important operational d
 - EODHD fills the historical gaps in the merged `silver.research_daily_prices` dataset wherever Alpaca does not have overlapping coverage.
 - EODHD is not part of the scheduled live research refresh. It is retained as a historical/backfill source so the recurring pipeline can keep using already-seeded EODHD partitions without requiring ongoing live EODHD ingestion.
 
+## SEC Company Data
+
+### What We Use
+- Bulk company facts for XBRL financial statement values.
+- Bulk submissions metadata for filing dates, accepted timestamps, forms, accession numbers, and amendment lineage.
+- Company ticker mappings for joining SEC CIKs to project securities where a reliable mapping exists.
+
+### Why It Matters
+- Adds issuer fundamentals for SEC registrants that can be used in point-in-time research signals.
+- Provides filing availability dates so strategy research can avoid using fundamentals before they were public.
+- Helps enrich project security identifiers with CIK and SEC ticker metadata.
+
+### Coverage And Survivorship Notes
+- SEC fundamentals cover SEC reporting entities, not every symbol in the research price universe.
+- Funds, some ADRs, OTC securities, inactive or delisted symbols, renamed issuers, and non-US or non-reporting securities may have missing or incomplete SEC coverage.
+- The research investable universe remains price/liquidity driven. SEC coverage should enrich eligible securities, not define membership by itself.
+- Missing SEC fundamentals are expected and should be represented explicitly in downstream features instead of filtering a security out by default.
+- Ticker-to-CIK mappings can change over time, so joins should use effective-dated identifier records when available and preserve source symbols for auditability.
+
+### Operational Notes
+- Raw SEC bulk downloads are stored in bronze under `data/bronze/sec/` and tracked by a manifest.
+- Parsed bronze parquet datasets provide the repeatable input surface for downstream silver assets.
+- Fundamental values become research-usable only on or after the SEC filing date or acceptance datetime.
+
 ## Yahoo Finance Search API
 
 ### What We Use

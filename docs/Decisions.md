@@ -164,6 +164,31 @@ This document records important architecture, tech stack, and operating decision
   - `ref.run_types` and `ref.simulation_types` are loaded from `src/portfolio_project/config/simulation_reference.yaml`.
   - `silver.strategy_runs` stores run type and simulation type references for downstream strategy outputs.
 
+### 21. Unchanged SEC bulk archives are represented by manifest rows
+- Status: Accepted
+- Why: SEC bulk archives can be large, and physically copying identical archive bytes into every ingestion-date partition would waste local storage without improving auditability.
+- Decision:
+  - Store each unique SEC bulk archive blob once.
+  - Append a manifest row for every retrieval attempt, including unchanged retrievals.
+  - When a retrieval has the same `content_hash` as a prior archive, set `changed_flag = false` and point `local_path` to the existing archive file for that hash instead of writing a duplicate physical copy.
+- Implication:
+  - The SEC bronze manifest is the authoritative snapshot ledger for resolving which archive represented each `ingestion_date`.
+  - Downstream parsing and silver assets should use the manifest to resolve the archive path for a snapshot date.
+  - Raw archive files are immutable content blobs, while manifest rows preserve daily retrieval history and source metadata.
+
+### 22. SEC fundamentals enrich the research universe but do not define it
+- Status: Accepted
+- Why: The research universe is based on observed prices and liquidity, while SEC coverage depends on issuer filing status, identifier mappings, and reporting history. Using SEC coverage as an inclusion rule would bias research toward surviving, easily mapped, SEC-reporting issuers.
+- Decision:
+  - Keep `silver.universe_membership_daily` price/liquidity driven.
+  - Treat SEC fundamentals as optional enrichment for mapped SEC registrants.
+  - Preserve securities with missing fundamentals in downstream daily signal outputs and expose missing-fundamentals flags.
+  - Use effective-dated identifier mappings where available so historical CIK, ticker, and symbol relationships do not collapse into only the latest mapping.
+- Implication:
+  - Non-filers, funds, some ADRs, OTC names, inactive or delisted symbols, and unmapped issuers may remain in research datasets without SEC fundamentals.
+  - Strategy code must avoid silently filtering to SEC-covered securities unless a strategy configuration explicitly requests that narrower universe.
+  - Backtests using fundamental fields should account for missing coverage and point-in-time identifier resolution.
+
 ## Open Items
 
 These are not decided yet and should remain out of scope for this file until explicitly chosen:
