@@ -36,6 +36,8 @@ One row per `asset_id`, `cik`, and quarterly reporting period after canonical SE
 
 Lookahead rule: a quarterly row describes a historical reporting period, but downstream research must treat it as unavailable until its `availability_date`. Research may use the row only when the research date is on or after `availability_date`, which is derived from `DATE(acceptance_datetime)` when available and otherwise from `filing_date`.
 
+Deduplication rule: build one row per issuer and fiscal quarter by pivoting selected `silver.sec_statement_items`. When multiple filings or amendments describe the same reporting period, prefer the latest available amendment or later accepted filing, ordered by `acceptance_datetime`, then `filing_date`, then `source_snapshot_date`. Point-in-time consumers must only see the selected filing on or after that filing's `availability_date`; before an amendment's `availability_date`, `gold.fundamental_signals_daily` must continue to use the prior available quarterly row. If candidate rows remain tied after filing precedence, keep the row with the larger `statement_items_count`, then the latest load timestamp, and record the tie through a DQ check.
+
 | Column | Type | Description |
 | --- | --- | --- |
 | `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases. |
