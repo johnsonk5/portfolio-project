@@ -51,15 +51,15 @@ Lookahead rule: a quarterly row describes a historical reporting period, but dow
 | `accession_number` | `object` | Source SEC filing accession number. |
 | `form` | `object` | Source filing form, typically `10-Q`, `10-K`, or an amendment. |
 | `revenue` | `float` | Quarterly revenue. |
-| `net_income` | `float` | Quarterly net income. |
+| `net_income` | `float` | Quarterly net income attributable to the registrant or parent when available, otherwise consolidated net income. |
 | `assets` | `float` | Total assets at period end. |
 | `liabilities` | `float` | Total liabilities at period end. |
-| `equity` | `float` | Total shareholders' equity at period end. |
-| `debt` | `float` | Total debt or debt-like obligations at period end when mapped. |
+| `equity` | `float` | Stockholders' equity attributable to the registrant at period end, excluding noncontrolling interests when available. |
+| `debt` | `float` | Interest-bearing debt at period end; total liabilities must not be used as a fallback. |
 | `cash` | `float` | Cash and cash equivalents at period end. |
-| `operating_cash_flow` | `float` | Quarterly operating cash flow. |
-| `capex` | `float` | Quarterly capital expenditures. |
-| `diluted_shares` | `float` | Diluted weighted-average shares outstanding for the period. |
+| `operating_cash_flow` | `float` | Quarterly operating cash flow, positive for cash provided and negative for cash used. |
+| `capex` | `float` | Quarterly capital expenditures stored as a positive cash outflow. |
+| `diluted_shares` | `float` | Diluted weighted-average shares outstanding for the period, not point-in-time shares outstanding. |
 | `diluted_eps` | `float` | Diluted earnings per share for the period. |
 | `source_snapshot_date` | `date` | SEC bulk snapshot date represented by the source silver rows. |
 | `statement_items_count` | `int` | Number of curated statement items used to populate the row. |
