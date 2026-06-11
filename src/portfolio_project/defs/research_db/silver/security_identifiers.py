@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+import duckdb
 import pandas as pd
 from dagster import AssetExecutionContext, asset
 
@@ -284,34 +285,41 @@ def _load_sp500_identifiers(
     return pd.DataFrame(rows, columns=SECURITY_IDENTIFIERS_COLUMNS)
 
 
-def _research_prices_glob() -> str:
+def _research_prices_glob(data_root: Path | None = None) -> str:
+    root = data_root or DATA_ROOT
     return (
-        DATA_ROOT / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet"
+        root / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet"
     ).as_posix()
 
 
-def _research_prices_files_exist() -> bool:
-    prices_root = DATA_ROOT / "silver" / "research_daily_prices"
+def _research_prices_files_exist(data_root: Path | None = None) -> bool:
+    root = data_root or DATA_ROOT
+    prices_root = root / "silver" / "research_daily_prices"
     return prices_root.exists() and any(prices_root.glob("month=*/date=*.parquet"))
 
 
-def _load_research_price_symbols(con) -> pd.DataFrame:
-    if not _research_prices_files_exist():
+def _load_research_price_symbols(con, data_root: Path | None = None) -> pd.DataFrame:
+    del con
+    if not _research_prices_files_exist(data_root):
         return pd.DataFrame(columns=["source_symbol", "first_trade_date", "last_trade_date"])
-    return con.execute(
-        """
-        SELECT
-            upper(trim(symbol)) AS source_symbol,
-            min(CAST(trade_date AS DATE)) AS first_trade_date,
-            max(CAST(trade_date AS DATE)) AS last_trade_date
-        FROM read_parquet(?, union_by_name = true)
-        WHERE symbol IS NOT NULL
-          AND trim(symbol) <> ''
-        GROUP BY upper(trim(symbol))
-        ORDER BY source_symbol
-        """,
-        [_research_prices_glob()],
-    ).fetch_df()
+    reader_con = duckdb.connect(":memory:")
+    try:
+        return reader_con.execute(
+            """
+            SELECT
+                upper(trim(symbol)) AS source_symbol,
+                min(CAST(trade_date AS DATE)) AS first_trade_date,
+                max(CAST(trade_date AS DATE)) AS last_trade_date
+            FROM read_parquet(?, union_by_name = true)
+            WHERE symbol IS NOT NULL
+              AND trim(symbol) <> ''
+            GROUP BY upper(trim(symbol))
+            ORDER BY source_symbol
+            """,
+            [_research_prices_glob(data_root)],
+        ).fetch_df()
+    finally:
+        reader_con.close()
 
 
 def _load_existing_research_identifier_map(con) -> pd.DataFrame:
@@ -679,12 +687,11 @@ def _write_identifier_tables(con, identifiers_df: pd.DataFrame) -> None:
     )
 
 
-@asset(
-    name="security_identifiers",
-    key_prefix=["silver"],
-    required_resource_keys={"duckdb", "research_duckdb"},
-)
-def silver_security_identifiers(context: AssetExecutionContext) -> None:
+def materialize_security_identifier_tables(
+    context: AssetExecutionContext,
+    *,
+    data_root: Path | None = None,
+) -> dict[str, int]:
     """
     Mirror durable project identifiers into both DuckDB databases.
     """
@@ -713,7 +720,7 @@ def silver_security_identifiers(context: AssetExecutionContext) -> None:
         portfolio_con,
         portfolio_identifiers_df,
     )
-    research_symbols_df = _load_research_price_symbols(research_con)
+    research_symbols_df = _load_research_price_symbols(research_con, data_root)
     existing_research_identifiers_df = _load_existing_research_identifier_map(research_con)
     research_identifiers_df = build_research_symbol_identifiers_frame(
         research_symbols_df,
@@ -745,15 +752,27 @@ def silver_security_identifiers(context: AssetExecutionContext) -> None:
     symbol_bridge_count = research_con.execute(
         "SELECT count(*) FROM silver.asset_symbol_bridge"
     ).fetchone()[0]
+    return {
+        "row_count": int(row_count or 0),
+        "asset_count": int(asset_count or 0),
+        "portfolio_identifier_rows": len(portfolio_identifiers_df),
+        "sp500_identifier_rows": len(sp500_identifiers_df),
+        "research_identifier_rows": len(research_identifiers_df),
+        "identity_bridge_rows": int(identity_bridge_count or 0),
+        "symbol_bridge_rows": int(symbol_bridge_count or 0),
+    }
+
+
+@asset(
+    name="security_identifiers",
+    key_prefix=["silver"],
+    required_resource_keys={"duckdb", "research_duckdb"},
+)
+def silver_security_identifiers(context: AssetExecutionContext) -> None:
+    metrics = materialize_security_identifier_tables(context)
     context.add_output_metadata(
         {
             "table": "silver.security_identifiers",
-            "row_count": int(row_count or 0),
-            "asset_count": int(asset_count or 0),
-            "portfolio_identifier_rows": len(portfolio_identifiers_df),
-            "sp500_identifier_rows": len(sp500_identifiers_df),
-            "research_identifier_rows": len(research_identifiers_df),
-            "identity_bridge_rows": int(identity_bridge_count or 0),
-            "symbol_bridge_rows": int(symbol_bridge_count or 0),
+            **metrics,
         }
     )

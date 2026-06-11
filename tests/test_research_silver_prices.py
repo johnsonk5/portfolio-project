@@ -21,9 +21,12 @@ def _write_bronze_prices(
     frame.to_parquet(out_path, index=False)
 
 
-def test_research_daily_prices_prefers_alpaca_on_overlap(tmp_path: Path) -> None:
+def test_research_daily_prices_prefers_alpaca_on_overlap(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     data_root = tmp_path / "data"
-    research_silver_prices_module.DATA_ROOT = data_root
+    monkeypatch.setattr(research_silver_prices_module, "DATA_ROOT", data_root)
     partition_key = "2026-02-13"
 
     _write_bronze_prices(
@@ -138,6 +141,68 @@ def test_research_daily_prices_prefers_alpaca_on_overlap(tmp_path: Path) -> None
     assert actual_types["asset_id"] == "BIGINT"
     assert actual_types["volume"] == "BIGINT"
     assert actual_types["trade_count"] == "BIGINT"
+
+
+def test_research_daily_prices_assigns_first_seen_asset_ids_before_signals(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root = tmp_path / "data"
+    monkeypatch.setattr(research_silver_prices_module, "DATA_ROOT", data_root)
+    monkeypatch.setattr(research_silver_prices_module, "RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT", 1)
+    partition_key = "2026-02-17"
+
+    _write_bronze_prices(
+        data_root,
+        "alpaca_prices_daily",
+        partition_key,
+        pd.DataFrame(
+            {
+                "symbol": ["ZZZ"],
+                "timestamp": [datetime(2026, 2, 17, 21, 0, tzinfo=timezone.utc)],
+                "trade_date": ["2026-02-17"],
+                "open": [100.0],
+                "high": [101.0],
+                "low": [99.0],
+                "close": [100.5],
+                "adjusted_close": [pd.NA],
+                "volume": [1000],
+                "trade_count": [10],
+                "vwap": [100.2],
+                "source": ["alpaca"],
+                "ingested_ts": [datetime.now(timezone.utc)],
+            }
+        ),
+    )
+
+    research_con = duckdb.connect(":memory:")
+    obs_con = duckdb.connect(":memory:")
+    context = build_asset_context(
+        partition_key=partition_key,
+        resources={"research_duckdb": research_con, "duckdb": obs_con},
+    )
+    research_silver_prices_module.silver_research_daily_prices(context)
+
+    out_path = (
+        data_root
+        / "silver"
+        / "research_daily_prices"
+        / "month=2026-02"
+        / f"date={partition_key}.parquet"
+    )
+    price_row = pd.read_parquet(out_path).iloc[0]
+    assert price_row["symbol"] == "ZZZ"
+    assert int(price_row["asset_id"]) == 1
+    assert pd.read_parquet(out_path)["asset_id"].isna().sum() == 0
+
+    identifier_row = research_con.execute(
+        """
+        SELECT asset_id, source_symbol, identifier_source
+        FROM silver.security_identifiers
+        WHERE source_symbol = 'ZZZ'
+        """
+    ).fetchone()
+    assert identifier_row == (1, "ZZZ", "research_daily_prices")
 
 
 def test_research_daily_prices_rerun_replaces_stale_partition(tmp_path: Path, monkeypatch) -> None:

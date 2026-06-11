@@ -14,6 +14,9 @@ from portfolio_project.defs.research_db.dq_checks import (
     log_duplicate_row_check,
     log_required_field_null_check,
 )
+from portfolio_project.defs.research_db.silver.security_identifiers import (
+    materialize_security_identifier_tables,
+)
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 RESEARCH_PRICES_PARTITIONS_START_DATE = os.getenv(
@@ -313,6 +316,7 @@ def _log_research_daily_prices_required_field_check(
             relation_sql="SELECT * FROM read_parquet(?, hive_partitioning = false)",
             relation_params=[parquet_path.as_posix()],
             required_columns=[
+                "asset_id",
                 "symbol",
                 "timestamp",
                 "trade_date",
@@ -739,6 +743,33 @@ def silver_research_daily_prices(context: AssetExecutionContext) -> None:
         day_df,
         overwrite=True,
     )
+
+    identifier_metrics = materialize_security_identifier_tables(context, data_root=DATA_ROOT)
+    refreshed_asset_id_map = _load_asset_id_map(
+        context.resources.research_duckdb,
+        context.resources.duckdb,
+    )
+    resolved_day_df = _apply_asset_ids(day_df, refreshed_asset_id_map)
+    resolved_day_df = _prepare_research_daily_prices_for_write(resolved_day_df)
+    unresolved_symbols = sorted(
+        resolved_day_df.loc[resolved_day_df["asset_id"].isna(), "symbol"]
+        .dropna()
+        .astype(str)
+        .str.upper()
+        .unique()
+        .tolist()
+    )
+    if unresolved_symbols:
+        raise ValueError(
+            "Unable to resolve durable asset_id values for research daily price symbols "
+            f"in {context.partition_key}: {unresolved_symbols[:20]}"
+        )
+    files_written, rows_written = write_research_daily_prices_partition(
+        trade_date,
+        resolved_day_df,
+        overwrite=True,
+    )
+    day_df = resolved_day_df
     output_path = _silver_monthly_prices_path(trade_date)
     _log_research_daily_prices_schema_check(
         context,
@@ -760,6 +791,9 @@ def silver_research_daily_prices(context: AssetExecutionContext) -> None:
             "symbol_count": int(day_df["symbol"].nunique()),
             "asset_id_mapped_count": int(day_df["asset_id"].notna().sum()),
             "source_counts": source_counts,
+            "identifier_rows": identifier_metrics["row_count"],
+            "identifier_research_rows": identifier_metrics["research_identifier_rows"],
+            "identifier_asset_count": identifier_metrics["asset_count"],
             "table": "silver.research_daily_prices",
             "output_path": output_path.as_posix(),
         }
