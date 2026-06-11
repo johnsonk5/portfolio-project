@@ -26,6 +26,34 @@ SECURITY_IDENTIFIERS_COLUMNS = [
     "ingested_ts",
 ]
 
+ASSET_IDENTITY_BRIDGE_COLUMNS = [
+    "asset_id",
+    "current_symbol",
+    "source_symbols",
+    "alpaca_id",
+    "cik",
+    "security_name",
+    "exchange",
+    "is_current",
+    "asof_ts",
+]
+
+ASSET_SYMBOL_BRIDGE_COLUMNS = [
+    "asset_id",
+    "current_symbol",
+    "source_symbol",
+    "symbol_role",
+    "alpaca_id",
+    "cik",
+    "identifier_source",
+    "source_priority",
+    "mapping_confidence",
+    "valid_from_date",
+    "valid_to_date",
+    "is_current",
+    "asof_ts",
+]
+
 
 def _table_exists(con, schema: str, table: str) -> bool:
     return (
@@ -154,6 +182,108 @@ def build_security_identifiers_from_assets_df(assets_df: pd.DataFrame) -> pd.Dat
     return identifiers_df
 
 
+def _normalize_cik(value: object) -> object:
+    if value is None:
+        return pd.NA
+    try:
+        if pd.isna(value):
+            return pd.NA
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    if not text:
+        return pd.NA
+    if text.endswith(".0"):
+        text = text[:-2]
+    normalized = text.lstrip("0")
+    return normalized or "0"
+
+
+def _load_sp500_identifiers(
+    con,
+    portfolio_identifiers_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if not _table_exists(con, "silver", "ref_sp500"):
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+
+    sp500_df = con.execute(
+        """
+        SELECT *
+        FROM silver.ref_sp500
+        WHERE cik IS NOT NULL
+          AND symbol IS NOT NULL
+          AND trim(symbol) <> ''
+        """
+    ).fetch_df()
+    if sp500_df.empty:
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+
+    for column in ["asset_id", "symbol", "security", "cik"]:
+        if column not in sp500_df.columns:
+            sp500_df[column] = pd.NA
+    sp500_df["source_symbol"] = sp500_df["symbol"].astype("string").str.strip().str.upper()
+    sp500_df["cik"] = sp500_df["cik"].map(_normalize_cik)
+
+    symbol_to_asset_id = {}
+    if portfolio_identifiers_df is not None and not portfolio_identifiers_df.empty:
+        current_symbols_df = portfolio_identifiers_df[
+            portfolio_identifiers_df["identifier_type"].eq("symbol")
+            & portfolio_identifiers_df["asset_id"].notna()
+        ][["source_symbol", "asset_id"]].copy()
+        current_symbols_df["source_symbol"] = (
+            current_symbols_df["source_symbol"].astype("string").str.strip().str.upper()
+        )
+        symbol_to_asset_id = dict(
+            zip(current_symbols_df["source_symbol"], current_symbols_df["asset_id"])
+        )
+
+    sp500_df["asset_id"] = pd.to_numeric(sp500_df["asset_id"], errors="coerce").astype("Int64")
+    missing_asset_id = sp500_df["asset_id"].isna()
+    sp500_df.loc[missing_asset_id, "asset_id"] = sp500_df.loc[
+        missing_asset_id, "source_symbol"
+    ].map(symbol_to_asset_id)
+    sp500_df = sp500_df.dropna(subset=["asset_id", "source_symbol", "cik"]).copy()
+    if sp500_df.empty:
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+
+    now = pd.Timestamp.utcnow()
+    rows = []
+    for row in sp500_df.to_dict("records"):
+        base = {
+            "asset_id": int(row["asset_id"]),
+            "source_symbol": row["source_symbol"],
+            "security_name": row.get("security", pd.NA),
+            "cik": row["cik"],
+            "sec_ticker": row["source_symbol"],
+            "alpaca_id": pd.NA,
+            "exchange": pd.NA,
+            "identifier_source": "sp500_wikipedia",
+            "source_priority": 20,
+            "mapping_confidence": 0.85,
+            "valid_from_date": pd.Timestamp("1900-01-01").date(),
+            "valid_to_date": pd.NaT,
+            "is_current": True,
+            "ingestion_date": now.date(),
+            "ingested_ts": now,
+        }
+        rows.append(
+            {
+                **base,
+                "identifier_type": "cik",
+                "identifier_value": row["cik"],
+            }
+        )
+        rows.append(
+            {
+                **base,
+                "identifier_type": "sec_ticker",
+                "identifier_value": row["source_symbol"],
+            }
+        )
+
+    return pd.DataFrame(rows, columns=SECURITY_IDENTIFIERS_COLUMNS)
+
+
 def _research_prices_glob() -> str:
     return (
         DATA_ROOT / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet"
@@ -244,9 +374,9 @@ def build_research_symbol_identifiers_frame(
     existing_df["source_symbol"] = (
         existing_df["source_symbol"].astype("string").str.strip().str.upper()
     )
-    existing_df["asset_id"] = pd.to_numeric(
-        existing_df["asset_id"], errors="coerce"
-    ).astype("Int64")
+    existing_df["asset_id"] = pd.to_numeric(existing_df["asset_id"], errors="coerce").astype(
+        "Int64"
+    )
     existing_df = existing_df.dropna(subset=["source_symbol", "asset_id"])
     existing_by_symbol = dict(zip(existing_df["source_symbol"], existing_df["asset_id"]))
     if not existing_df.empty:
@@ -297,54 +427,192 @@ def build_research_symbol_identifiers_frame(
     return pd.DataFrame(rows, columns=SECURITY_IDENTIFIERS_COLUMNS)
 
 
-@asset(
-    name="security_identifiers",
-    key_prefix=["silver"],
-    required_resource_keys={"duckdb", "research_duckdb"},
-)
-def silver_security_identifiers(context: AssetExecutionContext) -> None:
-    """
-    Mirror durable project identifiers from portfolio silver assets into research DuckDB.
-    """
-    portfolio_con = context.resources.duckdb
-    research_con = context.resources.research_duckdb
-    research_con.execute("CREATE SCHEMA IF NOT EXISTS silver")
+def _first_non_empty(values: pd.Series) -> object:
+    for value in values:
+        if value is None:
+            continue
+        try:
+            if pd.isna(value):
+                continue
+        except (TypeError, ValueError):
+            pass
+        text = str(value).strip()
+        if text:
+            return text
+    return pd.NA
 
-    if _table_exists(portfolio_con, "silver", "assets"):
-        assets_df = portfolio_con.execute(
-            """
-            SELECT *
-            FROM silver.assets
-            WHERE asset_id IS NOT NULL
-              AND symbol IS NOT NULL
-              AND trim(symbol) <> ''
-            """
-        ).fetch_df()
-    else:
-        context.log.warning(
-            "portfolio silver.assets is missing; building research-only identifiers."
-        )
-        assets_df = pd.DataFrame()
-    portfolio_identifiers_df = build_security_identifiers_from_assets_df(assets_df)
-    research_symbols_df = _load_research_price_symbols(research_con)
-    existing_research_identifiers_df = _load_existing_research_identifier_map(research_con)
-    research_identifiers_df = build_research_symbol_identifiers_frame(
-        research_symbols_df,
-        portfolio_identifiers_df,
-        existing_research_identifiers_df,
+
+def _bool_or_false(value: object) -> bool:
+    if value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    return bool(value)
+
+
+def _prepare_identifier_frame(identifiers_df: pd.DataFrame) -> pd.DataFrame:
+    if identifiers_df is None or identifiers_df.empty:
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+    prepared = identifiers_df.copy()
+    for column in SECURITY_IDENTIFIERS_COLUMNS:
+        if column not in prepared.columns:
+            prepared[column] = pd.NA
+    prepared = prepared[SECURITY_IDENTIFIERS_COLUMNS].copy()
+    prepared["asset_id"] = pd.to_numeric(prepared["asset_id"], errors="coerce").astype("Int64")
+    prepared["source_symbol"] = prepared["source_symbol"].astype("string").str.strip().str.upper()
+    prepared["identifier_type"] = (
+        prepared["identifier_type"].astype("string").str.strip().str.lower()
     )
-    identifier_frames = [
-        frame
-        for frame in [portfolio_identifiers_df, research_identifiers_df]
-        if frame is not None and not frame.empty
-    ]
-    if identifier_frames:
-        identifiers_df = pd.concat(identifier_frames, ignore_index=True)
-    else:
-        identifiers_df = pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+    prepared["identifier_source"] = (
+        prepared["identifier_source"].astype("string").str.strip().str.lower()
+    )
+    prepared["source_priority"] = (
+        pd.to_numeric(prepared["source_priority"], errors="coerce").fillna(999).astype("int64")
+    )
+    prepared["mapping_confidence"] = pd.to_numeric(
+        prepared["mapping_confidence"], errors="coerce"
+    ).fillna(0.0)
+    prepared["cik"] = prepared["cik"].map(_normalize_cik)
+    prepared = prepared.dropna(subset=["asset_id"])
+    return prepared
 
-    research_con.register("security_identifiers_df", identifiers_df)
-    research_con.execute(
+
+def _build_current_symbol_map(identifiers_df: pd.DataFrame) -> dict[int, str]:
+    symbols_df = identifiers_df[
+        identifiers_df["identifier_type"].eq("symbol")
+        & identifiers_df["is_current"].fillna(False).astype(bool)
+        & identifiers_df["source_symbol"].notna()
+        & identifiers_df["source_symbol"].ne("")
+    ].copy()
+    if symbols_df.empty:
+        return {}
+    symbols_df = symbols_df.sort_values(
+        ["asset_id", "source_priority", "mapping_confidence", "source_symbol"],
+        ascending=[True, True, False, True],
+        kind="stable",
+    )
+    current_df = symbols_df.drop_duplicates(subset=["asset_id"], keep="first")
+    return {
+        int(row["asset_id"]): str(row["source_symbol"])
+        for row in current_df[["asset_id", "source_symbol"]].to_dict("records")
+    }
+
+
+def build_asset_identity_bridge_frame(identifiers_df: pd.DataFrame) -> pd.DataFrame:
+    prepared = _prepare_identifier_frame(identifiers_df)
+    if prepared.empty:
+        return pd.DataFrame(columns=ASSET_IDENTITY_BRIDGE_COLUMNS)
+
+    current_symbol_map = _build_current_symbol_map(prepared)
+    now = pd.Timestamp.utcnow()
+    rows = []
+    for asset_id, group in prepared.groupby("asset_id", sort=True):
+        symbol_values = sorted(
+            {
+                str(value)
+                for value in group["source_symbol"].dropna().astype(str)
+                if str(value).strip()
+            }
+        )
+        rows.append(
+            {
+                "asset_id": int(asset_id),
+                "current_symbol": current_symbol_map.get(int(asset_id), pd.NA),
+                "source_symbols": ",".join(symbol_values) if symbol_values else pd.NA,
+                "alpaca_id": _first_non_empty(
+                    pd.concat(
+                        [
+                            group.loc[
+                                group["identifier_type"].eq("alpaca_id"),
+                                "identifier_value",
+                            ],
+                            group["alpaca_id"],
+                        ],
+                        ignore_index=True,
+                    )
+                ),
+                "cik": _first_non_empty(group["cik"]),
+                "security_name": _first_non_empty(group["security_name"]),
+                "exchange": _first_non_empty(group["exchange"]),
+                "is_current": bool(group["is_current"].fillna(False).astype(bool).any()),
+                "asof_ts": now,
+            }
+        )
+
+    return pd.DataFrame(rows, columns=ASSET_IDENTITY_BRIDGE_COLUMNS)
+
+
+def build_asset_symbol_bridge_frame(identifiers_df: pd.DataFrame) -> pd.DataFrame:
+    prepared = _prepare_identifier_frame(identifiers_df)
+    if prepared.empty:
+        return pd.DataFrame(columns=ASSET_SYMBOL_BRIDGE_COLUMNS)
+
+    current_symbol_map = _build_current_symbol_map(prepared)
+    identity_df = build_asset_identity_bridge_frame(prepared)
+    alpaca_by_asset = dict(zip(identity_df["asset_id"], identity_df["alpaca_id"]))
+    cik_by_asset = dict(zip(identity_df["asset_id"], identity_df["cik"]))
+    now = pd.Timestamp.utcnow()
+    symbol_df = prepared[
+        prepared["source_symbol"].notna() & prepared["source_symbol"].ne("")
+    ].copy()
+    symbol_df = symbol_df.sort_values(
+        [
+            "asset_id",
+            "source_symbol",
+            "is_current",
+            "source_priority",
+            "mapping_confidence",
+        ],
+        ascending=[True, True, False, True, False],
+        kind="stable",
+    )
+    symbol_df = symbol_df.drop_duplicates(
+        subset=[
+            "asset_id",
+            "source_symbol",
+            "valid_from_date",
+            "valid_to_date",
+        ],
+        keep="first",
+    )
+
+    rows = []
+    for row in symbol_df.to_dict("records"):
+        asset_id = int(row["asset_id"])
+        source_symbol = str(row["source_symbol"])
+        current_symbol = current_symbol_map.get(asset_id, pd.NA)
+        rows.append(
+            {
+                "asset_id": asset_id,
+                "current_symbol": current_symbol,
+                "source_symbol": source_symbol,
+                "symbol_role": (
+                    "current"
+                    if isinstance(current_symbol, str) and source_symbol == current_symbol
+                    else "historical_or_source"
+                ),
+                "alpaca_id": alpaca_by_asset.get(asset_id, pd.NA),
+                "cik": cik_by_asset.get(asset_id, pd.NA),
+                "identifier_source": row["identifier_source"],
+                "source_priority": int(row["source_priority"]),
+                "mapping_confidence": float(row["mapping_confidence"]),
+                "valid_from_date": row["valid_from_date"],
+                "valid_to_date": row["valid_to_date"],
+                "is_current": _bool_or_false(row["is_current"]),
+                "asof_ts": now,
+            }
+        )
+
+    return pd.DataFrame(rows, columns=ASSET_SYMBOL_BRIDGE_COLUMNS)
+
+
+def _write_identifier_tables(con, identifiers_df: pd.DataFrame) -> None:
+    con.execute("CREATE SCHEMA IF NOT EXISTS silver")
+    con.register("security_identifiers_df", identifiers_df)
+    con.execute(
         """
         CREATE OR REPLACE TABLE silver.security_identifiers AS
         SELECT
@@ -369,11 +637,113 @@ def silver_security_identifiers(context: AssetExecutionContext) -> None:
         """
     )
 
-    row_count = research_con.execute(
-        "SELECT count(*) FROM silver.security_identifiers"
-    ).fetchone()[0]
+    identity_bridge_df = build_asset_identity_bridge_frame(identifiers_df)
+    symbol_bridge_df = build_asset_symbol_bridge_frame(identifiers_df)
+    con.register("asset_identity_bridge_df", identity_bridge_df)
+    con.register("asset_symbol_bridge_df", symbol_bridge_df)
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE silver.asset_identity_bridge AS
+        SELECT
+            asset_id::BIGINT AS asset_id,
+            current_symbol::VARCHAR AS current_symbol,
+            source_symbols::VARCHAR AS source_symbols,
+            alpaca_id::VARCHAR AS alpaca_id,
+            cik::VARCHAR AS cik,
+            security_name::VARCHAR AS security_name,
+            exchange::VARCHAR AS exchange,
+            is_current::BOOLEAN AS is_current,
+            asof_ts::TIMESTAMP AS asof_ts
+        FROM asset_identity_bridge_df
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE silver.asset_symbol_bridge AS
+        SELECT
+            asset_id::BIGINT AS asset_id,
+            current_symbol::VARCHAR AS current_symbol,
+            source_symbol::VARCHAR AS source_symbol,
+            symbol_role::VARCHAR AS symbol_role,
+            alpaca_id::VARCHAR AS alpaca_id,
+            cik::VARCHAR AS cik,
+            identifier_source::VARCHAR AS identifier_source,
+            source_priority::INTEGER AS source_priority,
+            mapping_confidence::DOUBLE AS mapping_confidence,
+            valid_from_date::DATE AS valid_from_date,
+            valid_to_date::DATE AS valid_to_date,
+            is_current::BOOLEAN AS is_current,
+            asof_ts::TIMESTAMP AS asof_ts
+        FROM asset_symbol_bridge_df
+        """
+    )
+
+
+@asset(
+    name="security_identifiers",
+    key_prefix=["silver"],
+    required_resource_keys={"duckdb", "research_duckdb"},
+)
+def silver_security_identifiers(context: AssetExecutionContext) -> None:
+    """
+    Mirror durable project identifiers into both DuckDB databases.
+    """
+    portfolio_con = context.resources.duckdb
+    research_con = context.resources.research_duckdb
+    portfolio_con.execute("CREATE SCHEMA IF NOT EXISTS silver")
+    research_con.execute("CREATE SCHEMA IF NOT EXISTS silver")
+
+    if _table_exists(portfolio_con, "silver", "assets"):
+        assets_df = portfolio_con.execute(
+            """
+            SELECT *
+            FROM silver.assets
+            WHERE asset_id IS NOT NULL
+              AND symbol IS NOT NULL
+              AND trim(symbol) <> ''
+            """
+        ).fetch_df()
+    else:
+        context.log.warning(
+            "portfolio silver.assets is missing; building research-only identifiers."
+        )
+        assets_df = pd.DataFrame()
+    portfolio_identifiers_df = build_security_identifiers_from_assets_df(assets_df)
+    sp500_identifiers_df = _load_sp500_identifiers(
+        portfolio_con,
+        portfolio_identifiers_df,
+    )
+    research_symbols_df = _load_research_price_symbols(research_con)
+    existing_research_identifiers_df = _load_existing_research_identifier_map(research_con)
+    research_identifiers_df = build_research_symbol_identifiers_frame(
+        research_symbols_df,
+        portfolio_identifiers_df,
+        existing_research_identifiers_df,
+    )
+    identifier_frames = [
+        frame
+        for frame in [portfolio_identifiers_df, sp500_identifiers_df, research_identifiers_df]
+        if frame is not None and not frame.empty
+    ]
+    if identifier_frames:
+        identifiers_df = pd.concat(identifier_frames, ignore_index=True)
+    else:
+        identifiers_df = pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+
+    _write_identifier_tables(portfolio_con, identifiers_df)
+    _write_identifier_tables(research_con, identifiers_df)
+
+    row_count = research_con.execute("SELECT count(*) FROM silver.security_identifiers").fetchone()[
+        0
+    ]
     asset_count = research_con.execute(
         "SELECT count(DISTINCT asset_id) FROM silver.security_identifiers"
+    ).fetchone()[0]
+    identity_bridge_count = research_con.execute(
+        "SELECT count(*) FROM silver.asset_identity_bridge"
+    ).fetchone()[0]
+    symbol_bridge_count = research_con.execute(
+        "SELECT count(*) FROM silver.asset_symbol_bridge"
     ).fetchone()[0]
     context.add_output_metadata(
         {
@@ -381,6 +751,9 @@ def silver_security_identifiers(context: AssetExecutionContext) -> None:
             "row_count": int(row_count or 0),
             "asset_count": int(asset_count or 0),
             "portfolio_identifier_rows": len(portfolio_identifiers_df),
+            "sp500_identifier_rows": len(sp500_identifiers_df),
             "research_identifier_rows": len(research_identifiers_df),
+            "identity_bridge_rows": int(identity_bridge_count or 0),
+            "symbol_bridge_rows": int(symbol_bridge_count or 0),
         }
     )

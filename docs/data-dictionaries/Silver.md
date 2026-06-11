@@ -56,7 +56,7 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 
 ## `silver.security_identifiers`
 
-*DuckDB Table in the research DuckDB silver schema*
+*DuckDB Table in both portfolio and research DuckDB silver schemas*
 
 Stores effective-dated external identifier mappings for project securities. The natural key is `asset_id`, `identifier_source`, `identifier_type`, `identifier_value`, and `valid_from_date`. Current rows have `is_current = true` and `valid_to_date` null. Alpaca-backed portfolio securities retain their `silver.assets.asset_id`; research-only symbols from `silver.research_daily_prices` receive the next available durable `asset_id` until a stronger identifier mapping is available.
 
@@ -79,6 +79,46 @@ Stores effective-dated external identifier mappings for project securities. The 
 | `is_current` | `bool` | Whether this row is the active mapping for the identifier source and symbol. |
 | `ingestion_date` | `date` | Bronze ingestion date of the source snapshot that produced the mapping. |
 | `ingested_ts` | `timestamp` | ETL ingest timestamp. |
+
+## `silver.asset_identity_bridge`
+
+*DuckDB Table in both portfolio and research DuckDB silver schemas*
+
+One row per durable `asset_id` with the preferred current symbol plus compact external identifiers used for cross-database joins.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases. |
+| `current_symbol` | `object` | Preferred current ticker symbol selected from current symbol identifiers by source priority. |
+| `source_symbols` | `object` | Comma-separated set of current, historical, and source-reported symbols known for the asset. |
+| `alpaca_id` | `object` | Alpaca asset identifier when available. |
+| `cik` | `object` | SEC Central Index Key without left-padding when available. |
+| `security_name` | `object` | Company or security name from the highest available identifier metadata. |
+| `exchange` | `object` | Exchange from identifier metadata when available. |
+| `is_current` | `bool` | Whether any identifier row for the asset is current. |
+| `asof_ts` | `timestamp` | Bridge table build timestamp. |
+
+## `silver.asset_symbol_bridge`
+
+*DuckDB Table in both portfolio and research DuckDB silver schemas*
+
+One row per durable `asset_id` and known source symbol. Use this table to resolve current or historical/source ticker symbols to `asset_id`, Alpaca ID, and CIK.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases. |
+| `current_symbol` | `object` | Preferred current ticker symbol selected from current symbol identifiers by source priority. |
+| `source_symbol` | `object` | Current, historical, or source-reported ticker symbol for the asset. |
+| `symbol_role` | `object` | `current` when `source_symbol` matches `current_symbol`; otherwise `historical_or_source`. |
+| `alpaca_id` | `object` | Alpaca asset identifier when available. |
+| `cik` | `object` | SEC Central Index Key without left-padding when available. |
+| `identifier_source` | `object` | Source that contributed the selected source-symbol mapping. |
+| `source_priority` | `int` | Deterministic priority used to resolve duplicate source-symbol mappings. |
+| `mapping_confidence` | `float` | Confidence score for the selected source-symbol mapping. |
+| `valid_from_date` | `date` | First date the mapping is considered valid. |
+| `valid_to_date` | `date` | Last date the mapping is considered valid, null for open-ended mappings. |
+| `is_current` | `bool` | Whether the selected source-symbol mapping is current. |
+| `asof_ts` | `timestamp` | Bridge table build timestamp. |
 
 ## `silver.prices`
 
