@@ -55,7 +55,7 @@ This document describes each source, what it powers, and important operational d
 - Ticker-to-CIK mappings can change over time, so joins should use effective-dated identifier records when available and preserve source symbols for auditability.
 
 ### Operational Notes
-- Raw SEC bulk downloads are stored in bronze under `data/bronze/sec/` and tracked by a manifest.
+- Raw SEC bulk downloads are stored in bronze under `data/bronze/sec/` and tracked by an ingestion log.
 - Parsed bronze parquet datasets provide the repeatable input surface for downstream silver assets.
 - Fundamental values become research-usable only on or after the SEC filing date or acceptance datetime.
 

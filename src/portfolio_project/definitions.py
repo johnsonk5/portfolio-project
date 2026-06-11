@@ -64,6 +64,7 @@ from portfolio_project.defs.research_db.bronze.research_prices import (
     bronze_alpaca_prices_daily,
     bronze_eodhd_prices_daily,
 )
+from portfolio_project.defs.research_db.bronze.sec import bronze_sec_bulk_archives
 from portfolio_project.defs.research_db.gold.strategy import (
     gold_strategy_holdings,
     gold_strategy_performance,
@@ -103,6 +104,7 @@ from portfolio_project.defs.research_db.silver.universe import (
 from portfolio_project.defs.resources.alpaca import alpaca_resource
 from portfolio_project.defs.resources.duckdb import duckdb_resource
 from portfolio_project.defs.resources.eodhd import eodhd_resource
+from portfolio_project.defs.resources.sec import sec_resource
 
 prices_selection = AssetSelection.assets(
     bronze_alpaca_bars,
@@ -189,9 +191,20 @@ factors_selection = AssetSelection.assets(
     silver_fama_french_factors_parquet,
 )
 
+sec_fundamentals_selection = AssetSelection.assets(
+    bronze_sec_bulk_archives,
+)
+
 monthly_factors_job = define_asset_job(
     name="monthly_factors_job",
     selection=factors_selection,
+    executor_def=in_process_executor,
+    hooks={dagster_run_log_success, dagster_run_log_failure},
+)
+
+sec_fundamentals_job = define_asset_job(
+    name="sec_fundamentals_job",
+    selection=sec_fundamentals_selection,
     executor_def=in_process_executor,
     hooks={dagster_run_log_success, dagster_run_log_failure},
 )
@@ -364,6 +377,13 @@ monthly_factors_schedule = ScheduleDefinition(
     job=monthly_factors_job,
 )
 
+sec_fundamentals_schedule = ScheduleDefinition(
+    name="sec_fundamentals_schedule",
+    cron_schedule="45 4 * * *",
+    execution_timezone="America/New_York",
+    job=sec_fundamentals_job,
+)
+
 
 def _daily_wikipedia_schedule_fn(context):
     scheduled_time = context.scheduled_execution_time
@@ -409,6 +429,7 @@ defs = Definitions(
         bronze_alpaca_corporate_actions_daily,
         bronze_yahoo_news,
         bronze_fama_french_factors,
+        bronze_sec_bulk_archives,
         bronze_tranco_snapshot,
         bronze_wikipedia_pageviews,
         silver_wikipedia_pageviews,
@@ -452,6 +473,7 @@ defs = Definitions(
         prices_compaction_job,
         daily_news_job,
         monthly_factors_job,
+        sec_fundamentals_job,
         wikipedia_activity_job,
         asset_status_updates_job,
         sp500_update_job,
@@ -465,6 +487,7 @@ defs = Definitions(
         prices_compaction_schedule,
         daily_news_schedule,
         monthly_factors_schedule,
+        sec_fundamentals_schedule,
         wikipedia_daily_schedule,
         sp500_weekly_schedule,
         tranco_monthly_schedule,
@@ -473,6 +496,7 @@ defs = Definitions(
     resources={
         "alpaca": alpaca_resource,
         "eodhd": eodhd_resource,
+        "sec": sec_resource,
         "duckdb": duckdb_resource,
         "research_duckdb": duckdb_resource.configured(
             {
