@@ -58,7 +58,7 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 
 *DuckDB Table in the research DuckDB silver schema*
 
-Stores effective-dated external identifier mappings for project securities. The natural key is `asset_id`, `identifier_source`, `identifier_type`, `identifier_value`, and `valid_from_date`. Current rows have `is_current = true` and `valid_to_date` null.
+Stores effective-dated external identifier mappings for project securities. The natural key is `asset_id`, `identifier_source`, `identifier_type`, `identifier_value`, and `valid_from_date`. Current rows have `is_current = true` and `valid_to_date` null. Alpaca-backed portfolio securities retain their `silver.assets.asset_id`; research-only symbols from `silver.research_daily_prices` receive the next available durable `asset_id` until a stronger identifier mapping is available.
 
 | Column | Type | Description |
 | --- | --- | --- |
@@ -119,6 +119,7 @@ Stores effective-dated external identifier mappings for project securities. The 
 
 | Column | Type | Description |
 | --- | --- | --- |
+| `asset_id` | `int` | Durable project asset key resolved from `silver.security_identifiers` or portfolio `silver.assets`, nullable while a source symbol is unmapped. |
 | `symbol` | `object` | Canonical ticker symbol. |
 | `timestamp` | `timestamp` | Daily bar timestamp (UTC). |
 | `trade_date` | `date` | Trading date represented by the bar. |
@@ -159,6 +160,7 @@ Stores effective-dated external identifier mappings for project securities. The 
 | Column | Type | Description |
 | --- | --- | --- |
 | `date` | `date` | Trading date for the signal row. |
+| `asset_id` | `int` | Durable project asset key resolved from research daily prices, nullable for unmapped symbols or legacy partitions. |
 | `symbol` | `object` | Canonical ticker symbol. |
 | `close` | `float` | Daily close used for price-level signals. |
 | `adjusted_close` | `float` | Adjusted close when available, otherwise close. |
@@ -194,6 +196,7 @@ Stores effective-dated external identifier mappings for project securities. The 
 | Column | Type | Description |
 | --- | --- | --- |
 | `event_date` | `date` | Trading date where membership changed versus the prior trading day. |
+| `asset_id` | `int` | Durable project asset key carried from universe membership, nullable for unmapped symbols. |
 | `symbol` | `object` | Canonical ticker symbol. |
 | `event_type` | `object` | Membership change classification (`added` or `removed`). |
 | `previous_liquidity_rank` | `int` | Prior-day liquidity rank when the symbol was already in the universe. |
@@ -210,6 +213,7 @@ Stores effective-dated external identifier mappings for project securities. The 
 | Column | Type | Description |
 | --- | --- | --- |
 | `member_date` | `date` | Trading date for the liquidity-ranked daily universe. |
+| `asset_id` | `int` | Durable project asset key carried from research daily prices, nullable for unmapped symbols. |
 | `symbol` | `object` | Canonical ticker symbol. |
 | `liquidity_rank` | `int` | Rank by trailing average dollar volume for that trading day. |
 | `rolling_avg_dollar_volume` | `float` | Trailing average dollar volume used for membership selection. |
@@ -222,6 +226,7 @@ Stores effective-dated external identifier mappings for project securities. The 
 
 | Column | Type | Description |
 | --- | --- | --- |
+| `asset_id` | `int` | Durable project asset key carried from research daily prices, nullable for unmapped symbols. |
 | `symbol` | `object` | Canonical ticker symbol. |
 | `date` | `date` | Trading date for the eligibility decision. |
 | `passes_symbol_format` | `bool` | Whether the symbol matches the no-metadata sanity pattern. |

@@ -85,6 +85,24 @@ def test_research_daily_prices_prefers_alpaca_on_overlap(tmp_path: Path) -> None
 
     con = duckdb.connect(":memory:")
     obs_con = duckdb.connect(":memory:")
+    obs_con.execute("CREATE SCHEMA silver")
+    obs_con.execute(
+        """
+        CREATE TABLE silver.assets (
+            asset_id BIGINT,
+            symbol VARCHAR,
+            is_active BOOLEAN
+        )
+        """
+    )
+    obs_con.execute(
+        """
+        INSERT INTO silver.assets VALUES
+            (1, 'AAPL', TRUE),
+            (2, 'MSFT', TRUE),
+            (3, 'NVDA', TRUE)
+        """
+    )
     context = build_asset_context(
         partition_key=partition_key,
         resources={"research_duckdb": con, "duckdb": obs_con},
@@ -102,6 +120,7 @@ def test_research_daily_prices_prefers_alpaca_on_overlap(tmp_path: Path) -> None
 
     out_df = pd.read_parquet(out_path).sort_values("symbol").reset_index(drop=True)
     assert out_df["symbol"].tolist() == ["AAPL", "MSFT", "NVDA"]
+    assert out_df["asset_id"].tolist() == [1, 2, 3]
     assert out_df["source"].tolist() == ["alpaca", "alpaca", "eodhd"]
     assert float(out_df.loc[out_df["symbol"] == "AAPL", "close"].iloc[0]) == 100.5
     assert float(out_df.loc[out_df["symbol"] == "AAPL", "dollar_volume"].iloc[0]) == 100500.0
@@ -116,6 +135,7 @@ def test_research_daily_prices_prefers_alpaca_on_overlap(tmp_path: Path) -> None
         .fetchall()
     )
     actual_types = {str(row[0]): str(row[1]).upper() for row in schema}
+    assert actual_types["asset_id"] == "BIGINT"
     assert actual_types["volume"] == "BIGINT"
     assert actual_types["trade_count"] == "BIGINT"
 
@@ -260,7 +280,7 @@ def test_validate_research_daily_prices_schema_detects_missing_columns_and_type_
     result = research_silver_prices_module._validate_research_daily_prices_schema(con, bad_path)
 
     assert result["status"] == "FAIL"
-    assert result["details"]["missing_columns"] == ["ingested_ts"]
+    assert result["details"]["missing_columns"] == ["asset_id", "ingested_ts"]
     assert result["details"]["type_mismatches"]["trade_date"]["actual"] == "VARCHAR"
     assert result["details"]["type_mismatches"]["open"]["actual"] == "VARCHAR"
 

@@ -29,6 +29,7 @@ RESEARCH_DAILY_PRICES_MIN_SYMBOL_COUNT = int(
 )
 RESEARCH_DAILY_PRICES_EXCEPTION_SYMBOLS = {"SPY"}
 PRICE_COLUMNS = [
+    "asset_id",
     "symbol",
     "timestamp",
     "trade_date",
@@ -45,6 +46,7 @@ PRICE_COLUMNS = [
     "ingested_ts",
 ]
 EXPECTED_DUCKDB_TYPES = {
+    "asset_id": {"BIGINT"},
     "symbol": {"VARCHAR"},
     "timestamp": {"TIMESTAMP WITH TIME ZONE"},
     "trade_date": {"DATE"},
@@ -115,6 +117,72 @@ def _table_has_column(con, schema: str, table: str, column: str) -> bool:
         ).fetchone()
         is not None
     )
+
+
+def _load_asset_id_map(research_con, portfolio_con) -> dict[str, int]:
+    if _table_exists(research_con, "silver", "security_identifiers"):
+        rows = research_con.execute(
+            """
+            WITH candidates AS (
+                SELECT
+                    upper(trim(source_symbol)) AS symbol,
+                    CAST(asset_id AS BIGINT) AS asset_id,
+                    row_number() OVER (
+                        PARTITION BY upper(trim(source_symbol))
+                        ORDER BY source_priority ASC, mapping_confidence DESC, asset_id ASC
+                    ) AS rn
+                FROM silver.security_identifiers
+                WHERE is_current = TRUE
+                  AND asset_id IS NOT NULL
+                  AND source_symbol IS NOT NULL
+                  AND trim(source_symbol) <> ''
+            )
+            SELECT symbol, asset_id
+            FROM candidates
+            WHERE rn = 1
+            ORDER BY symbol
+            """
+        ).fetchall()
+        if rows:
+            return {str(symbol): int(asset_id) for symbol, asset_id in rows}
+
+    if _table_exists(portfolio_con, "silver", "assets"):
+        rows = portfolio_con.execute(
+            """
+            WITH candidates AS (
+                SELECT
+                    upper(trim(symbol)) AS symbol,
+                    CAST(asset_id AS BIGINT) AS asset_id,
+                    row_number() OVER (
+                        PARTITION BY upper(trim(symbol))
+                        ORDER BY is_active DESC, asset_id ASC
+                    ) AS rn
+                FROM silver.assets
+                WHERE asset_id IS NOT NULL
+                  AND symbol IS NOT NULL
+                  AND trim(symbol) <> ''
+            )
+            SELECT symbol, asset_id
+            FROM candidates
+            WHERE rn = 1
+            ORDER BY symbol
+            """
+        ).fetchall()
+        return {str(symbol): int(asset_id) for symbol, asset_id in rows}
+
+    return {}
+
+
+def _apply_asset_ids(day_df: pd.DataFrame, asset_id_map: dict[str, int]) -> pd.DataFrame:
+    if day_df is None or day_df.empty:
+        return day_df
+    resolved = day_df.copy()
+    if asset_id_map:
+        resolved["asset_id"] = resolved["symbol"].astype(str).str.upper().map(asset_id_map)
+    elif "asset_id" not in resolved.columns:
+        resolved["asset_id"] = pd.NA
+    resolved["asset_id"] = _coerce_nullable_integer(resolved["asset_id"])
+    return resolved
 
 
 def _bronze_prices_path(dataset_name: str, trade_date: date) -> Path:
@@ -455,6 +523,8 @@ def _normalize_daily_prices_df(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     normalized = df.copy()
+    if "asset_id" not in normalized.columns:
+        normalized["asset_id"] = pd.NA
     normalized["symbol"] = normalized["symbol"].astype(str).str.strip().str.upper()
     normalized = normalized[normalized["symbol"].ne("")].copy()
     normalized["trade_date"] = pd.to_datetime(normalized["trade_date"], errors="coerce").dt.date
@@ -502,6 +572,10 @@ def _coerce_nullable_integer(series: pd.Series) -> pd.Series:
 def _prepare_research_daily_prices_for_write(day_df: pd.DataFrame) -> pd.DataFrame:
     prepared = day_df.copy()
 
+    if "asset_id" not in prepared.columns:
+        prepared["asset_id"] = pd.NA
+    prepared["asset_id"] = _coerce_nullable_integer(prepared["asset_id"])
+
     for column in MARKET_VALUE_COLUMNS:
         prepared[column] = pd.to_numeric(prepared[column], errors="coerce").astype("float64")
     for column in NON_NEGATIVE_COUNT_COLUMNS:
@@ -526,7 +600,10 @@ def _prepare_research_daily_prices_for_write(day_df: pd.DataFrame) -> pd.DataFra
     return prepared[PRICE_COLUMNS]
 
 
-def combine_source_daily_prices(trade_date: date) -> pd.DataFrame:
+def combine_source_daily_prices(
+    trade_date: date,
+    asset_id_map: dict[str, int] | None = None,
+) -> pd.DataFrame:
     frames = [
         _normalize_daily_prices_df(_load_bronze_prices("alpaca_prices_daily", trade_date)),
         _normalize_daily_prices_df(_load_bronze_prices("eodhd_prices_daily", trade_date)),
@@ -546,6 +623,7 @@ def combine_source_daily_prices(trade_date: date) -> pd.DataFrame:
     combined = pd.concat(frames, ignore_index=True)
     combined = combined.drop_duplicates(subset=["symbol", "trade_date"], keep="first").copy()
     combined = combined.drop(columns=["source_priority"])
+    combined = _apply_asset_ids(combined, asset_id_map or {})
     combined = _prepare_research_daily_prices_for_write(combined)
     return combined.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
 
@@ -581,7 +659,8 @@ def silver_research_daily_prices(context: AssetExecutionContext) -> None:
     falling back to EODHD for the rest of the historical range.
     """
     trade_date = datetime.strptime(context.partition_key, "%Y-%m-%d").date()
-    day_df = combine_source_daily_prices(trade_date)
+    asset_id_map = _load_asset_id_map(context.resources.research_duckdb, context.resources.duckdb)
+    day_df = combine_source_daily_prices(trade_date, asset_id_map=asset_id_map)
 
     if day_df.empty:
         context.log.warning(
@@ -674,6 +753,7 @@ def silver_research_daily_prices(context: AssetExecutionContext) -> None:
             "row_count": rows_written,
             "files_written": files_written,
             "symbol_count": int(day_df["symbol"].nunique()),
+            "asset_id_mapped_count": int(day_df["asset_id"].notna().sum()),
             "source_counts": source_counts,
             "table": "silver.research_daily_prices",
             "output_path": output_path.as_posix(),

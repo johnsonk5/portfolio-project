@@ -111,7 +111,7 @@ def create_valid_trading_dates_table(
     rows = con.execute(
         """
         SELECT DISTINCT CAST(trade_date AS DATE) AS trade_date
-        FROM read_parquet(?)
+        FROM read_parquet(?, union_by_name = true)
         WHERE trade_date IS NOT NULL
         ORDER BY trade_date
         """,

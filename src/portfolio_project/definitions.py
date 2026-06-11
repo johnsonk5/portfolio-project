@@ -84,6 +84,9 @@ from portfolio_project.defs.research_db.silver.factors import (
 from portfolio_project.defs.research_db.silver.research_prices import (
     silver_research_daily_prices,
 )
+from portfolio_project.defs.research_db.silver.security_identifiers import (
+    silver_security_identifiers,
+)
 from portfolio_project.defs.research_db.silver.security_master import silver_security_master
 from portfolio_project.defs.research_db.silver.signals import (
     silver_signals_daily,
@@ -111,6 +114,7 @@ research_prices_selection = AssetSelection.assets(
     bronze_alpaca_prices_daily,
     bronze_alpaca_corporate_actions_daily,
     silver_alpaca_corporate_actions,
+    silver_security_identifiers,
     silver_research_daily_prices,
     silver_signals_daily,
     silver_universe_membership_daily,
@@ -124,6 +128,7 @@ strategy_backfill_selection = AssetSelection.assets(
     ref_invalid_trading_days,
     silver_universe_membership_daily,
     silver_security_master,
+    silver_security_identifiers,
     silver_strategy_definitions,
     silver_strategy_runs,
     silver_strategy_parameters,
@@ -418,6 +423,7 @@ defs = Definitions(
         silver_alpaca_prices_parquet,
         silver_alpaca_prices_compact,
         silver_alpaca_corporate_actions,
+        silver_security_identifiers,
         silver_research_daily_prices,
         silver_signals_daily,
         silver_strategy_definitions,

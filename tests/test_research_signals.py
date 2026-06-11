@@ -80,6 +80,7 @@ def test_signals_daily_builds_expected_metrics(tmp_path: Path, monkeypatch) -> N
             trade_date,
             pd.DataFrame(
                 {
+                    "asset_id": [1],
                     "symbol": ["AAPL"],
                     "timestamp": [ts.tz_localize(timezone.utc)],
                     "trade_date": [trade_date],
@@ -107,6 +108,7 @@ def test_signals_daily_builds_expected_metrics(tmp_path: Path, monkeypatch) -> N
         """
         SELECT
             date,
+            asset_id,
             symbol,
             returns_1d,
             returns_5d,
@@ -135,6 +137,7 @@ def test_signals_daily_builds_expected_metrics(tmp_path: Path, monkeypatch) -> N
     ).df()
 
     assert len(actual) == len(expected)
+    assert actual["asset_id"].unique().tolist() == [1]
     assert actual["symbol"].unique().tolist() == ["AAPL"]
     assert set(actual["signal_version"].unique()) == {"test-v1"}
 

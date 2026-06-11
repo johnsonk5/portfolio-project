@@ -61,6 +61,17 @@ def _table_exists(con, schema: str, table: str) -> bool:
     )
 
 
+def _parquet_has_column(con, parquet_glob: str, column: str) -> bool:
+    try:
+        rows = con.execute(
+            "DESCRIBE SELECT * FROM read_parquet(?, union_by_name = true)",
+            [parquet_glob],
+        ).fetchall()
+    except Exception:
+        return False
+    return column in {str(row[0]) for row in rows}
+
+
 def universe_membership_symbols_for_date(con, target_date: date) -> list[tuple[str, int, float]]:
     if not _table_exists(con, "silver", "universe_membership_daily"):
         return []
@@ -88,21 +99,27 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
     """
     con = context.resources.research_duckdb
     prices_glob = _silver_prices_glob()
+    asset_id_sql = (
+        "CAST(p.asset_id AS BIGINT)"
+        if _parquet_has_column(con, prices_glob, "asset_id")
+        else "NULL::BIGINT"
+    )
 
     con.execute("CREATE SCHEMA IF NOT EXISTS silver")
     try:
         create_valid_trading_dates_table(con, prices_glob)
         con.execute(
-            """
+            f"""
             CREATE OR REPLACE TABLE silver.universe_eligibility_daily AS
             WITH prices AS (
                 SELECT
+                    {asset_id_sql} AS asset_id,
                     CAST(p.trade_date AS DATE) AS trade_date,
                     upper(trim(p.symbol)) AS symbol,
                     CAST(p.close AS DOUBLE) AS close,
                     CAST(p.volume AS BIGINT) AS volume,
                     CAST(p.dollar_volume AS DOUBLE) AS dollar_volume
-                FROM read_parquet(?) AS p
+                FROM read_parquet(?, union_by_name = true) AS p
                 INNER JOIN valid_research_trading_dates AS trading_dates
                     ON trading_dates.trade_date = CAST(p.trade_date AS DATE)
                 WHERE p.trade_date IS NOT NULL
@@ -112,6 +129,7 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
             features AS (
                 SELECT
                     trade_date AS date,
+                    asset_id,
                     symbol,
                     close,
                     volume,
@@ -119,21 +137,21 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
                     avg(dollar_volume) FILTER (
                         WHERE dollar_volume IS NOT NULL AND dollar_volume > 0
                     ) OVER (
-                        PARTITION BY symbol
+                        PARTITION BY coalesce(CAST(asset_id AS VARCHAR), symbol)
                         ORDER BY trade_date
                         ROWS BETWEEN ? PRECEDING AND CURRENT ROW
                     ) AS avg_dollar_volume_63d,
                     count(*) FILTER (
                         WHERE close IS NOT NULL
                     ) OVER (
-                        PARTITION BY symbol
+                        PARTITION BY coalesce(CAST(asset_id AS VARCHAR), symbol)
                         ORDER BY trade_date
                         ROWS BETWEEN ? PRECEDING AND CURRENT ROW
                     ) AS trading_days_seen_252d,
                     count(*) FILTER (
                         WHERE volume IS NOT NULL AND volume > 0
                     ) OVER (
-                        PARTITION BY symbol
+                        PARTITION BY coalesce(CAST(asset_id AS VARCHAR), symbol)
                         ORDER BY trade_date
                         ROWS BETWEEN ? PRECEDING AND CURRENT ROW
                     ) AS volume_positive_days_252d
@@ -141,6 +159,7 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
             ),
             flags AS (
                 SELECT
+                    asset_id,
                     symbol,
                     date,
                     regexp_matches(symbol, ?) AS passes_symbol_format,
@@ -158,6 +177,7 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
                 FROM features
             )
             SELECT
+                asset_id,
                 symbol,
                 date,
                 passes_symbol_format,
@@ -212,6 +232,7 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
             ranked AS (
                 SELECT
                     date AS member_date,
+                    asset_id,
                     symbol,
                     avg_dollar_volume_63d AS rolling_avg_dollar_volume,
                     row_number() OVER (
@@ -223,6 +244,7 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
             )
             SELECT
                 member_date,
+                asset_id,
                 symbol,
                 liquidity_rank,
                 rolling_avg_dollar_volume,
@@ -316,6 +338,7 @@ def silver_universe_membership_events(context: AssetExecutionContext) -> None:
         WITH distinct_membership AS (
             SELECT DISTINCT
                 member_date,
+                asset_id,
                 symbol,
                 source,
                 liquidity_rank,
@@ -335,6 +358,7 @@ def silver_universe_membership_events(context: AssetExecutionContext) -> None:
             SELECT
                 d.member_date,
                 d.previous_member_date,
+                m.asset_id,
                 m.symbol,
                 m.source
             FROM days AS d
@@ -345,6 +369,7 @@ def silver_universe_membership_events(context: AssetExecutionContext) -> None:
             SELECT
                 d.member_date,
                 d.previous_member_date,
+                m.asset_id,
                 m.symbol,
                 m.source
             FROM days AS d
@@ -354,6 +379,7 @@ def silver_universe_membership_events(context: AssetExecutionContext) -> None:
         added AS (
             SELECT
                 curr.member_date AS event_date,
+                curr.asset_id,
                 curr.symbol,
                 curr.source,
                 'added' AS event_type
@@ -367,6 +393,7 @@ def silver_universe_membership_events(context: AssetExecutionContext) -> None:
         removed AS (
             SELECT
                 prev.member_date AS event_date,
+                prev.asset_id,
                 prev.symbol,
                 prev.source,
                 'removed' AS event_type
@@ -384,6 +411,7 @@ def silver_universe_membership_events(context: AssetExecutionContext) -> None:
         )
         SELECT
             changes.event_date,
+            changes.asset_id,
             changes.symbol,
             changes.event_type,
             prev.liquidity_rank AS previous_liquidity_rank,
