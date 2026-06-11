@@ -36,7 +36,7 @@ class _FakeSecClient:
         )
 
 
-def test_bronze_sec_bulk_archives_writes_raw_files_and_manifest(
+def test_bronze_sec_bulk_archives_writes_raw_files_and_ingestion_log(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -64,18 +64,18 @@ def test_bronze_sec_bulk_archives_writes_raw_files_and_manifest(
     assert result.success
     assert sec_client.calls == [dataset.url_path for dataset in SEC_BRONZE_DATASETS]
 
-    manifest_path = data_root / "bronze" / "sec" / "manifest.parquet"
-    manifest = pd.read_parquet(manifest_path)
+    ingestion_log_path = data_root / "bronze" / "sec" / "ingestion_log.parquet"
+    ingestion_log = pd.read_parquet(ingestion_log_path)
 
-    assert list(manifest.columns) == sec_bronze_module.SEC_MANIFEST_COLUMNS
-    assert manifest["dataset"].tolist() == [
+    assert list(ingestion_log.columns) == sec_bronze_module.SEC_INGESTION_LOG_COLUMNS
+    assert ingestion_log["dataset"].tolist() == [
         "company_tickers",
         "companyfacts",
         "submissions",
     ]
-    assert manifest["ingestion_date"].tolist() == ["2026-03-15"] * 3
-    assert manifest["changed_flag"].tolist() == [True, True, True]
-    assert manifest["file_size"].tolist() == [
+    assert ingestion_log["ingestion_date"].tolist() == ["2026-03-15"] * 3
+    assert ingestion_log["changed_flag"].tolist() == [True, True, True]
+    assert ingestion_log["file_size"].tolist() == [
         len(payloads["/files/company_tickers_exchange.json"]),
         len(payloads["/Archives/edgar/daily-index/xbrl/companyfacts.zip"]),
         len(payloads["/Archives/edgar/daily-index/bulkdata/submissions.zip"]),
@@ -130,11 +130,15 @@ def test_bronze_sec_bulk_archives_reuses_existing_archive_for_unchanged_hash(
         resources={"sec": _FakeSecClient(payloads)},
     ).success
 
-    manifest = pd.read_parquet(data_root / "bronze" / "sec" / "manifest.parquet")
-    assert len(manifest) == 6
+    ingestion_log = pd.read_parquet(data_root / "bronze" / "sec" / "ingestion_log.parquet")
+    assert len(ingestion_log) == 6
 
-    first_rows = manifest[manifest["ingestion_date"] == "2026-03-15"].sort_values("dataset")
-    second_rows = manifest[manifest["ingestion_date"] == "2026-03-16"].sort_values("dataset")
+    first_rows = ingestion_log[ingestion_log["ingestion_date"] == "2026-03-15"].sort_values(
+        "dataset"
+    )
+    second_rows = ingestion_log[ingestion_log["ingestion_date"] == "2026-03-16"].sort_values(
+        "dataset"
+    )
 
     assert first_rows["changed_flag"].tolist() == [True, True, True]
     assert second_rows["changed_flag"].tolist() == [False, False, False]

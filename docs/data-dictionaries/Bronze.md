@@ -95,9 +95,9 @@ All of the tables in this layer are partitioned parquet files unless otherwise s
 
 ## `bronze.sec.raw_archives`
 
-*Raw files under `data/bronze/sec/{dataset}/ingestion_date=YYYY-MM-DD/` plus manifest parquet at `data/bronze/sec/manifest.parquet`. Unchanged retrievals add manifest rows that point to the first stored archive for the same content hash.*
+*Raw files under `data/bronze/sec/{dataset}/ingestion_date=YYYY-MM-DD/` plus ingestion log parquet at `data/bronze/sec/ingestion_log.parquet`. Unchanged retrievals add ingestion log rows that point to the first stored archive for the same content hash.*
 
-| Manifest Column | Type | Description |
+| Ingestion Log Column | Type | Description |
 | --- | --- | --- |
 | `dataset` | `object` | SEC source dataset: `companyfacts`, `submissions`, or `company_tickers`. |
 | `source_url` | `object` | Fully resolved SEC source URL. |
