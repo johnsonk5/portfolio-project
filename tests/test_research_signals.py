@@ -80,6 +80,7 @@ def test_signals_daily_builds_expected_metrics(tmp_path: Path, monkeypatch) -> N
             trade_date,
             pd.DataFrame(
                 {
+                    "asset_id": [1],
                     "symbol": ["AAPL"],
                     "timestamp": [ts.tz_localize(timezone.utc)],
                     "trade_date": [trade_date],
@@ -107,6 +108,7 @@ def test_signals_daily_builds_expected_metrics(tmp_path: Path, monkeypatch) -> N
         """
         SELECT
             date,
+            asset_id,
             symbol,
             returns_1d,
             returns_5d,
@@ -135,6 +137,7 @@ def test_signals_daily_builds_expected_metrics(tmp_path: Path, monkeypatch) -> N
     ).df()
 
     assert len(actual) == len(expected)
+    assert actual["asset_id"].unique().tolist() == [1]
     assert actual["symbol"].unique().tolist() == ["AAPL"]
     assert set(actual["signal_version"].unique()) == {"test-v1"}
 
@@ -191,6 +194,7 @@ def test_signals_daily_fills_missing_adjusted_close_from_close(tmp_path: Path, m
         "2026-02-12",
         pd.DataFrame(
             {
+                "asset_id": [1],
                 "symbol": ["AAPL"],
                 "timestamp": [pd.Timestamp("2026-02-12T21:00:00Z")],
                 "trade_date": ["2026-02-12"],
@@ -213,6 +217,7 @@ def test_signals_daily_fills_missing_adjusted_close_from_close(tmp_path: Path, m
         "2026-02-13",
         pd.DataFrame(
             {
+                "asset_id": [1],
                 "symbol": ["AAPL"],
                 "timestamp": [pd.Timestamp("2026-02-13T21:00:00Z")],
                 "trade_date": ["2026-02-13"],
@@ -272,6 +277,7 @@ def test_signals_daily_excludes_market_holidays(tmp_path: Path, monkeypatch) -> 
             trade_date,
             pd.DataFrame(
                 {
+                    "asset_id": [1],
                     "symbol": ["AAPL"],
                     "timestamp": [pd.Timestamp(f"{trade_date}T21:00:00Z")],
                     "trade_date": [trade_date],

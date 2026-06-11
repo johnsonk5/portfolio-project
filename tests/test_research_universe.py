@@ -36,6 +36,7 @@ def test_universe_assets_build_from_rolling_dollar_volume(tmp_path: Path, monkey
         "2026-02-12",
         pd.DataFrame(
             {
+                "asset_id": [1, 2, 3],
                 "symbol": ["AAPL", "MSFT", "NVDA"],
                 "timestamp": [
                     "2026-02-12T21:00:00Z",
@@ -60,6 +61,7 @@ def test_universe_assets_build_from_rolling_dollar_volume(tmp_path: Path, monkey
         "2026-02-13",
         pd.DataFrame(
             {
+                "asset_id": [1, 2, 3],
                 "symbol": ["AAPL", "MSFT", "NVDA"],
                 "timestamp": [
                     "2026-02-13T21:00:00Z",
@@ -84,6 +86,7 @@ def test_universe_assets_build_from_rolling_dollar_volume(tmp_path: Path, monkey
         "2026-02-17",
         pd.DataFrame(
             {
+                "asset_id": [1, 2, 3],
                 "symbol": ["AAPL", "MSFT", "NVDA"],
                 "timestamp": [
                     "2026-02-17T21:00:00Z",
@@ -115,32 +118,32 @@ def test_universe_assets_build_from_rolling_dollar_volume(tmp_path: Path, monkey
 
     daily_rows = con.execute(
         """
-        SELECT member_date, symbol, liquidity_rank, rolling_avg_dollar_volume
+        SELECT member_date, asset_id, symbol, liquidity_rank, rolling_avg_dollar_volume
         FROM silver.universe_membership_daily
         ORDER BY member_date, liquidity_rank, symbol
         """
     ).fetchall()
     assert daily_rows == [
-        (date(2026, 2, 12), "AAPL", 1, 100000.0),
-        (date(2026, 2, 12), "MSFT", 2, 70000.0),
-        (date(2026, 2, 13), "NVDA", 1, 190000.0),
-        (date(2026, 2, 13), "MSFT", 2, 125000.0),
-        (date(2026, 2, 17), "NVDA", 1, 307000.0),
-        (date(2026, 2, 17), "MSFT", 2, 234000.0),
+        (date(2026, 2, 12), 1, "AAPL", 1, 100000.0),
+        (date(2026, 2, 12), 2, "MSFT", 2, 70000.0),
+        (date(2026, 2, 13), 3, "NVDA", 1, 190000.0),
+        (date(2026, 2, 13), 2, "MSFT", 2, 125000.0),
+        (date(2026, 2, 17), 3, "NVDA", 1, 307000.0),
+        (date(2026, 2, 17), 2, "MSFT", 2, 234000.0),
     ]
 
     event_rows = con.execute(
         """
-        SELECT event_date, symbol, event_type, previous_liquidity_rank, new_liquidity_rank
+        SELECT event_date, asset_id, symbol, event_type, previous_liquidity_rank, new_liquidity_rank
         FROM silver.universe_membership_events
         ORDER BY event_date, event_type, symbol
         """
     ).fetchall()
     assert event_rows == [
-        (date(2026, 2, 12), "AAPL", "added", None, 1),
-        (date(2026, 2, 12), "MSFT", "added", None, 2),
-        (date(2026, 2, 13), "NVDA", "added", None, 1),
-        (date(2026, 2, 13), "AAPL", "removed", 1, None),
+        (date(2026, 2, 12), 1, "AAPL", "added", None, 1),
+        (date(2026, 2, 12), 2, "MSFT", "added", None, 2),
+        (date(2026, 2, 13), 3, "NVDA", "added", None, 1),
+        (date(2026, 2, 13), 1, "AAPL", "removed", 1, None),
     ]
 
     records = universe_module.universe_membership_symbols_for_date(con, date(2026, 2, 17))
@@ -190,6 +193,7 @@ def test_universe_eligibility_filters_no_metadata_artifacts(
             partition_key,
             pd.DataFrame(
                 {
+                    "asset_id": [1, 2, 3, 4, 5, 6],
                     "symbol": ["AAPL", "0P00000M7O", "LOW", "THIN", "ABCQ", "XYZW"],
                     "timestamp": [f"{partition_key}T21:00:00Z"] * 6,
                     "trade_date": [partition_key] * 6,
@@ -271,6 +275,7 @@ def test_universe_eligibility_excludes_market_holidays(
             partition_key,
             pd.DataFrame(
                 {
+                    "asset_id": [1],
                     "symbol": ["AAPL"],
                     "timestamp": [f"{partition_key}T21:00:00Z"],
                     "trade_date": [partition_key],

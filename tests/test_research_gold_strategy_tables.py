@@ -83,6 +83,7 @@ def _seed_research_inputs(con: duckdb.DuckDBPyConnection, data_root: Path) -> No
         [
             {
                 "date": "2024-01-31",
+                "asset_id": 100,
                 "symbol": "SPY",
                 "momentum_12_1": 0.0,
                 "returns_5d": 0.0,
@@ -92,6 +93,7 @@ def _seed_research_inputs(con: duckdb.DuckDBPyConnection, data_root: Path) -> No
             },
             {
                 "date": "2024-01-31",
+                "asset_id": 1,
                 "symbol": "AAA",
                 "momentum_12_1": 0.9,
                 "returns_5d": 0.05,
@@ -101,6 +103,7 @@ def _seed_research_inputs(con: duckdb.DuckDBPyConnection, data_root: Path) -> No
             },
             {
                 "date": "2024-01-31",
+                "asset_id": 2,
                 "symbol": "BBB",
                 "momentum_12_1": 0.2,
                 "returns_5d": 0.01,
@@ -110,6 +113,7 @@ def _seed_research_inputs(con: duckdb.DuckDBPyConnection, data_root: Path) -> No
             },
             {
                 "date": "2024-02-29",
+                "asset_id": 100,
                 "symbol": "SPY",
                 "momentum_12_1": 0.0,
                 "returns_5d": 0.0,
@@ -119,6 +123,7 @@ def _seed_research_inputs(con: duckdb.DuckDBPyConnection, data_root: Path) -> No
             },
             {
                 "date": "2024-02-29",
+                "asset_id": 1,
                 "symbol": "AAA",
                 "momentum_12_1": 0.1,
                 "returns_5d": -0.03,
@@ -128,6 +133,7 @@ def _seed_research_inputs(con: duckdb.DuckDBPyConnection, data_root: Path) -> No
             },
             {
                 "date": "2024-02-29",
+                "asset_id": 2,
                 "symbol": "BBB",
                 "momentum_12_1": 0.8,
                 "returns_5d": 0.04,
@@ -144,6 +150,7 @@ def _seed_research_inputs(con: duckdb.DuckDBPyConnection, data_root: Path) -> No
         [
             {
                 "member_date": "2024-01-31",
+                "asset_id": 1,
                 "symbol": "AAA",
                 "liquidity_rank": 1,
                 "rolling_avg_dollar_volume": 5_000_000.0,
@@ -152,6 +159,7 @@ def _seed_research_inputs(con: duckdb.DuckDBPyConnection, data_root: Path) -> No
             },
             {
                 "member_date": "2024-01-31",
+                "asset_id": 2,
                 "symbol": "BBB",
                 "liquidity_rank": 2,
                 "rolling_avg_dollar_volume": 4_000_000.0,
@@ -160,6 +168,7 @@ def _seed_research_inputs(con: duckdb.DuckDBPyConnection, data_root: Path) -> No
             },
             {
                 "member_date": "2024-02-29",
+                "asset_id": 1,
                 "symbol": "AAA",
                 "liquidity_rank": 2,
                 "rolling_avg_dollar_volume": 4_000_000.0,
@@ -168,6 +177,7 @@ def _seed_research_inputs(con: duckdb.DuckDBPyConnection, data_root: Path) -> No
             },
             {
                 "member_date": "2024-02-29",
+                "asset_id": 2,
                 "symbol": "BBB",
                 "liquidity_rank": 1,
                 "rolling_avg_dollar_volume": 5_000_000.0,
@@ -181,23 +191,90 @@ def _seed_research_inputs(con: duckdb.DuckDBPyConnection, data_root: Path) -> No
 
     prices_df = pd.DataFrame(
         [
-            {"trade_date": "2024-01-31", "symbol": "SPY", "close": 100.0, "adjusted_close": 100.0},
-            {"trade_date": "2024-02-01", "symbol": "SPY", "close": 102.0, "adjusted_close": 102.0},
-            {"trade_date": "2024-02-29", "symbol": "SPY", "close": 102.0, "adjusted_close": 102.0},
+            {
+                "trade_date": "2024-01-31",
+                "asset_id": 100,
+                "symbol": "SPY",
+                "close": 100.0,
+                "adjusted_close": 100.0,
+            },
+            {
+                "trade_date": "2024-02-01",
+                "asset_id": 100,
+                "symbol": "SPY",
+                "close": 102.0,
+                "adjusted_close": 102.0,
+            },
+            {
+                "trade_date": "2024-02-29",
+                "asset_id": 100,
+                "symbol": "SPY",
+                "close": 102.0,
+                "adjusted_close": 102.0,
+            },
             {
                 "trade_date": "2024-03-01",
+                "asset_id": 100,
                 "symbol": "SPY",
                 "close": 100.98,
                 "adjusted_close": 100.98,
             },
-            {"trade_date": "2024-01-31", "symbol": "AAA", "close": 100.0, "adjusted_close": 100.0},
-            {"trade_date": "2024-02-01", "symbol": "AAA", "close": 110.0, "adjusted_close": 110.0},
-            {"trade_date": "2024-02-29", "symbol": "AAA", "close": 110.0, "adjusted_close": 110.0},
-            {"trade_date": "2024-03-01", "symbol": "AAA", "close": 112.2, "adjusted_close": 112.2},
-            {"trade_date": "2024-01-31", "symbol": "BBB", "close": 100.0, "adjusted_close": 100.0},
-            {"trade_date": "2024-02-01", "symbol": "BBB", "close": 100.0, "adjusted_close": 100.0},
-            {"trade_date": "2024-02-29", "symbol": "BBB", "close": 100.0, "adjusted_close": 100.0},
-            {"trade_date": "2024-03-01", "symbol": "BBB", "close": 110.0, "adjusted_close": 110.0},
+            {
+                "trade_date": "2024-01-31",
+                "asset_id": 1,
+                "symbol": "AAA",
+                "close": 100.0,
+                "adjusted_close": 100.0,
+            },
+            {
+                "trade_date": "2024-02-01",
+                "asset_id": 1,
+                "symbol": "AAA",
+                "close": 110.0,
+                "adjusted_close": 110.0,
+            },
+            {
+                "trade_date": "2024-02-29",
+                "asset_id": 1,
+                "symbol": "AAA",
+                "close": 110.0,
+                "adjusted_close": 110.0,
+            },
+            {
+                "trade_date": "2024-03-01",
+                "asset_id": 1,
+                "symbol": "AAA",
+                "close": 112.2,
+                "adjusted_close": 112.2,
+            },
+            {
+                "trade_date": "2024-01-31",
+                "asset_id": 2,
+                "symbol": "BBB",
+                "close": 100.0,
+                "adjusted_close": 100.0,
+            },
+            {
+                "trade_date": "2024-02-01",
+                "asset_id": 2,
+                "symbol": "BBB",
+                "close": 100.0,
+                "adjusted_close": 100.0,
+            },
+            {
+                "trade_date": "2024-02-29",
+                "asset_id": 2,
+                "symbol": "BBB",
+                "close": 100.0,
+                "adjusted_close": 100.0,
+            },
+            {
+                "trade_date": "2024-03-01",
+                "asset_id": 2,
+                "symbol": "BBB",
+                "close": 110.0,
+                "adjusted_close": 110.0,
+            },
         ]
     )
     prices_df["open"] = prices_df["close"]
@@ -350,10 +427,10 @@ def test_strategy_gold_assets_build_rankings_holdings_returns_and_performance(
         """
         SELECT check_name, status, measured_value
         FROM observability.data_quality_checks
-        WHERE check_name = 'dq_gold_strategy_holdings_unique_symbol_per_rebalance'
+        WHERE check_name = 'dq_gold_strategy_holdings_unique_asset_id_per_rebalance'
         """
     ).fetchone()
-    assert dq_row == ("dq_gold_strategy_holdings_unique_symbol_per_rebalance", "PASS", 0.0)
+    assert dq_row == ("dq_gold_strategy_holdings_unique_asset_id_per_rebalance", "PASS", 0.0)
 
     dq_row = obs_con.execute(
         """
@@ -771,6 +848,7 @@ def test_simulation_result_dq_checks_reject_future_dates_and_failed_run_outputs(
             run_id VARCHAR,
             strategy_id VARCHAR,
             rebalance_date DATE,
+            asset_id BIGINT,
             symbol VARCHAR,
             target_weight DOUBLE,
             side VARCHAR,
@@ -801,9 +879,9 @@ def test_simulation_result_dq_checks_reject_future_dates_and_failed_run_outputs(
         """
         INSERT INTO gold.strategy_holdings
         VALUES
-            ('failed-sim', 'strategy_a', DATE '2024-01-31', 'AAA', 1.0, 'LONG', 1, 1.0,
+            ('failed-sim', 'strategy_a', DATE '2024-01-31', 1, 'AAA', 1.0, 'LONG', 1, 1.0,
                 current_timestamp),
-            ('future-sim', 'strategy_a', ?, 'AAA', 1.0, 'LONG', 1, 1.0, current_timestamp)
+            ('future-sim', 'strategy_a', ?, 1, 'AAA', 1.0, 'LONG', 1, 1.0, current_timestamp)
         """,
         [future_date],
     )
@@ -964,10 +1042,10 @@ def test_strategy_gold_assets_use_existing_upstream_run_ids_across_separate_runs
         """
         SELECT check_name, status, measured_value
         FROM observability.data_quality_checks
-        WHERE check_name = 'dq_gold_strategy_holdings_unique_symbol_per_rebalance'
+        WHERE check_name = 'dq_gold_strategy_holdings_unique_asset_id_per_rebalance'
         """
     ).fetchone()
-    assert dq_row == ("dq_gold_strategy_holdings_unique_symbol_per_rebalance", "PASS", 0.0)
+    assert dq_row == ("dq_gold_strategy_holdings_unique_asset_id_per_rebalance", "PASS", 0.0)
 
     dq_row = obs_con.execute(
         """
@@ -1041,8 +1119,20 @@ def test_strategy_performance_blocks_when_benchmark_series_is_missing_for_expect
     month_dir_mar.mkdir(parents=True, exist_ok=True)
     prices_df = pd.DataFrame(
         [
-            {"trade_date": "2024-03-01", "symbol": "AAA", "close": 112.2, "adjusted_close": 112.2},
-            {"trade_date": "2024-03-01", "symbol": "BBB", "close": 110.0, "adjusted_close": 110.0},
+            {
+                "trade_date": "2024-03-01",
+                "asset_id": 1,
+                "symbol": "AAA",
+                "close": 112.2,
+                "adjusted_close": 112.2,
+            },
+            {
+                "trade_date": "2024-03-01",
+                "asset_id": 2,
+                "symbol": "BBB",
+                "close": 110.0,
+                "adjusted_close": 110.0,
+            },
         ]
     )
     prices_df.to_parquet(month_dir_mar / "date=2024-03-01.parquet", index=False)
@@ -1130,9 +1220,27 @@ def test_strategy_returns_use_held_symbol_calendar_and_flag_missing_benchmark(
     month_dir_feb.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         [
-            {"trade_date": "2024-02-29", "symbol": "SPY", "close": 500.0, "adjusted_close": 500.0},
-            {"trade_date": "2024-02-29", "symbol": "AAA", "close": 100.0, "adjusted_close": 100.0},
-            {"trade_date": "2024-02-29", "symbol": "BBB", "close": 80.0, "adjusted_close": 80.0},
+            {
+                "trade_date": "2024-02-29",
+                "asset_id": 100,
+                "symbol": "SPY",
+                "close": 500.0,
+                "adjusted_close": 500.0,
+            },
+            {
+                "trade_date": "2024-02-29",
+                "asset_id": 1,
+                "symbol": "AAA",
+                "close": 100.0,
+                "adjusted_close": 100.0,
+            },
+            {
+                "trade_date": "2024-02-29",
+                "asset_id": 2,
+                "symbol": "BBB",
+                "close": 80.0,
+                "adjusted_close": 80.0,
+            },
         ]
     ).to_parquet(month_dir_feb / "date=2024-02-29.parquet", index=False)
 
@@ -1140,14 +1248,38 @@ def test_strategy_returns_use_held_symbol_calendar_and_flag_missing_benchmark(
     month_dir_mar.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         [
-            {"trade_date": "2024-03-01", "symbol": "SPY", "close": 505.0, "adjusted_close": 505.0},
-            {"trade_date": "2024-03-01", "symbol": "AAA", "close": 105.0, "adjusted_close": 105.0},
-            {"trade_date": "2024-03-01", "symbol": "BBB", "close": 79.0, "adjusted_close": 79.0},
+            {
+                "trade_date": "2024-03-01",
+                "asset_id": 100,
+                "symbol": "SPY",
+                "close": 505.0,
+                "adjusted_close": 505.0,
+            },
+            {
+                "trade_date": "2024-03-01",
+                "asset_id": 1,
+                "symbol": "AAA",
+                "close": 105.0,
+                "adjusted_close": 105.0,
+            },
+            {
+                "trade_date": "2024-03-01",
+                "asset_id": 2,
+                "symbol": "BBB",
+                "close": 79.0,
+                "adjusted_close": 79.0,
+            },
         ]
     ).to_parquet(month_dir_mar / "date=2024-03-01.parquet", index=False)
     pd.DataFrame(
         [
-            {"trade_date": "2024-03-28", "symbol": "AAA", "close": 106.0, "adjusted_close": 106.0},
+            {
+                "trade_date": "2024-03-28",
+                "asset_id": 1,
+                "symbol": "AAA",
+                "close": 106.0,
+                "adjusted_close": 106.0,
+            },
         ]
     ).to_parquet(month_dir_mar / "date=2024-03-28.parquet", index=False)
 
@@ -1244,6 +1376,7 @@ def test_strategy_holdings_weight_sum_dq_check_fails_when_rebalance_weights_do_n
             run_id VARCHAR,
             strategy_id VARCHAR,
             rebalance_date DATE,
+            asset_id BIGINT,
             symbol VARCHAR,
             target_weight DOUBLE,
             side VARCHAR,
@@ -1259,6 +1392,7 @@ def test_strategy_holdings_weight_sum_dq_check_fails_when_rebalance_weights_do_n
             run_id,
             strategy_id,
             rebalance_date,
+            asset_id,
             symbol,
             target_weight,
             side,
@@ -1271,6 +1405,7 @@ def test_strategy_holdings_weight_sum_dq_check_fails_when_rebalance_weights_do_n
                 'run-1:strategy_a',
                 'strategy_a',
                 '2024-01-31',
+                1,
                 'AAA',
                 0.60,
                 'LONG',
@@ -1282,6 +1417,7 @@ def test_strategy_holdings_weight_sum_dq_check_fails_when_rebalance_weights_do_n
                 'run-1:strategy_a',
                 'strategy_a',
                 '2024-01-31',
+                2,
                 'BBB',
                 0.35,
                 'LONG',
@@ -1293,6 +1429,7 @@ def test_strategy_holdings_weight_sum_dq_check_fails_when_rebalance_weights_do_n
                 'run-2:strategy_b',
                 'strategy_b',
                 '2024-01-31',
+                3,
                 'CCC',
                 1.00,
                 'LONG',
@@ -1371,6 +1508,7 @@ def test_strategy_holdings_duplicate_symbol_dq_check_fails_for_same_rebalance_sy
             run_id VARCHAR,
             strategy_id VARCHAR,
             rebalance_date DATE,
+            asset_id BIGINT,
             symbol VARCHAR,
             target_weight DOUBLE,
             side VARCHAR,
@@ -1386,6 +1524,7 @@ def test_strategy_holdings_duplicate_symbol_dq_check_fails_for_same_rebalance_sy
             run_id,
             strategy_id,
             rebalance_date,
+            asset_id,
             symbol,
             target_weight,
             side,
@@ -1398,6 +1537,7 @@ def test_strategy_holdings_duplicate_symbol_dq_check_fails_for_same_rebalance_sy
                 'run-1:strategy_a',
                 'strategy_a',
                 '2024-01-31',
+                1,
                 'AAA',
                 0.50,
                 'LONG',
@@ -1409,6 +1549,7 @@ def test_strategy_holdings_duplicate_symbol_dq_check_fails_for_same_rebalance_sy
                 'run-1:strategy_a',
                 'strategy_a',
                 '2024-01-31',
+                1,
                 'AAA',
                 0.50,
                 'LONG',
@@ -1420,6 +1561,7 @@ def test_strategy_holdings_duplicate_symbol_dq_check_fails_for_same_rebalance_sy
                 'run-2:strategy_b',
                 'strategy_b',
                 '2024-01-31',
+                2,
                 'BBB',
                 1.00,
                 'LONG',
@@ -1470,7 +1612,7 @@ def test_strategy_holdings_duplicate_symbol_dq_check_fails_for_same_rebalance_sy
         """
         SELECT status, measured_value, threshold_value
         FROM observability.data_quality_checks
-        WHERE check_name = 'dq_gold_strategy_holdings_unique_symbol_per_rebalance'
+        WHERE check_name = 'dq_gold_strategy_holdings_unique_asset_id_per_rebalance'
         """
     ).fetchone()
     assert dq_row == ("FAIL", 1.0, 0.0)
@@ -1479,13 +1621,13 @@ def test_strategy_holdings_duplicate_symbol_dq_check_fails_for_same_rebalance_sy
         """
         SELECT details_json
         FROM observability.data_quality_checks
-        WHERE check_name = 'dq_gold_strategy_holdings_unique_symbol_per_rebalance'
+        WHERE check_name = 'dq_gold_strategy_holdings_unique_asset_id_per_rebalance'
         """
     ).fetchone()
     assert details_row is not None
     details_json = str(details_row[0])
-    assert '"uniqueness_scope": ["strategy_id", "rebalance_date", "symbol"]' in details_json
-    assert '"key_columns": ["run_id", "strategy_id", "rebalance_date", "symbol"]' in details_json
+    assert '"uniqueness_scope": ["strategy_id", "rebalance_date", "asset_id"]' in details_json
+    assert '"key_columns": ["run_id", "strategy_id", "rebalance_date", "asset_id"]' in details_json
 
 
 def test_strategy_rankings_expected_rebalance_dates_dq_check_fails_for_missing_month() -> None:
@@ -2133,10 +2275,10 @@ def test_composite_underrated_momentum_ranking_requires_positive_momentum() -> N
         SELECT *
         FROM (
             VALUES
-                ('2024-01-31', 'AAA', 0.9, 0.40, 5000000.0),
-                ('2024-01-31', 'BBB', 0.4, 0.10, 5000000.0),
-                ('2024-01-31', 'CCC', -0.2, 0.80, 5000000.0)
-        ) AS t(date, symbol, momentum_12_1, pct_below_52w_high, avg_dollar_volume_21d)
+                ('2024-01-31', 1, 'AAA', 0.9, 0.40, 5000000.0),
+                ('2024-01-31', 2, 'BBB', 0.4, 0.10, 5000000.0),
+                ('2024-01-31', 3, 'CCC', -0.2, 0.80, 5000000.0)
+        ) AS t(date, asset_id, symbol, momentum_12_1, pct_below_52w_high, avg_dollar_volume_21d)
         """
     )
     con.execute(
@@ -2145,10 +2287,18 @@ def test_composite_underrated_momentum_ranking_requires_positive_momentum() -> N
         SELECT *
         FROM (
             VALUES
-                ('2024-01-31', 'AAA', 1, 5000000.0, 'test', current_timestamp),
-                ('2024-01-31', 'BBB', 2, 5000000.0, 'test', current_timestamp),
-                ('2024-01-31', 'CCC', 3, 5000000.0, 'test', current_timestamp)
-        ) AS t(member_date, symbol, liquidity_rank, rolling_avg_dollar_volume, source, ingested_ts)
+                ('2024-01-31', 1, 'AAA', 1, 5000000.0, 'test', current_timestamp),
+                ('2024-01-31', 2, 'BBB', 2, 5000000.0, 'test', current_timestamp),
+                ('2024-01-31', 3, 'CCC', 3, 5000000.0, 'test', current_timestamp)
+        ) AS t(
+            member_date,
+            asset_id,
+            symbol,
+            liquidity_rank,
+            rolling_avg_dollar_volume,
+            source,
+            ingested_ts
+        )
         """
     )
     strategy_parameters_df = pd.DataFrame(
@@ -2269,10 +2419,10 @@ def test_strategy_rankings_require_universe_eligibility_and_investable_security(
         SELECT *
         FROM (
             VALUES
-                ('2024-01-31', 'AAA', 0.4, 5000000.0),
-                ('2024-01-31', 'BBB', 0.9, 5000000.0),
-                ('2024-01-31', 'CCC', 0.8, 5000000.0)
-        ) AS t(date, symbol, momentum_12_1, avg_dollar_volume_21d)
+                ('2024-01-31', 1, 'AAA', 0.4, 5000000.0),
+                ('2024-01-31', 2, 'BBB', 0.9, 5000000.0),
+                ('2024-01-31', 3, 'CCC', 0.8, 5000000.0)
+        ) AS t(date, asset_id, symbol, momentum_12_1, avg_dollar_volume_21d)
         """
     )
     con.execute(
@@ -2281,10 +2431,18 @@ def test_strategy_rankings_require_universe_eligibility_and_investable_security(
         SELECT *
         FROM (
             VALUES
-                ('2024-01-31', 'AAA', 1, 5000000.0, 'test', current_timestamp),
-                ('2024-01-31', 'BBB', 2, 5000000.0, 'test', current_timestamp),
-                ('2024-01-31', 'CCC', 3, 5000000.0, 'test', current_timestamp)
-        ) AS t(member_date, symbol, liquidity_rank, rolling_avg_dollar_volume, source, ingested_ts)
+                ('2024-01-31', 1, 'AAA', 1, 5000000.0, 'test', current_timestamp),
+                ('2024-01-31', 2, 'BBB', 2, 5000000.0, 'test', current_timestamp),
+                ('2024-01-31', 3, 'CCC', 3, 5000000.0, 'test', current_timestamp)
+        ) AS t(
+            member_date,
+            asset_id,
+            symbol,
+            liquidity_rank,
+            rolling_avg_dollar_volume,
+            source,
+            ingested_ts
+        )
         """
     )
     con.execute(
@@ -2293,10 +2451,10 @@ def test_strategy_rankings_require_universe_eligibility_and_investable_security(
         SELECT *
         FROM (
             VALUES
-                ('AAA', '2024-01-31', TRUE),
-                ('BBB', '2024-01-31', FALSE),
-                ('CCC', '2024-01-31', TRUE)
-        ) AS t(symbol, date, is_eligible_research_universe)
+                (1, 'AAA', '2024-01-31', TRUE),
+                (2, 'BBB', '2024-01-31', FALSE),
+                (3, 'CCC', '2024-01-31', TRUE)
+        ) AS t(asset_id, symbol, date, is_eligible_research_universe)
         """
     )
     con.execute(

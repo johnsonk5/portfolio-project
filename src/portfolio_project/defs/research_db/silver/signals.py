@@ -23,10 +23,28 @@ def _safe_partition_key(context: AssetExecutionContext) -> str | None:
         return None
 
 
-def _signals_select_sql() -> str:
+def _parquet_has_column(con, parquet_glob: str, column: str) -> bool:
+    try:
+        rows = con.execute(
+            "DESCRIBE SELECT * FROM read_parquet(?, union_by_name = true)",
+            [parquet_glob],
+        ).fetchall()
+    except Exception:
+        return False
+    return column in {str(row[0]) for row in rows}
+
+
+def _signals_select_sql(*, has_asset_id: bool) -> str:
+    asset_id_sql = "CAST(p.asset_id AS BIGINT)" if has_asset_id else "NULL::BIGINT"
+    bucket_key_sql = (
+        "coalesce(CAST(p.asset_id AS VARCHAR), upper(trim(p.symbol)))"
+        if has_asset_id
+        else "upper(trim(p.symbol))"
+    )
     return """
         WITH prices AS (
             SELECT
+                {asset_id_sql} AS asset_id,
                 CAST(p.trade_date AS DATE) AS date,
                 upper(trim(p.symbol)) AS symbol,
                 CAST(p.close AS DOUBLE) AS close,
@@ -37,16 +55,17 @@ def _signals_select_sql() -> str:
                 CAST(p.volume AS BIGINT) AS volume,
                 CAST(p.dollar_volume AS DOUBLE) AS dollar_volume,
                 COALESCE(CAST(p.adjusted_close AS DOUBLE), CAST(p.close AS DOUBLE)) AS return_price
-            FROM read_parquet(?) AS p
+            FROM read_parquet(?, union_by_name = true) AS p
             INNER JOIN valid_research_trading_dates AS trading_dates
                 ON trading_dates.trade_date = CAST(p.trade_date AS DATE)
             WHERE p.trade_date IS NOT NULL
               AND p.symbol IS NOT NULL
               AND trim(p.symbol) <> ''
-              AND abs(hash(upper(trim(p.symbol)))) % ? = ?
+              AND abs(hash({bucket_key_sql})) % ? = ?
         ),
         returns_base AS (
             SELECT
+                asset_id,
                 date,
                 symbol,
                 close,
@@ -64,42 +83,42 @@ def _signals_select_sql() -> str:
                 lag(return_price, 21) OVER w AS momentum_end_price,
                 lag(return_price, 252) OVER w AS momentum_start_price,
                 avg(close) OVER (
-                    PARTITION BY symbol
+                    PARTITION BY coalesce(CAST(asset_id AS VARCHAR), symbol)
                     ORDER BY date
                     ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
                 ) AS sma_20,
                 avg(close) OVER (
-                    PARTITION BY symbol
+                    PARTITION BY coalesce(CAST(asset_id AS VARCHAR), symbol)
                     ORDER BY date
                     ROWS BETWEEN 49 PRECEDING AND CURRENT ROW
                 ) AS sma_50,
                 avg(close) OVER (
-                    PARTITION BY symbol
+                    PARTITION BY coalesce(CAST(asset_id AS VARCHAR), symbol)
                     ORDER BY date
                     ROWS BETWEEN 199 PRECEDING AND CURRENT ROW
                 ) AS sma_200,
                 max(close) OVER (
-                    PARTITION BY symbol
+                    PARTITION BY coalesce(CAST(asset_id AS VARCHAR), symbol)
                     ORDER BY date
                     ROWS BETWEEN 251 PRECEDING AND CURRENT ROW
                 ) AS rolling_252d_high,
                 min(close) OVER (
-                    PARTITION BY symbol
+                    PARTITION BY coalesce(CAST(asset_id AS VARCHAR), symbol)
                     ORDER BY date
                     ROWS BETWEEN 251 PRECEDING AND CURRENT ROW
                 ) AS rolling_252d_low,
                 avg(dollar_volume) OVER (
-                    PARTITION BY symbol
+                    PARTITION BY coalesce(CAST(asset_id AS VARCHAR), symbol)
                     ORDER BY date
                     ROWS BETWEEN 20 PRECEDING AND CURRENT ROW
                 ) AS avg_dollar_volume_21d,
                 avg(dollar_volume) OVER (
-                    PARTITION BY symbol
+                    PARTITION BY coalesce(CAST(asset_id AS VARCHAR), symbol)
                     ORDER BY date
                     ROWS BETWEEN 62 PRECEDING AND CURRENT ROW
                 ) AS avg_dollar_volume_63d
             FROM prices
-            WINDOW w AS (PARTITION BY symbol ORDER BY date)
+            WINDOW w AS (PARTITION BY coalesce(CAST(asset_id AS VARCHAR), symbol) ORDER BY date)
         ),
         daily_returns AS (
             SELECT
@@ -114,12 +133,12 @@ def _signals_select_sql() -> str:
             SELECT
                 *,
                 stddev_samp(returns_1d) OVER (
-                    PARTITION BY symbol
+                    PARTITION BY coalesce(CAST(asset_id AS VARCHAR), symbol)
                     ORDER BY date
                     ROWS BETWEEN 20 PRECEDING AND CURRENT ROW
                 ) * sqrt(252.0) AS realized_vol_21d,
                 stddev_samp(returns_1d) OVER (
-                    PARTITION BY symbol
+                    PARTITION BY coalesce(CAST(asset_id AS VARCHAR), symbol)
                     ORDER BY date
                     ROWS BETWEEN 62 PRECEDING AND CURRENT ROW
                 ) * sqrt(252.0) AS realized_vol_63d
@@ -127,6 +146,7 @@ def _signals_select_sql() -> str:
         )
         SELECT
             date,
+            asset_id,
             symbol,
             close,
             adjusted_close,
@@ -193,7 +213,7 @@ def _signals_select_sql() -> str:
             ? AS signal_version,
             current_timestamp AS load_timestamp
         FROM with_volatility
-    """
+    """.format(asset_id_sql=asset_id_sql, bucket_key_sql=bucket_key_sql)
 
 
 @asset(
@@ -214,7 +234,9 @@ def silver_signals_daily(context: AssetExecutionContext) -> None:
     prices_glob = (
         DATA_ROOT / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet"
     ).as_posix()
-    select_sql = _signals_select_sql()
+    select_sql = _signals_select_sql(
+        has_asset_id=_parquet_has_column(con, prices_glob, "asset_id")
+    )
 
     create_valid_trading_dates_table(con, prices_glob)
     con.execute("DROP TABLE IF EXISTS silver.signals_daily")
@@ -268,6 +290,7 @@ def silver_signals_daily(context: AssetExecutionContext) -> None:
         relation_params=[],
         required_columns=[
             "date",
+            "asset_id",
             "symbol",
             "close",
             "adjusted_close",

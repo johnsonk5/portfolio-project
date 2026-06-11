@@ -33,7 +33,7 @@ Canonical metric rules:
 - Daily research features may derive trailing-twelve-month values only from quarterly facts whose source filings were available as of the research date.
 - Store monetary metrics in reported currency units, initially USD only. Store share metrics in shares and EPS metrics in currency per share. Retain non-matching units in bronze or silver unless a mapping version explicitly promotes them.
 - Store `capex` as a positive cash outflow. If the selected source fact is reported as a negative cash flow, multiply by `-1` during canonicalization so free cash flow can be computed as `operating_cash_flow - capex`.
-- Preserve SEC provenance on selected facts through source tag, taxonomy, accession number, form type, fiscal year, fiscal period, filing date, availability date, mapping version, mapping priority, and original SEC concept.
+- Preserve SEC provenance on selected facts through `asset_id`, CIK, source tag, taxonomy, accession number, form type, fiscal year, fiscal period, filing date, availability date, mapping version, mapping priority, and original SEC concept.
 - Carry the mapping version on each selected canonical fact. Changes to concept priority, unit handling, period normalization, sign handling, or fallback logic require a new mapping version.
 - Do not promote source facts into research features before `availability_date`, derived from `DATE(acceptance_datetime)` when available and otherwise `filing_date`.
 - Point-in-time shares outstanding may be added later for market capitalization and enterprise-value calculations; it should not be conflated with diluted weighted-average shares.
@@ -95,11 +95,15 @@ Debt mapping rules:
 Audit fields:
 
 Selected canonical facts should retain enough metadata to explain unusual values,
-including `reported_value`, `canonical_value`, `canonical_sign_rule`,
+including `asset_id`, CIK, `reported_value`, `canonical_value`, `canonical_sign_rule`,
 `source_concept`, `source_expression`, `source_accession_number`, `source_form`,
 `source_filed_date`, `source_acceptance_datetime`, `period_match_type`, `unit`,
 `is_component_sum`, `is_fallback_concept`, `is_restricted_cash_included`,
 `is_lease_inclusive_debt`, and `is_ytd_derived_quarter`.
+
+`asset_id` must be resolved from CIK bridge mappings and carried alongside CIK for
+mapped SEC issuers. It may be null only when the SEC issuer CIK is not mapped to a
+project asset.
 
 Mapping exclusions:
 

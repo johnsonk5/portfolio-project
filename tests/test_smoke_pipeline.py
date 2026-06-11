@@ -133,6 +133,11 @@ def _write_fixture_silver_prices(
 def _write_research_price_partitions(data_root: Path) -> None:
     dates = pd.bdate_range("2023-01-03", "2024-03-01")
     rows = []
+    asset_ids = {
+        "SPY": 1,
+        "AAA": 2,
+        "BBB": 3,
+    }
     for idx, ts in enumerate(dates):
         trade_date = ts.date().isoformat()
         prices = {
@@ -149,6 +154,7 @@ def _write_research_price_partitions(data_root: Path) -> None:
             volume = volumes[symbol]
             rows.append(
                 {
+                    "asset_id": asset_ids[symbol],
                     "symbol": symbol,
                     "timestamp": ts.tz_localize(timezone.utc),
                     "trade_date": trade_date,

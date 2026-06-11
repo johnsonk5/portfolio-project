@@ -56,9 +56,9 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 
 ## `silver.security_identifiers`
 
-*DuckDB Table in the research DuckDB silver schema*
+*DuckDB Table in both portfolio and research DuckDB silver schemas*
 
-Stores effective-dated external identifier mappings for project securities. The natural key is `asset_id`, `identifier_source`, `identifier_type`, `identifier_value`, and `valid_from_date`. Current rows have `is_current = true` and `valid_to_date` null.
+Stores effective-dated external identifier mappings for project securities. The natural key is `asset_id`, `identifier_source`, `identifier_type`, `identifier_value`, and `valid_from_date`. Current rows have `is_current = true` and `valid_to_date` null. Alpaca-backed portfolio securities retain their `silver.assets.asset_id`; research-only symbols from `silver.research_daily_prices` receive the next available durable `asset_id` until a stronger identifier mapping is available.
 
 | Column | Type | Description |
 | --- | --- | --- |
@@ -79,6 +79,46 @@ Stores effective-dated external identifier mappings for project securities. The 
 | `is_current` | `bool` | Whether this row is the active mapping for the identifier source and symbol. |
 | `ingestion_date` | `date` | Bronze ingestion date of the source snapshot that produced the mapping. |
 | `ingested_ts` | `timestamp` | ETL ingest timestamp. |
+
+## `silver.asset_identity_bridge`
+
+*DuckDB Table in both portfolio and research DuckDB silver schemas*
+
+One row per durable `asset_id` with the preferred current symbol plus compact external identifiers used for cross-database joins.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases. |
+| `current_symbol` | `object` | Preferred current ticker symbol selected from current symbol identifiers by source priority. |
+| `source_symbols` | `object` | Comma-separated set of current, historical, and source-reported symbols known for the asset. |
+| `alpaca_id` | `object` | Alpaca asset identifier when available. |
+| `cik` | `object` | SEC Central Index Key without left-padding when available. |
+| `security_name` | `object` | Company or security name from the highest available identifier metadata. |
+| `exchange` | `object` | Exchange from identifier metadata when available. |
+| `is_current` | `bool` | Whether any identifier row for the asset is current. |
+| `asof_ts` | `timestamp` | Bridge table build timestamp. |
+
+## `silver.asset_symbol_bridge`
+
+*DuckDB Table in both portfolio and research DuckDB silver schemas*
+
+One row per durable `asset_id` and known source symbol. Use this table to resolve current or historical/source ticker symbols to `asset_id`, Alpaca ID, and CIK.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases. |
+| `current_symbol` | `object` | Preferred current ticker symbol selected from current symbol identifiers by source priority. |
+| `source_symbol` | `object` | Current, historical, or source-reported ticker symbol for the asset. |
+| `symbol_role` | `object` | `current` when `source_symbol` matches `current_symbol`; otherwise `historical_or_source`. |
+| `alpaca_id` | `object` | Alpaca asset identifier when available. |
+| `cik` | `object` | SEC Central Index Key without left-padding when available. |
+| `identifier_source` | `object` | Source that contributed the selected source-symbol mapping. |
+| `source_priority` | `int` | Deterministic priority used to resolve duplicate source-symbol mappings. |
+| `mapping_confidence` | `float` | Confidence score for the selected source-symbol mapping. |
+| `valid_from_date` | `date` | First date the mapping is considered valid. |
+| `valid_to_date` | `date` | Last date the mapping is considered valid, null for open-ended mappings. |
+| `is_current` | `bool` | Whether the selected source-symbol mapping is current. |
+| `asof_ts` | `timestamp` | Bridge table build timestamp. |
 
 ## `silver.prices`
 
@@ -119,6 +159,7 @@ Stores effective-dated external identifier mappings for project securities. The 
 
 | Column | Type | Description |
 | --- | --- | --- |
+| `asset_id` | `int` | Durable project asset key resolved from `silver.security_identifiers` or portfolio `silver.assets`, nullable while a source symbol is unmapped. |
 | `symbol` | `object` | Canonical ticker symbol. |
 | `timestamp` | `timestamp` | Daily bar timestamp (UTC). |
 | `trade_date` | `date` | Trading date represented by the bar. |
@@ -159,6 +200,7 @@ Stores effective-dated external identifier mappings for project securities. The 
 | Column | Type | Description |
 | --- | --- | --- |
 | `date` | `date` | Trading date for the signal row. |
+| `asset_id` | `int` | Durable project asset key resolved from research daily prices, nullable for unmapped symbols or legacy partitions. |
 | `symbol` | `object` | Canonical ticker symbol. |
 | `close` | `float` | Daily close used for price-level signals. |
 | `adjusted_close` | `float` | Adjusted close when available, otherwise close. |
@@ -194,6 +236,7 @@ Stores effective-dated external identifier mappings for project securities. The 
 | Column | Type | Description |
 | --- | --- | --- |
 | `event_date` | `date` | Trading date where membership changed versus the prior trading day. |
+| `asset_id` | `int` | Durable project asset key carried from universe membership, nullable for unmapped symbols. |
 | `symbol` | `object` | Canonical ticker symbol. |
 | `event_type` | `object` | Membership change classification (`added` or `removed`). |
 | `previous_liquidity_rank` | `int` | Prior-day liquidity rank when the symbol was already in the universe. |
@@ -210,6 +253,7 @@ Stores effective-dated external identifier mappings for project securities. The 
 | Column | Type | Description |
 | --- | --- | --- |
 | `member_date` | `date` | Trading date for the liquidity-ranked daily universe. |
+| `asset_id` | `int` | Durable project asset key carried from research daily prices, nullable for unmapped symbols. |
 | `symbol` | `object` | Canonical ticker symbol. |
 | `liquidity_rank` | `int` | Rank by trailing average dollar volume for that trading day. |
 | `rolling_avg_dollar_volume` | `float` | Trailing average dollar volume used for membership selection. |
@@ -222,6 +266,7 @@ Stores effective-dated external identifier mappings for project securities. The 
 
 | Column | Type | Description |
 | --- | --- | --- |
+| `asset_id` | `int` | Durable project asset key carried from research daily prices, nullable for unmapped symbols. |
 | `symbol` | `object` | Canonical ticker symbol. |
 | `date` | `date` | Trading date for the eligibility decision. |
 | `passes_symbol_format` | `bool` | Whether the symbol matches the no-metadata sanity pattern. |
@@ -242,13 +287,13 @@ Stores effective-dated external identifier mappings for project securities. The 
 
 *DuckDB Table in the research DuckDB silver schema*
 
-One row per SEC filing accession. The natural key is `accession_number`; `cik` and `accession_number` are required. `asset_id` is nullable until a filing CIK can be resolved to a project asset.
+One row per SEC filing accession. The natural key is `accession_number`; `cik` and `accession_number` are required. SEC silver assets must carry `asset_id` alongside CIK by resolving CIK through `silver.asset_identity_bridge` or `silver.security_identifiers`. `asset_id` may be null only when the SEC issuer's CIK is not mapped to a project asset.
 
-Deduplication rule: repeated rows for the same accession across source snapshots collapse to one row when filing metadata is equivalent, retaining the latest source snapshot metadata. If repeated accession rows disagree on core filing metadata such as CIK, form, filing date, report date, acceptance datetime, or primary document, the silver asset keeps the row from the latest SEC source snapshot and records the conflict through a DQ check. Amendments are separate filings keyed by their own accession number; `amended_accession_number` is lineage metadata and does not replace the amendment accession as the row key.
+Deduplication rule: repeated rows for the same accession across source snapshots collapse to one row when filing metadata is equivalent, retaining the latest source snapshot metadata. If repeated accession rows disagree on core filing metadata such as CIK, form, filing date, report date, acceptance datetime, or primary document, the silver asset keeps the row from the latest SEC source snapshot and records the conflict through a DQ check. Duplicate checks must preserve unmapped issuers by coalescing null `asset_id` with CIK where an asset-scoped key is needed. Amendments are separate filings keyed by their own accession number; `amended_accession_number` is lineage metadata and does not replace the amendment accession as the row key.
 
 | Column | Type | Description |
 | --- | --- | --- |
-| `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases, nullable when the CIK is not mapped. |
+| `asset_id` | `int` | Durable project asset key resolved from CIK bridge mappings; nullable only when the SEC issuer CIK is unmapped. |
 | `cik` | `object` | SEC Central Index Key without left-padding. |
 | `accession_number` | `object` | SEC accession number with dashes. |
 | `accession_number_nodash` | `object` | SEC accession number without dashes for URL construction and joins. |
@@ -273,13 +318,13 @@ Deduplication rule: repeated rows for the same accession across source snapshots
 
 *DuckDB Table in the research DuckDB silver schema*
 
-Normalized long-form XBRL facts from SEC company facts. The deduplication key is `cik`, `accession_number`, `taxonomy`, `tag`, `unit`, `period_start_date`, `period_end_date`, and `frame`, with latest source snapshot metadata retained when duplicate source rows are equivalent. `asset_id` is nullable until a fact CIK can be resolved to a project asset.
+Normalized long-form XBRL facts from SEC company facts. The deduplication key is `cik`, `accession_number`, `taxonomy`, `tag`, `unit`, `period_start_date`, `period_end_date`, and `frame`, with latest source snapshot metadata retained when duplicate source rows are equivalent. SEC silver assets must carry `asset_id` alongside CIK by resolving CIK through `silver.asset_identity_bridge` or `silver.security_identifiers`. `asset_id` may be null only when the SEC issuer's CIK is not mapped to a project asset.
 
 Deduplication rule: exact duplicate source facts collapse to one row while retaining the latest `source_snapshot_date`, `ingestion_date`, and `ingested_ts`. Duplicate detection must normalize null key components, such as null `period_start_date` for instant facts and null `frame`, to sentinel values in comparison queries. If duplicate-key rows disagree on value, decimals, fiscal metadata, form, or filed date, the silver asset keeps the row from the latest SEC source snapshot and records the conflict through a DQ check.
 
 | Column | Type | Description |
 | --- | --- | --- |
-| `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases, nullable when the CIK is not mapped. |
+| `asset_id` | `int` | Durable project asset key resolved from CIK bridge mappings; nullable only when the SEC issuer CIK is unmapped. |
 | `cik` | `object` | SEC Central Index Key without left-padding. |
 | `accession_number` | `object` | Filing accession number associated with the fact. |
 | `taxonomy` | `object` | XBRL taxonomy namespace such as `us-gaap`, `dei`, or `ifrs-full`. |
@@ -308,11 +353,11 @@ Deduplication rule: exact duplicate source facts collapse to one row while retai
 
 Curated, concept-mapped facts used to build gold fundamentals. The natural key is `asset_id`, `cik`, `accession_number`, `canonical_metric`, `period_end_date`, `fiscal_year`, and `fiscal_period`.
 
-Deduplication rule: `asset_id` is expected for mapped project securities. Rows for unmapped SEC issuers may be retained with null `asset_id`, but duplicate checks must coalesce null `asset_id` with CIK so unmapped issuers are still checked. When multiple source facts can populate the same canonical metric, the selection order is lowest `mapping_priority`, exact period matches before derived period matches, direct facts before component-sum expressions, latest `source_acceptance_datetime` or `source_filed_date`, then latest `source_snapshot_date`. Mapping metadata, source accession metadata, period match fields, and derivation flags are retained so the selected canonical value is auditable.
+Deduplication rule: `asset_id` is required for mapped project securities and must be carried from upstream SEC silver rows alongside CIK. Rows for unmapped SEC issuers may be retained with null `asset_id`, but duplicate checks must coalesce null `asset_id` with CIK so unmapped issuers are still checked. When multiple source facts can populate the same canonical metric, the selection order is lowest `mapping_priority`, exact period matches before derived period matches, direct facts before component-sum expressions, latest `source_acceptance_datetime` or `source_filed_date`, then latest `source_snapshot_date`. Mapping metadata, source accession metadata, period match fields, and derivation flags are retained so the selected canonical value is auditable.
 
 | Column | Type | Description |
 | --- | --- | --- |
-| `asset_id` | `int` | Durable project asset key resolved from `silver.security_identifiers`. |
+| `asset_id` | `int` | Durable project asset key resolved from CIK bridge mappings; nullable only when the SEC issuer CIK is unmapped. |
 | `cik` | `object` | SEC Central Index Key without left-padding. |
 | `accession_number` | `object` | Filing accession number associated with the source fact. |
 | `canonical_metric` | `object` | Stable metric name such as `revenue`, `net_income`, `assets`, `liabilities`, `equity`, `debt`, `cash`, `operating_cash_flow`, `capex`, `diluted_shares`, or `diluted_eps`. |

@@ -88,7 +88,7 @@ DQ checks run on successful runs and write to `observability.data_quality_checks
   - Gold prices schema, uniqueness, null thresholds, and numeric/range checks.
 - `research_daily_prices_job`:
   - `silver.research_daily_prices` expected columns and DuckDB data types.
-  - `silver.research_daily_prices` uniqueness on `symbol` + `trade_date`.
+  - `silver.research_daily_prices` uniqueness on the asset-first price key + `trade_date`.
   - `silver.research_daily_prices` null checks plus invalid numeric and price-range validation.
 - `daily_news_job`:
   - Silver news schema, uniqueness, and null-threshold checks.
@@ -103,7 +103,7 @@ DQ checks run on successful runs and write to `observability.data_quality_checks
 - Gold strategy holdings:
   - `gold.strategy_rankings` expected rebalance-date coverage.
   - `gold.strategy_holdings` expected rebalance-date coverage.
-  - `gold.strategy_holdings` uniqueness on `strategy_id` + `rebalance_date` + `symbol`.
+  - `gold.strategy_holdings` uniqueness on `strategy_id` + `rebalance_date` + `asset_id`.
   - `gold.strategy_holdings` rebalance weight-sum validation.
   - `gold.strategy_returns` continuous expected return-date coverage.
   - `gold.strategy_returns` benchmark series presence for all expected strategy return dates before `gold.strategy_performance` is built.
