@@ -103,6 +103,7 @@ from portfolio_project.defs.research_db.silver.universe import (
 from portfolio_project.defs.resources.alpaca import alpaca_resource
 from portfolio_project.defs.resources.duckdb import duckdb_resource
 from portfolio_project.defs.resources.eodhd import eodhd_resource
+from portfolio_project.defs.resources.sec import sec_resource
 
 prices_selection = AssetSelection.assets(
     bronze_alpaca_bars,
@@ -473,6 +474,7 @@ defs = Definitions(
     resources={
         "alpaca": alpaca_resource,
         "eodhd": eodhd_resource,
+        "sec": sec_resource,
         "duckdb": duckdb_resource,
         "research_duckdb": duckdb_resource.configured(
             {
