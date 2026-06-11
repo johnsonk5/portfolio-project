@@ -1,13 +1,17 @@
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from dagster import materialize
 
 import portfolio_project.defs.research_db.bronze.sec as sec_bronze_module
 from portfolio_project.defs.research_db.bronze.sec import (
     SEC_BRONZE_DATASETS,
     bronze_sec_bulk_archives,
+    materialize_bronze_sec_company_tickers,
+    parse_company_tickers_exchange_json,
 )
 
 
@@ -34,6 +38,18 @@ class _FakeSecClient:
                 "Last-Modified": "Sun, 15 Mar 2026 08:00:00 GMT",
             },
         )
+
+
+def _company_tickers_payload() -> bytes:
+    return json.dumps(
+        {
+            "fields": ["cik", "name", "ticker", "exchange"],
+            "data": [
+                [320193, " Apple Inc. ", "aapl", "Nasdaq"],
+                [789019, "MICROSOFT CORP", "MSFT", "Nasdaq"],
+            ],
+        }
+    ).encode()
 
 
 def test_bronze_sec_bulk_archives_writes_raw_files_and_ingestion_log(
@@ -154,3 +170,102 @@ def test_bronze_sec_bulk_archives_reuses_existing_archive_for_unchanged_hash(
             / dataset.filename
         )
         assert not duplicate_path.exists()
+
+
+def test_parse_company_tickers_exchange_json_normalizes_rows() -> None:
+    frame = parse_company_tickers_exchange_json(
+        _company_tickers_payload(),
+        ingestion_date="2026-03-15",
+        source_file="company_tickers_exchange.json",
+        source_content_hash="abc123",
+        ingested_ts=pd.Timestamp("2026-03-15T09:30:00Z"),
+    )
+
+    assert list(frame.columns) == sec_bronze_module.SEC_COMPANY_TICKERS_COLUMNS
+    assert frame[["cik", "name", "ticker", "exchange"]].to_dict("records") == [
+        {
+            "cik": "320193",
+            "name": "Apple Inc.",
+            "ticker": "AAPL",
+            "exchange": "Nasdaq",
+        },
+        {
+            "cik": "789019",
+            "name": "MICROSOFT CORP",
+            "ticker": "MSFT",
+            "exchange": "Nasdaq",
+        },
+    ]
+    assert frame["source_row_number"].tolist() == [1, 2]
+    assert frame["ingestion_date"].tolist() == ["2026-03-15", "2026-03-15"]
+    assert frame["source_content_hash"].tolist() == ["abc123", "abc123"]
+
+
+def test_parse_company_tickers_exchange_json_rejects_missing_required_fields() -> None:
+    payload = json.dumps({"fields": ["cik", "ticker"], "data": [[320193, "AAPL"]]}).encode()
+
+    with pytest.raises(ValueError, match="missing required fields"):
+        parse_company_tickers_exchange_json(
+            payload,
+            ingestion_date="2026-03-15",
+            source_file="company_tickers_exchange.json",
+            source_content_hash="abc123",
+        )
+
+
+def test_materialize_bronze_sec_company_tickers_writes_parquet_from_ingestion_log(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root = tmp_path / "data"
+    monkeypatch.setattr(sec_bronze_module, "DATA_ROOT", data_root)
+    raw_path = (
+        data_root
+        / "bronze"
+        / "sec"
+        / "company_tickers"
+        / "ingestion_date=2026-03-15"
+        / "company_tickers_exchange.json"
+    )
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_path.write_bytes(_company_tickers_payload())
+
+    ingestion_log_path = data_root / "bronze" / "sec" / "ingestion_log.parquet"
+    ingestion_log_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "dataset": "company_tickers",
+                "source_url": "https://www.sec.gov/files/company_tickers_exchange.json",
+                "retrieved_at": pd.Timestamp("2026-03-15T09:30:00Z"),
+                "ingestion_date": "2026-03-15",
+                "etag": "etag",
+                "last_modified": "Sun, 15 Mar 2026 08:00:00 GMT",
+                "content_hash": "abc123",
+                "file_size": raw_path.stat().st_size,
+                "local_path": str(raw_path),
+                "changed_flag": True,
+            }
+        ],
+        columns=sec_bronze_module.SEC_INGESTION_LOG_COLUMNS,
+    ).to_parquet(ingestion_log_path, index=False)
+
+    metrics = materialize_bronze_sec_company_tickers()
+
+    out_path = (
+        data_root
+        / "bronze"
+        / "sec_company_tickers"
+        / "ingestion_date=2026-03-15"
+        / "tickers.parquet"
+    )
+    parsed = pd.read_parquet(out_path)
+    assert metrics == {
+        "source_snapshot_count": 1,
+        "written_snapshot_count": 1,
+        "skipped_snapshot_count": 0,
+        "row_count": 2,
+        "latest_ingestion_date": "2026-03-15",
+    }
+    assert parsed["ticker"].tolist() == ["AAPL", "MSFT"]
+    assert parsed["source_file"].tolist() == [str(raw_path), str(raw_path)]

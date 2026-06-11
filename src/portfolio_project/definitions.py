@@ -64,7 +64,10 @@ from portfolio_project.defs.research_db.bronze.research_prices import (
     bronze_alpaca_prices_daily,
     bronze_eodhd_prices_daily,
 )
-from portfolio_project.defs.research_db.bronze.sec import bronze_sec_bulk_archives
+from portfolio_project.defs.research_db.bronze.sec import (
+    bronze_sec_bulk_archives,
+    bronze_sec_company_tickers,
+)
 from portfolio_project.defs.research_db.gold.strategy import (
     gold_strategy_holdings,
     gold_strategy_performance,
@@ -193,6 +196,7 @@ factors_selection = AssetSelection.assets(
 
 sec_fundamentals_selection = AssetSelection.assets(
     bronze_sec_bulk_archives,
+    bronze_sec_company_tickers,
 )
 
 monthly_factors_job = define_asset_job(
@@ -430,6 +434,7 @@ defs = Definitions(
         bronze_yahoo_news,
         bronze_fama_french_factors,
         bronze_sec_bulk_archives,
+        bronze_sec_company_tickers,
         bronze_tranco_snapshot,
         bronze_wikipedia_pageviews,
         silver_wikipedia_pageviews,

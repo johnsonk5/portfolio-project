@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,6 +22,20 @@ SEC_INGESTION_LOG_COLUMNS = [
     "local_path",
     "changed_flag",
 ]
+
+SEC_COMPANY_TICKERS_COLUMNS = [
+    "cik",
+    "name",
+    "ticker",
+    "exchange",
+    "ingestion_date",
+    "source_file",
+    "source_content_hash",
+    "source_row_number",
+    "ingested_ts",
+]
+
+SEC_COMPANY_TICKERS_REQUIRED_FIELDS = ["cik", "name", "ticker", "exchange"]
 
 
 @dataclass(frozen=True)
@@ -104,6 +119,124 @@ def _raw_path(dataset: SecBronzeDataset, ingestion_date: str) -> Path:
     )
 
 
+def _parsed_company_tickers_path(ingestion_date: str) -> Path:
+    return (
+        DATA_ROOT
+        / "bronze"
+        / "sec_company_tickers"
+        / f"ingestion_date={ingestion_date}"
+        / "tickers.parquet"
+    )
+
+
+def _normalize_ticker(value: object) -> object:
+    if value is None:
+        return pd.NA
+    try:
+        if pd.isna(value):
+            return pd.NA
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip().upper()
+    return text if text else pd.NA
+
+
+def _normalize_text(value: object) -> object:
+    if value is None:
+        return pd.NA
+    try:
+        if pd.isna(value):
+            return pd.NA
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    return text if text else pd.NA
+
+
+def _normalize_cik(value: object) -> object:
+    if value is None:
+        return pd.NA
+    try:
+        if pd.isna(value):
+            return pd.NA
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    if not text:
+        return pd.NA
+    if text.endswith(".0"):
+        text = text[:-2]
+    normalized = text.lstrip("0")
+    return normalized or "0"
+
+
+def parse_company_tickers_exchange_json(
+    payload: bytes,
+    *,
+    ingestion_date: str,
+    source_file: str,
+    source_content_hash: str,
+    ingested_ts: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """
+    Parse SEC company_tickers_exchange.json into the bronze parquet schema.
+    """
+    try:
+        document = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid SEC company_tickers_exchange.json payload") from exc
+
+    if not isinstance(document, dict):
+        raise ValueError("SEC company tickers payload must be a JSON object")
+
+    fields = document.get("fields")
+    rows = document.get("data")
+    if not isinstance(fields, list) or not isinstance(rows, list):
+        raise ValueError("SEC company tickers payload must include fields and data arrays")
+
+    missing_fields = [
+        field for field in SEC_COMPANY_TICKERS_REQUIRED_FIELDS if field not in fields
+    ]
+    if missing_fields:
+        raise ValueError(
+            "SEC company tickers payload is missing required fields: "
+            + ", ".join(missing_fields)
+        )
+
+    records = []
+    field_count = len(fields)
+    for row_number, row in enumerate(rows, start=1):
+        if not isinstance(row, list) or len(row) != field_count:
+            raise ValueError(
+                f"SEC company tickers row {row_number} does not match fields length"
+            )
+        record = dict(zip(fields, row))
+        records.append(
+            {
+                "cik": _normalize_cik(record.get("cik")),
+                "name": _normalize_text(record.get("name")),
+                "ticker": _normalize_ticker(record.get("ticker")),
+                "exchange": _normalize_text(record.get("exchange")),
+                "ingestion_date": ingestion_date,
+                "source_file": source_file,
+                "source_content_hash": source_content_hash,
+                "source_row_number": row_number,
+                "ingested_ts": ingested_ts or pd.Timestamp.utcnow(),
+            }
+        )
+
+    if not records:
+        return pd.DataFrame(columns=SEC_COMPANY_TICKERS_COLUMNS)
+
+    tickers = pd.DataFrame(records, columns=SEC_COMPANY_TICKERS_COLUMNS)
+    tickers = tickers.dropna(subset=["cik", "ticker"]).copy()
+    tickers["source_row_number"] = pd.to_numeric(
+        tickers["source_row_number"], errors="coerce"
+    ).astype("Int64")
+    tickers = tickers.sort_values(["ticker", "cik", "source_row_number"], kind="stable")
+    return tickers.reset_index(drop=True)
+
+
 def _append_ingestion_log_rows(ingestion_log_path: Path, rows: list[dict]) -> pd.DataFrame:
     existing = _read_ingestion_log(ingestion_log_path)
     new_rows = pd.DataFrame(rows, columns=SEC_INGESTION_LOG_COLUMNS)
@@ -117,6 +250,62 @@ def _append_ingestion_log_rows(ingestion_log_path: Path, rows: list[dict]) -> pd
     ingestion_log_path.parent.mkdir(parents=True, exist_ok=True)
     updated.to_parquet(ingestion_log_path, index=False)
     return updated
+
+
+def _company_ticker_ingestion_rows() -> pd.DataFrame:
+    ingestion_log = _read_ingestion_log(_ingestion_log_path())
+    if ingestion_log.empty:
+        return pd.DataFrame(columns=SEC_INGESTION_LOG_COLUMNS)
+    rows = ingestion_log[
+        (ingestion_log["dataset"] == "company_tickers")
+        & ingestion_log["ingestion_date"].notna()
+        & ingestion_log["local_path"].notna()
+    ].copy()
+    if rows.empty:
+        return pd.DataFrame(columns=SEC_INGESTION_LOG_COLUMNS)
+    return rows.sort_values(["ingestion_date", "retrieved_at"], kind="stable")
+
+
+def materialize_bronze_sec_company_tickers(*, force: bool = False) -> dict[str, int]:
+    ticker_rows = _company_ticker_ingestion_rows()
+    written_count = 0
+    skipped_count = 0
+    row_count = 0
+    latest_ingestion_date = None
+
+    for row in ticker_rows.to_dict("records"):
+        ingestion_date = str(row["ingestion_date"])
+        source_path = Path(str(row["local_path"]))
+        if not source_path.exists():
+            raise FileNotFoundError(f"SEC company tickers raw file not found: {source_path}")
+
+        output_path = _parsed_company_tickers_path(ingestion_date)
+        if output_path.exists() and not force:
+            skipped_count += 1
+            continue
+
+        frame = parse_company_tickers_exchange_json(
+            source_path.read_bytes(),
+            ingestion_date=ingestion_date,
+            source_file=str(source_path),
+            source_content_hash=str(row["content_hash"]),
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if output_path.exists():
+            output_path.unlink()
+        frame.to_parquet(output_path, index=False)
+
+        written_count += 1
+        row_count += len(frame)
+        latest_ingestion_date = ingestion_date
+
+    return {
+        "source_snapshot_count": int(len(ticker_rows)),
+        "written_snapshot_count": written_count,
+        "skipped_snapshot_count": skipped_count,
+        "row_count": row_count,
+        "latest_ingestion_date": latest_ingestion_date or "",
+    }
 
 
 @asset(name="bronze_sec_bulk_archives", required_resource_keys={"sec"})
@@ -176,5 +365,20 @@ def bronze_sec_bulk_archives(context: AssetExecutionContext) -> None:
             "changed_count": changed_count,
             "ingestion_log_row_count": len(updated_ingestion_log),
             "ingestion_date": ingestion_date,
+        }
+    )
+
+
+@asset(name="bronze_sec_company_tickers", deps=[bronze_sec_bulk_archives])
+def bronze_sec_company_tickers(context: AssetExecutionContext) -> None:
+    """
+    Parse SEC company_tickers_exchange.json raw snapshots into bronze parquet.
+    """
+    metrics = materialize_bronze_sec_company_tickers()
+    context.add_output_metadata(
+        {
+            "dataset": "sec_company_tickers",
+            "output_root": str(DATA_ROOT / "bronze" / "sec_company_tickers"),
+            **metrics,
         }
     )
