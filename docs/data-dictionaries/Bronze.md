@@ -93,6 +93,23 @@ All of the tables in this layer are partitioned parquet files unless otherwise s
 | `source` | `object` | Upstream source (`alpaca`). |
 | `ingested_ts` | `timestamp` | Ingest timestamp. |
 
+## `bronze.sec.raw_archives`
+
+*Raw files under `data/bronze/sec/{dataset}/ingestion_date=YYYY-MM-DD/` plus manifest parquet at `data/bronze/sec/manifest.parquet`. Unchanged retrievals add manifest rows that point to the first stored archive for the same content hash.*
+
+| Manifest Column | Type | Description |
+| --- | --- | --- |
+| `dataset` | `object` | SEC source dataset: `companyfacts`, `submissions`, or `company_tickers`. |
+| `source_url` | `object` | Fully resolved SEC source URL. |
+| `retrieved_at` | `timestamp` | Retrieval timestamp in UTC. |
+| `ingestion_date` | `date` | UTC date used for bronze partitioning. |
+| `etag` | `object` | SEC `ETag` header when provided. |
+| `last_modified` | `object` | SEC `Last-Modified` header when provided. |
+| `content_hash` | `object` | SHA-256 hash of the retrieved bytes. |
+| `file_size` | `int` | Retrieved payload size in bytes. |
+| `local_path` | `object` | Local raw archive path used for this retrieval. |
+| `changed_flag` | `bool` | Whether this retrieval wrote a new raw archive for the dataset hash. |
+
 ## `bronze.sp500_companies`
 
 | Column | Type | Description |

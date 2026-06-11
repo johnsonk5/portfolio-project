@@ -12,6 +12,7 @@ from portfolio_project.definitions import (
     defs,
     monthly_factors_schedule,
     research_daily_prices_schedule,
+    sec_fundamentals_schedule,
     weekly_digest_schedule,
 )
 from portfolio_project.defs.portfolio_db.bronze.news import BRONZE_NEWS_PARTITIONS
@@ -95,6 +96,12 @@ def test_monthly_factors_schedule_runs_on_first_of_month() -> None:
     assert monthly_factors_schedule.job.name == "monthly_factors_job"
 
 
+def test_sec_fundamentals_schedule_runs_after_sec_nightly_bulk_refresh() -> None:
+    assert sec_fundamentals_schedule.cron_schedule == "45 4 * * *"
+    assert sec_fundamentals_schedule.execution_timezone == "America/New_York"
+    assert sec_fundamentals_schedule.job.name == "sec_fundamentals_job"
+
+
 def test_research_daily_prices_schedule_metadata() -> None:
     assert research_daily_prices_schedule.cron_schedule == "35 9 * * *"
     assert research_daily_prices_schedule.execution_timezone == "America/New_York"
@@ -115,3 +122,8 @@ def test_research_daily_prices_job_resolves_from_definitions() -> None:
 def test_weekly_digest_job_resolves_from_definitions() -> None:
     job_def = defs.get_job_def("weekly_digest_job")
     assert job_def.name == "weekly_digest_job"
+
+
+def test_sec_fundamentals_job_resolves_from_definitions() -> None:
+    job_def = defs.get_job_def("sec_fundamentals_job")
+    assert job_def.name == "sec_fundamentals_job"

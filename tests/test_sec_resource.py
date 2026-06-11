@@ -8,6 +8,7 @@ from portfolio_project.defs.resources.sec import SecClient, sec_resource
 
 def test_sec_resource_requires_declared_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SEC_USER_AGENT", raising=False)
+    monkeypatch.setattr(sec_resource_module, "load_local_env", lambda: None)
 
     with pytest.raises(DagsterResourceFunctionError) as exc_info:
         with build_resources({"sec": sec_resource}):
