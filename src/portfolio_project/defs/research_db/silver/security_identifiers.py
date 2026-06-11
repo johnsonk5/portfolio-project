@@ -4,6 +4,11 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 from dagster import AssetExecutionContext, asset
+from dagster._core.errors import DagsterInvalidPropertyError, DagsterInvariantViolationError
+
+from portfolio_project.defs.research_db.dq_checks import (
+    log_security_identifier_mapping_checks,
+)
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 
@@ -287,9 +292,7 @@ def _load_sp500_identifiers(
 
 def _research_prices_glob(data_root: Path | None = None) -> str:
     root = data_root or DATA_ROOT
-    return (
-        root / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet"
-    ).as_posix()
+    return (root / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet").as_posix()
 
 
 def _research_prices_files_exist(data_root: Path | None = None) -> bool:
@@ -687,6 +690,25 @@ def _write_identifier_tables(con, identifiers_df: pd.DataFrame) -> None:
     )
 
 
+def _context_dq_metadata(
+    context: AssetExecutionContext,
+) -> tuple[str | None, str | None, str | None]:
+    try:
+        run = getattr(context, "run", None)
+    except DagsterInvalidPropertyError:
+        run = None
+    run_id = getattr(run, "run_id", None) or getattr(context, "run_id", None)
+    try:
+        job_name = getattr(context, "job_name", None)
+    except DagsterInvalidPropertyError:
+        job_name = None
+    try:
+        partition_key = getattr(context, "partition_key", None)
+    except (DagsterInvalidPropertyError, DagsterInvariantViolationError):
+        partition_key = None
+    return str(run_id) if run_id else None, job_name, partition_key
+
+
 def materialize_security_identifier_tables(
     context: AssetExecutionContext,
     *,
@@ -739,6 +761,14 @@ def materialize_security_identifier_tables(
 
     _write_identifier_tables(portfolio_con, identifiers_df)
     _write_identifier_tables(research_con, identifiers_df)
+    run_id, job_name, partition_key = _context_dq_metadata(context)
+    log_security_identifier_mapping_checks(
+        measured_con=research_con,
+        observability_con=portfolio_con,
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
 
     row_count = research_con.execute("SELECT count(*) FROM silver.security_identifiers").fetchone()[
         0

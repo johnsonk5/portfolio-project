@@ -3,6 +3,9 @@ import pandas as pd
 from dagster import materialize
 
 import portfolio_project.defs.research_db.silver.security_identifiers as identifiers_module
+from portfolio_project.defs.research_db.dq_checks import (
+    log_security_identifier_mapping_checks,
+)
 from portfolio_project.defs.research_db.silver.security_identifiers import (
     ASSET_IDENTITY_BRIDGE_COLUMNS,
     ASSET_SYMBOL_BRIDGE_COLUMNS,
@@ -147,6 +150,21 @@ def test_silver_security_identifiers_materializes_from_portfolio_assets(
             (2, "MSFT", "MSFT", "current", "alpaca-msft", None),
         ]
 
+    dq_rows = portfolio_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name LIKE 'dq_security_identifiers_%'
+        ORDER BY check_name
+        """
+    ).fetchall()
+    assert dq_rows == [
+        ("dq_security_identifiers_cik_to_asset_conflicts", "PASS", 0.0),
+        ("dq_security_identifiers_duplicate_asset_id_mappings", "PASS", 0.0),
+        ("dq_security_identifiers_missing_asset_id_rates_by_source", "PASS", 0.0),
+        ("dq_security_identifiers_symbol_to_asset_conflicts", "PASS", 0.0),
+    ]
+
 
 def test_build_research_symbol_identifiers_assigns_research_only_asset_ids() -> None:
     portfolio_identifiers = build_security_identifiers_from_assets_df(
@@ -252,3 +270,62 @@ def test_asset_bridge_frames_resolve_current_and_source_symbols() -> None:
 
     roles = symbol.set_index("source_symbol")["symbol_role"].to_dict()
     assert roles == {"AAPL": "current", "APPL": "historical_or_source"}
+
+
+def test_security_identifier_mapping_dq_checks_detect_conflicts_and_missing_asset_ids() -> None:
+    measured_con = duckdb.connect(":memory:")
+    observability_con = duckdb.connect(":memory:")
+    measured_con.execute("CREATE SCHEMA silver")
+    measured_con.execute(
+        """
+        CREATE TABLE silver.security_identifiers (
+            asset_id BIGINT,
+            source_symbol VARCHAR,
+            identifier_type VARCHAR,
+            identifier_value VARCHAR,
+            cik VARCHAR,
+            identifier_source VARCHAR,
+            valid_from_date DATE,
+            valid_to_date DATE,
+            is_current BOOLEAN
+        )
+        """
+    )
+    measured_con.execute(
+        """
+        INSERT INTO silver.security_identifiers VALUES
+            (1, 'AAPL', 'symbol', 'AAPL', NULL, 'portfolio_silver_assets',
+                DATE '1900-01-01', NULL, TRUE),
+            (1, 'AAPL', 'symbol', 'AAPL', NULL, 'portfolio_silver_assets',
+                DATE '1900-01-01', NULL, TRUE),
+            (2, 'AAPL', 'symbol', 'AAPL', NULL, 'bad_symbol_source',
+                DATE '1900-01-01', NULL, TRUE),
+            (1, 'AAPL', 'cik', '0000320193', '0000320193', 'sp500_wikipedia',
+                DATE '1900-01-01', NULL, TRUE),
+            (3, 'APPL', 'cik', '320193', '320193', 'sec_company_tickers',
+                DATE '1900-01-01', NULL, TRUE),
+            (NULL, 'MSFT', 'symbol', 'MSFT', NULL, 'sec_company_tickers',
+                DATE '1900-01-01', NULL, TRUE)
+        """
+    )
+
+    log_security_identifier_mapping_checks(
+        measured_con=measured_con,
+        observability_con=observability_con,
+        run_id="run-1",
+        job_name="security_identifiers_job",
+    )
+
+    rows = observability_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        ORDER BY check_name
+        """
+    ).fetchall()
+    assert rows == [
+        ("dq_security_identifiers_cik_to_asset_conflicts", "FAIL", 1.0),
+        ("dq_security_identifiers_duplicate_asset_id_mappings", "FAIL", 1.0),
+        ("dq_security_identifiers_missing_asset_id_rates_by_source", "FAIL", 0.5),
+        ("dq_security_identifiers_symbol_to_asset_conflicts", "FAIL", 1.0),
+    ]
