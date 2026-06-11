@@ -287,13 +287,13 @@ One row per durable `asset_id` and known source symbol. Use this table to resolv
 
 *DuckDB Table in the research DuckDB silver schema*
 
-One row per SEC filing accession. The natural key is `accession_number`; `cik` and `accession_number` are required. `asset_id` is nullable until a filing CIK can be resolved to a project asset.
+One row per SEC filing accession. The natural key is `accession_number`; `cik` and `accession_number` are required. SEC silver assets must carry `asset_id` alongside CIK by resolving CIK through `silver.asset_identity_bridge` or `silver.security_identifiers`. `asset_id` may be null only when the SEC issuer's CIK is not mapped to a project asset.
 
-Deduplication rule: repeated rows for the same accession across source snapshots collapse to one row when filing metadata is equivalent, retaining the latest source snapshot metadata. If repeated accession rows disagree on core filing metadata such as CIK, form, filing date, report date, acceptance datetime, or primary document, the silver asset keeps the row from the latest SEC source snapshot and records the conflict through a DQ check. Amendments are separate filings keyed by their own accession number; `amended_accession_number` is lineage metadata and does not replace the amendment accession as the row key.
+Deduplication rule: repeated rows for the same accession across source snapshots collapse to one row when filing metadata is equivalent, retaining the latest source snapshot metadata. If repeated accession rows disagree on core filing metadata such as CIK, form, filing date, report date, acceptance datetime, or primary document, the silver asset keeps the row from the latest SEC source snapshot and records the conflict through a DQ check. Duplicate checks must preserve unmapped issuers by coalescing null `asset_id` with CIK where an asset-scoped key is needed. Amendments are separate filings keyed by their own accession number; `amended_accession_number` is lineage metadata and does not replace the amendment accession as the row key.
 
 | Column | Type | Description |
 | --- | --- | --- |
-| `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases, nullable when the CIK is not mapped. |
+| `asset_id` | `int` | Durable project asset key resolved from CIK bridge mappings; nullable only when the SEC issuer CIK is unmapped. |
 | `cik` | `object` | SEC Central Index Key without left-padding. |
 | `accession_number` | `object` | SEC accession number with dashes. |
 | `accession_number_nodash` | `object` | SEC accession number without dashes for URL construction and joins. |
@@ -318,13 +318,13 @@ Deduplication rule: repeated rows for the same accession across source snapshots
 
 *DuckDB Table in the research DuckDB silver schema*
 
-Normalized long-form XBRL facts from SEC company facts. The deduplication key is `cik`, `accession_number`, `taxonomy`, `tag`, `unit`, `period_start_date`, `period_end_date`, and `frame`, with latest source snapshot metadata retained when duplicate source rows are equivalent. `asset_id` is nullable until a fact CIK can be resolved to a project asset.
+Normalized long-form XBRL facts from SEC company facts. The deduplication key is `cik`, `accession_number`, `taxonomy`, `tag`, `unit`, `period_start_date`, `period_end_date`, and `frame`, with latest source snapshot metadata retained when duplicate source rows are equivalent. SEC silver assets must carry `asset_id` alongside CIK by resolving CIK through `silver.asset_identity_bridge` or `silver.security_identifiers`. `asset_id` may be null only when the SEC issuer's CIK is not mapped to a project asset.
 
 Deduplication rule: exact duplicate source facts collapse to one row while retaining the latest `source_snapshot_date`, `ingestion_date`, and `ingested_ts`. Duplicate detection must normalize null key components, such as null `period_start_date` for instant facts and null `frame`, to sentinel values in comparison queries. If duplicate-key rows disagree on value, decimals, fiscal metadata, form, or filed date, the silver asset keeps the row from the latest SEC source snapshot and records the conflict through a DQ check.
 
 | Column | Type | Description |
 | --- | --- | --- |
-| `asset_id` | `int` | Durable project asset key used for joins across portfolio and research DuckDB databases, nullable when the CIK is not mapped. |
+| `asset_id` | `int` | Durable project asset key resolved from CIK bridge mappings; nullable only when the SEC issuer CIK is unmapped. |
 | `cik` | `object` | SEC Central Index Key without left-padding. |
 | `accession_number` | `object` | Filing accession number associated with the fact. |
 | `taxonomy` | `object` | XBRL taxonomy namespace such as `us-gaap`, `dei`, or `ifrs-full`. |
@@ -353,11 +353,11 @@ Deduplication rule: exact duplicate source facts collapse to one row while retai
 
 Curated, concept-mapped facts used to build gold fundamentals. The natural key is `asset_id`, `cik`, `accession_number`, `canonical_metric`, `period_end_date`, `fiscal_year`, and `fiscal_period`.
 
-Deduplication rule: `asset_id` is expected for mapped project securities. Rows for unmapped SEC issuers may be retained with null `asset_id`, but duplicate checks must coalesce null `asset_id` with CIK so unmapped issuers are still checked. When multiple source facts can populate the same canonical metric, the selection order is lowest `mapping_priority`, exact period matches before derived period matches, direct facts before component-sum expressions, latest `source_acceptance_datetime` or `source_filed_date`, then latest `source_snapshot_date`. Mapping metadata, source accession metadata, period match fields, and derivation flags are retained so the selected canonical value is auditable.
+Deduplication rule: `asset_id` is required for mapped project securities and must be carried from upstream SEC silver rows alongside CIK. Rows for unmapped SEC issuers may be retained with null `asset_id`, but duplicate checks must coalesce null `asset_id` with CIK so unmapped issuers are still checked. When multiple source facts can populate the same canonical metric, the selection order is lowest `mapping_priority`, exact period matches before derived period matches, direct facts before component-sum expressions, latest `source_acceptance_datetime` or `source_filed_date`, then latest `source_snapshot_date`. Mapping metadata, source accession metadata, period match fields, and derivation flags are retained so the selected canonical value is auditable.
 
 | Column | Type | Description |
 | --- | --- | --- |
-| `asset_id` | `int` | Durable project asset key resolved from `silver.security_identifiers`. |
+| `asset_id` | `int` | Durable project asset key resolved from CIK bridge mappings; nullable only when the SEC issuer CIK is unmapped. |
 | `cik` | `object` | SEC Central Index Key without left-padding. |
 | `accession_number` | `object` | Filing accession number associated with the source fact. |
 | `canonical_metric` | `object` | Stable metric name such as `revenue`, `net_income`, `assets`, `liabilities`, `equity`, `debt`, `cash`, `operating_cash_flow`, `capex`, `diluted_shares`, or `diluted_eps`. |
