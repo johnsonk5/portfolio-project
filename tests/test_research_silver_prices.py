@@ -440,12 +440,12 @@ def test_research_daily_prices_writes_duplicate_symbol_trade_date_dq_check_to_ob
         """
         SELECT check_name, status, measured_value, partition_key
         FROM observability.data_quality_checks
-        WHERE check_name = 'dq_research_daily_prices_uniqueness_symbol_trade_date'
+        WHERE check_name = 'dq_research_daily_prices_uniqueness_asset_id_trade_date'
         """
     ).fetchone()
 
     assert row == (
-        "dq_research_daily_prices_uniqueness_symbol_trade_date",
+        "dq_research_daily_prices_uniqueness_asset_id_trade_date",
         "PASS",
         0.0,
         partition_key,

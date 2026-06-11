@@ -44,7 +44,7 @@ Refresh the recent-window research price history from Alpaca and rebuild the dow
 ### Data Quality
 - Validates expected columns and DuckDB data types for each emitted `silver.research_daily_prices` partition and writes the result to `observability.data_quality_checks` in the portfolio DuckDB.
 - Checks required fields plus logically invalid price/count values and price-range violations for each emitted `silver.research_daily_prices` partition.
-- Checks each emitted `silver.research_daily_prices` partition for duplicate `symbol` + `trade_date` rows.
+- Checks each emitted `silver.research_daily_prices` partition for duplicate asset-first price-key + `trade_date` rows.
 
 ### Freshness
 - Verifies the expected latest trading-date partition exists in `silver.research_daily_prices`.
@@ -71,6 +71,7 @@ Ingest SEC company fundamentals and publish point-in-time research features for 
 ### Universe And Coverage Assumptions
 - SEC fundamentals are an enrichment layer for securities that can be mapped to SEC registrants; they are not the source of truth for the research universe.
 - `silver.universe_membership_daily` remains driven by research prices and liquidity, so SEC-covered and non-SEC-covered symbols can both appear in the universe.
+- Research price, signal, universe, and strategy tables carry `asset_id` as the primary join key, with `symbol` retained as a denormalized display field.
 - Downstream SEC assets should carry `asset_id` when a CIK can be mapped to a project security and allow nullable `asset_id` for unmapped SEC issuers.
 - Strategy features should keep explicit missing-fundamentals indicators so survivorship bias is not introduced by silently dropping symbols without SEC coverage.
 - Historical joins must preserve source symbols and use effective-dated CIK/ticker mappings where available, because ticker reuse, symbol changes, issuer actions, and delistings can otherwise create survivorship-biased joins.

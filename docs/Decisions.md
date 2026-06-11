@@ -156,6 +156,7 @@ This document records important architecture, tech stack, and operating decision
 - Current implementation:
   - `silver.signals_daily` is rebuilt from `silver.research_daily_prices`.
   - The table includes return horizons, moving averages, momentum, volatility, drawdown, 52-week high/low, and liquidity signals.
+  - Research joins use `asset_id` as the primary key across prices, signals, universe membership, and strategy outputs, while `symbol` remains available for display and audit context.
 
 ### 20. Simulation and run type references are catalog-driven
 - Status: Accepted

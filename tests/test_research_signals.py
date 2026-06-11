@@ -194,6 +194,7 @@ def test_signals_daily_fills_missing_adjusted_close_from_close(tmp_path: Path, m
         "2026-02-12",
         pd.DataFrame(
             {
+                "asset_id": [1],
                 "symbol": ["AAPL"],
                 "timestamp": [pd.Timestamp("2026-02-12T21:00:00Z")],
                 "trade_date": ["2026-02-12"],
@@ -216,6 +217,7 @@ def test_signals_daily_fills_missing_adjusted_close_from_close(tmp_path: Path, m
         "2026-02-13",
         pd.DataFrame(
             {
+                "asset_id": [1],
                 "symbol": ["AAPL"],
                 "timestamp": [pd.Timestamp("2026-02-13T21:00:00Z")],
                 "trade_date": ["2026-02-13"],
@@ -275,6 +277,7 @@ def test_signals_daily_excludes_market_holidays(tmp_path: Path, monkeypatch) -> 
             trade_date,
             pd.DataFrame(
                 {
+                    "asset_id": [1],
                     "symbol": ["AAPL"],
                     "timestamp": [pd.Timestamp(f"{trade_date}T21:00:00Z")],
                     "trade_date": [trade_date],

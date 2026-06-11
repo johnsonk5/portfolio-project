@@ -87,6 +87,26 @@ def universe_membership_symbols_for_date(con, target_date: date) -> list[tuple[s
     return [(str(symbol), int(rank), float(liquidity)) for symbol, rank, liquidity in rows]
 
 
+def universe_membership_assets_for_date(
+    con, target_date: date
+) -> list[tuple[int, str, int, float]]:
+    if not _table_exists(con, "silver", "universe_membership_daily"):
+        return []
+    rows = con.execute(
+        """
+        SELECT asset_id, symbol, liquidity_rank, rolling_avg_dollar_volume
+        FROM silver.universe_membership_daily
+        WHERE member_date = ?
+        ORDER BY liquidity_rank, asset_id, symbol
+        """,
+        [target_date],
+    ).fetchall()
+    return [
+        (int(asset_id), str(symbol), int(rank), float(liquidity))
+        for asset_id, symbol, rank, liquidity in rows
+    ]
+
+
 @asset(
     name="universe_membership_daily",
     key_prefix=["silver"],
@@ -123,6 +143,7 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
                 INNER JOIN valid_research_trading_dates AS trading_dates
                     ON trading_dates.trade_date = CAST(p.trade_date AS DATE)
                 WHERE p.trade_date IS NOT NULL
+                  AND p.asset_id IS NOT NULL
                   AND p.symbol IS NOT NULL
                   AND trim(p.symbol) <> ''
             ),
@@ -241,6 +262,7 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
                     ) AS liquidity_rank
                 FROM silver.universe_eligibility_daily
                 WHERE is_eligible_research_universe = TRUE
+                  AND asset_id IS NOT NULL
             )
             SELECT
                 member_date,
@@ -291,6 +313,7 @@ def silver_universe_membership_daily(context: AssetExecutionContext) -> None:
         relation_params=[],
         required_columns=[
             "member_date",
+            "asset_id",
             "symbol",
             "liquidity_rank",
             "rolling_avg_dollar_volume",
@@ -386,9 +409,9 @@ def silver_universe_membership_events(context: AssetExecutionContext) -> None:
             FROM current_members AS curr
             LEFT JOIN previous_members AS prev
                 ON curr.member_date = prev.member_date
-               AND curr.symbol = prev.symbol
+               AND curr.asset_id = prev.asset_id
                AND curr.source = prev.source
-            WHERE prev.symbol IS NULL
+            WHERE prev.asset_id IS NULL
         ),
         removed AS (
             SELECT
@@ -400,9 +423,9 @@ def silver_universe_membership_events(context: AssetExecutionContext) -> None:
             FROM previous_members AS prev
             LEFT JOIN current_members AS curr
                 ON prev.member_date = curr.member_date
-               AND prev.symbol = curr.symbol
+               AND prev.asset_id = curr.asset_id
                AND prev.source = curr.source
-            WHERE curr.symbol IS NULL
+            WHERE curr.asset_id IS NULL
         ),
         changes AS (
             SELECT * FROM added
@@ -428,10 +451,11 @@ def silver_universe_membership_events(context: AssetExecutionContext) -> None:
                 WHERE member_date = changes.event_date
             )
            AND prev.symbol = changes.symbol
+           AND prev.asset_id = changes.asset_id
            AND prev.source = changes.source
         LEFT JOIN distinct_membership AS curr
             ON curr.member_date = changes.event_date
-           AND curr.symbol = changes.symbol
+           AND curr.asset_id = changes.asset_id
            AND curr.source = changes.source
         ORDER BY changes.event_date, changes.event_type, changes.symbol
         """
@@ -459,7 +483,14 @@ def silver_universe_membership_events(context: AssetExecutionContext) -> None:
         check_name="dq_research_universe_membership_events_required_fields_nulls",
         relation_sql="SELECT * FROM silver.universe_membership_events",
         relation_params=[],
-        required_columns=["event_date", "symbol", "event_type", "source", "ingested_ts"],
+        required_columns=[
+            "event_date",
+            "asset_id",
+            "symbol",
+            "event_type",
+            "source",
+            "ingested_ts",
+        ],
         details={"table": "silver.universe_membership_events"},
         run_id=str(run_id) if run_id else None,
         job_name=job_name,

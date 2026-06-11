@@ -56,6 +56,7 @@ STRATEGY_RANKINGS_COLUMNS: list[tuple[str, str]] = [
     ("run_id", "VARCHAR"),
     ("strategy_id", "VARCHAR"),
     ("rebalance_date", "DATE"),
+    ("asset_id", "BIGINT"),
     ("symbol", "VARCHAR"),
     ("score", "DOUBLE"),
     ("rank", "INTEGER"),
@@ -67,6 +68,7 @@ STRATEGY_HOLDINGS_COLUMNS: list[tuple[str, str]] = [
     ("run_id", "VARCHAR"),
     ("strategy_id", "VARCHAR"),
     ("rebalance_date", "DATE"),
+    ("asset_id", "BIGINT"),
     ("symbol", "VARCHAR"),
     ("target_weight", "DOUBLE"),
     ("side", "VARCHAR"),
@@ -243,7 +245,7 @@ def _candidate_eligibility_join_sql(con) -> str:
             """
                 INNER JOIN silver.universe_eligibility_daily AS ue
                     ON CAST(ue.date AS DATE) = CAST(s.date AS DATE)
-                   AND upper(trim(ue.symbol)) = upper(trim(s.symbol))
+                   AND CAST(ue.asset_id AS BIGINT) = CAST(s.asset_id AS BIGINT)
                    AND coalesce(ue.is_eligible_research_universe, FALSE) = TRUE
             """
         )
@@ -664,9 +666,11 @@ def _build_rankings_for_strategy(
                 """
                 SELECT
                     upper(trim(symbol)) AS symbol,
+                    CAST(asset_id AS BIGINT) AS asset_id,
                     1.0 AS score
                 FROM silver.signals_daily
                 WHERE CAST(date AS DATE) = ?
+                  AND asset_id IS NOT NULL
                   AND upper(trim(symbol)) = ?
                 LIMIT 1
                 """,
@@ -675,13 +679,14 @@ def _build_rankings_for_strategy(
         elif ranking_method == "random_selection":
             eligibility_join_sql = _candidate_eligibility_join_sql(con)
             sql = """
-                SELECT upper(trim(s.symbol)) AS symbol
+                SELECT upper(trim(s.symbol)) AS symbol, CAST(s.asset_id AS BIGINT) AS asset_id
                 FROM silver.signals_daily AS s
                 INNER JOIN silver.universe_membership_daily AS u
                     ON CAST(u.member_date AS DATE) = CAST(s.date AS DATE)
-                   AND upper(trim(u.symbol)) = upper(trim(s.symbol))
+                   AND CAST(u.asset_id AS BIGINT) = CAST(s.asset_id AS BIGINT)
                 {eligibility_join_sql}
                 WHERE CAST(s.date AS DATE) = ?
+                  AND s.asset_id IS NOT NULL
             """.format(eligibility_join_sql=eligibility_join_sql)
             random_params: list[Any] = [rebalance_date]
             min_avg_dollar_volume_21d = parameters.get("min_avg_dollar_volume_21d")
@@ -705,14 +710,16 @@ def _build_rankings_for_strategy(
             sql = f"""
                 SELECT
                     upper(trim(s.symbol)) AS symbol,
+                    CAST(s.asset_id AS BIGINT) AS asset_id,
                     CAST(s.{_quote_identifier(signal_column)} AS DOUBLE) AS primary_score
                     {secondary_select_sql}
                 FROM silver.signals_daily AS s
                 INNER JOIN silver.universe_membership_daily AS u
                     ON CAST(u.member_date AS DATE) = CAST(s.date AS DATE)
-                   AND upper(trim(u.symbol)) = upper(trim(s.symbol))
+                   AND CAST(u.asset_id AS BIGINT) = CAST(s.asset_id AS BIGINT)
                 {eligibility_join_sql}
                 WHERE CAST(s.date AS DATE) = ?
+                  AND s.asset_id IS NOT NULL
                   AND CAST(s.{_quote_identifier(signal_column)} AS DOUBLE) IS NOT NULL
                   {secondary_not_null_sql}
             """
@@ -735,7 +742,7 @@ def _build_rankings_for_strategy(
             candidate_rows = con.execute(sql, params).fetchall()
 
         if ranking_method == "random_selection":
-            candidate_df = pd.DataFrame(candidate_rows, columns=["symbol"])
+            candidate_df = pd.DataFrame(candidate_rows, columns=["symbol", "asset_id"])
             if candidate_df.empty:
                 continue
             random_seed = int(parameters.get("random_seed") or 0)
@@ -757,8 +764,10 @@ def _build_rankings_for_strategy(
             candidate_columns = (
                 ["symbol", "primary_score", "secondary_score"]
                 if secondary_signal_column
-                else ["symbol", "primary_score"]
+                else ["symbol", "asset_id", "primary_score"]
             )
+            if secondary_signal_column:
+                candidate_columns = ["symbol", "asset_id", "primary_score", "secondary_score"]
             candidate_df = pd.DataFrame(candidate_rows, columns=candidate_columns)
             if candidate_df.empty:
                 continue
@@ -800,6 +809,7 @@ def _build_rankings_for_strategy(
                 "run_id": strategy.run_id,
                 "strategy_id": strategy.strategy_id,
                 "rebalance_date": rebalance_date,
+                "asset_id": int(row.asset_id),
                 "symbol": str(row.symbol),
                 "score": float(row.score),
                 "rank": int(row.rank),
@@ -1749,6 +1759,7 @@ def _materialize_rankings(
             p.run_id,
             p.strategy_id,
             p.rebalance_date,
+            CAST(s.asset_id AS BIGINT) AS asset_id,
             upper(trim(s.symbol)) AS symbol,
             1.0 AS score,
             1 AS rank,
@@ -1758,6 +1769,7 @@ def _materialize_rankings(
         INNER JOIN silver.signals_daily AS s
             ON CAST(s.date AS DATE) = p.rebalance_date
            AND upper(trim(s.symbol)) = p.fixed_symbol
+           AND s.asset_id IS NOT NULL
         WHERE p.selection_mode = 'fixed_symbol'
            OR p.universe_name = 'benchmark_only'
         """,
@@ -1878,6 +1890,7 @@ def _materialize_rankings(
                     p.strategy_id,
                     p.rebalance_date,
                     p.target_count,
+                    CAST(s.asset_id AS BIGINT) AS asset_id,
                     upper(trim(s.symbol)) AS symbol,
                     CAST(s.{signal_identifier} AS DOUBLE) AS primary_score
                     {secondary_select_sql}
@@ -1886,7 +1899,7 @@ def _materialize_rankings(
                     ON CAST(s.date AS DATE) = p.rebalance_date
                 INNER JOIN silver.universe_membership_daily AS u
                     ON CAST(u.member_date AS DATE) = CAST(s.date AS DATE)
-                   AND upper(trim(u.symbol)) = upper(trim(s.symbol))
+                   AND CAST(u.asset_id AS BIGINT) = CAST(s.asset_id AS BIGINT)
                 {eligibility_join_sql}
                 WHERE p.signal_column = ?
                   AND p.secondary_signal_column = ?
@@ -1895,6 +1908,7 @@ def _materialize_rankings(
                   AND p.ranking_method <> 'random_selection'
                   AND p.selection_mode <> 'fixed_symbol'
                   AND p.universe_name <> 'benchmark_only'
+                  AND s.asset_id IS NOT NULL
                   AND CAST(s.{signal_identifier} AS DOUBLE) IS NOT NULL
                   {secondary_not_null_sql}
                   {filter_sql_by_column["avg_dollar_volume_21d"]}
@@ -1913,6 +1927,7 @@ def _materialize_rankings(
                     strategy_id,
                     rebalance_date,
                     target_count,
+                    asset_id,
                     symbol,
                     {score_sql} AS score
                 FROM filtered
@@ -1923,11 +1938,12 @@ def _materialize_rankings(
                     run_id,
                     strategy_id,
                     rebalance_date,
+                    asset_id,
                     symbol,
                     score,
                     row_number() OVER (
                         PARTITION BY run_id, rebalance_date
-                        ORDER BY score {rank_direction_sql}, symbol ASC
+                        ORDER BY score {rank_direction_sql}, asset_id ASC, symbol ASC
                     ) AS rank,
                     target_count
                 FROM scored
@@ -1936,6 +1952,7 @@ def _materialize_rankings(
                 run_id,
                 strategy_id,
                 rebalance_date,
+                asset_id,
                 symbol,
                 score,
                 CAST(rank AS INTEGER) AS rank,
@@ -1960,15 +1977,17 @@ def _materialize_rankings(
             p.rebalance_date,
             p.target_count,
             p.random_seed,
+            CAST(s.asset_id AS BIGINT) AS asset_id,
             upper(trim(s.symbol)) AS symbol
         FROM temp_strategy_rebalance_plan AS p
         INNER JOIN silver.signals_daily AS s
             ON CAST(s.date AS DATE) = p.rebalance_date
         INNER JOIN silver.universe_membership_daily AS u
             ON CAST(u.member_date AS DATE) = CAST(s.date AS DATE)
-           AND upper(trim(u.symbol)) = upper(trim(s.symbol))
+           AND CAST(u.asset_id AS BIGINT) = CAST(s.asset_id AS BIGINT)
         {eligibility_join_sql}
         WHERE p.ranking_method = 'random_selection'
+          AND s.asset_id IS NOT NULL
           {filter_sql_by_column["avg_dollar_volume_21d"]}
         ORDER BY p.run_id, p.rebalance_date, symbol
         """
@@ -1982,6 +2001,7 @@ def _materialize_rankings(
                 "rebalance_date",
                 "target_count",
                 "random_seed",
+                "asset_id",
                 "symbol",
             ],
         )
@@ -2017,6 +2037,7 @@ def _materialize_rankings(
                 "run_id",
                 "strategy_id",
                 "rebalance_date",
+                "asset_id",
                 "symbol",
                 "score",
                 "rank",
@@ -2032,6 +2053,7 @@ def _materialize_rankings(
                 CAST(run_id AS VARCHAR),
                 CAST(strategy_id AS VARCHAR),
                 CAST(rebalance_date AS DATE),
+                CAST(asset_id AS BIGINT),
                 CAST(symbol AS VARCHAR),
                 CAST(score AS DOUBLE),
                 CAST(rank AS INTEGER),
@@ -2090,6 +2112,7 @@ def _materialize_holdings(
             "run_id",
             "strategy_id",
             "rebalance_date",
+            "asset_id",
             "symbol",
             "target_weight",
             "side",
@@ -2102,6 +2125,7 @@ def _materialize_holdings(
                 r.run_id,
                 r.strategy_id,
                 r.rebalance_date,
+                r.asset_id,
                 r.symbol,
                 r.rank,
                 r.score,
@@ -2116,6 +2140,7 @@ def _materialize_holdings(
             r.run_id,
             r.strategy_id,
             r.rebalance_date,
+            r.asset_id,
             r.symbol,
             1.0 / r.holding_count AS target_weight,
             CASE WHEN p.long_short_flag THEN 'SHORT' ELSE 'LONG' END AS side,
@@ -2127,7 +2152,7 @@ def _materialize_holdings(
             ON p.run_id = r.run_id
            AND p.strategy_id = r.strategy_id
            AND p.rebalance_date = r.rebalance_date
-        ORDER BY r.run_id, r.rebalance_date, r.rank, r.symbol
+        ORDER BY r.run_id, r.rebalance_date, r.rank, r.asset_id, r.symbol
         """,
         [run_ids, asof_ts],
     )
@@ -2231,22 +2256,23 @@ def _log_holdings_duplicate_symbol_check(
     log_duplicate_row_check(
         measured_con=measured_con,
         observability_con=observability_con,
-        check_name="dq_gold_strategy_holdings_unique_symbol_per_rebalance",
+        check_name="dq_gold_strategy_holdings_unique_asset_id_per_rebalance",
         relation_sql="""
             SELECT
                 run_id,
                 strategy_id,
                 rebalance_date,
+                asset_id,
                 symbol
             FROM gold.strategy_holdings
             WHERE run_id = ANY(?)
         """,
         relation_params=[run_ids],
-        key_columns=["run_id", "strategy_id", "rebalance_date", "symbol"],
+        key_columns=["run_id", "strategy_id", "rebalance_date", "asset_id"],
         details={
             "table": "gold.strategy_holdings",
             "run_ids": run_ids,
-            "uniqueness_scope": ["strategy_id", "rebalance_date", "symbol"],
+            "uniqueness_scope": ["strategy_id", "rebalance_date", "asset_id"],
         },
         run_id=run_id,
         job_name=job_name,
@@ -2860,9 +2886,13 @@ def _price_history_select_sql(con) -> str:
         if "vwap" in available_columns
         else "NULL::DOUBLE"
     )
+    asset_id_expr = (
+        "CAST(p.asset_id AS BIGINT)" if "asset_id" in available_columns else "NULL::BIGINT"
+    )
     return f"""
-        SELECT
+        SELECT DISTINCT
             CAST(p.trade_date AS DATE) AS trade_date,
+            {asset_id_expr} AS asset_id,
             upper(trim(p.symbol)) AS symbol,
             {open_expr} AS open,
             CAST(p.close AS DOUBLE) AS close,
@@ -2871,7 +2901,14 @@ def _price_history_select_sql(con) -> str:
             CAST(coalesce(p.adjusted_close, p.close) AS DOUBLE) AS price
         FROM read_parquet(?, union_by_name = true) AS p
         INNER JOIN temp_strategy_symbols AS selected_symbols
-            ON selected_symbols.symbol = upper(trim(p.symbol))
+            ON (
+                selected_symbols.asset_id IS NOT NULL
+                AND selected_symbols.asset_id = {asset_id_expr}
+            )
+            OR (
+                selected_symbols.asset_id IS NULL
+                AND selected_symbols.symbol = upper(trim(p.symbol))
+            )
         INNER JOIN valid_strategy_trading_dates AS trading_dates
             ON trading_dates.trade_date = CAST(p.trade_date AS DATE)
         WHERE CAST(p.trade_date AS DATE) >= ?
@@ -2887,13 +2924,12 @@ def _ensure_strategy_price_return_tables(
     con.execute(
         """
         CREATE OR REPLACE TEMPORARY TABLE temp_strategy_run_symbols AS
-        SELECT DISTINCT run_id, upper(trim(symbol)) AS symbol
+        SELECT DISTINCT run_id, CAST(asset_id AS BIGINT) AS asset_id, upper(trim(symbol)) AS symbol
         FROM gold.strategy_holdings
         WHERE run_id = ANY(?)
-          AND symbol IS NOT NULL
-          AND trim(symbol) <> ''
+          AND asset_id IS NOT NULL
         UNION
-        SELECT DISTINCT run_id, benchmark_symbol AS symbol
+        SELECT DISTINCT run_id, NULL::BIGINT AS asset_id, benchmark_symbol AS symbol
         FROM temp_strategy_run_config
         WHERE run_id = ANY(?)
           AND benchmark_symbol IS NOT NULL
@@ -2903,18 +2939,24 @@ def _ensure_strategy_price_return_tables(
     )
     symbol_rows = con.execute(
         """
-        SELECT DISTINCT symbol
+        SELECT DISTINCT asset_id, symbol
         FROM temp_strategy_run_symbols
-        ORDER BY symbol
+        ORDER BY asset_id, symbol
         """,
     ).fetchall()
-    symbols = [str(row[0]) for row in symbol_rows if row[0] not in (None, "")]
-    symbol_df = pd.DataFrame({"symbol": symbols})
+    symbol_df = pd.DataFrame(
+        [
+            {"asset_id": row[0], "symbol": str(row[1])}
+            for row in symbol_rows
+            if row[0] is not None or row[1] not in (None, "")
+        ],
+        columns=["asset_id", "symbol"],
+    )
     _register_temp_df(con, "strategy_symbols_df", symbol_df)
     con.execute(
         """
         CREATE OR REPLACE TEMPORARY TABLE temp_strategy_symbols AS
-        SELECT CAST(symbol AS VARCHAR) AS symbol
+        SELECT CAST(asset_id AS BIGINT) AS asset_id, CAST(symbol AS VARCHAR) AS symbol
         FROM strategy_symbols_df
         """
     )
@@ -2951,19 +2993,21 @@ def _ensure_strategy_price_return_tables(
         WITH base AS (
             SELECT
                 trade_date,
+                asset_id,
                 symbol,
                 open,
                 close,
                 close_fill,
                 vwap,
                 price,
-                lag(price) OVER symbol_window AS prev_price,
-                lag(close_fill) OVER symbol_window AS prev_close
+                lag(price) OVER asset_window AS prev_price,
+                lag(close_fill) OVER asset_window AS prev_close
             FROM temp_strategy_price_history
-            WINDOW symbol_window AS (PARTITION BY symbol ORDER BY trade_date)
+            WINDOW asset_window AS (PARTITION BY asset_id ORDER BY trade_date)
         )
         SELECT
             trade_date,
+            asset_id,
             symbol,
             CASE
                 WHEN price IS NOT NULL
@@ -3015,7 +3059,14 @@ def _create_strategy_return_period_tables(con, run_ids: list[str]) -> None:
             r.trade_date
         FROM temp_strategy_run_symbols AS rs
         INNER JOIN temp_strategy_symbol_returns AS r
-            ON r.symbol = rs.symbol
+            ON (
+                rs.asset_id IS NOT NULL
+                AND r.asset_id = rs.asset_id
+            )
+            OR (
+                rs.asset_id IS NULL
+                AND r.symbol = rs.symbol
+            )
         ORDER BY run_id, trade_date
         """
     )
@@ -3065,13 +3116,13 @@ def _create_strategy_return_period_tables(con, run_ids: list[str]) -> None:
         """
         CREATE OR REPLACE TEMPORARY TABLE temp_strategy_period_turnover AS
         WITH period_symbols AS (
-            SELECT p.run_id, p.rebalance_date, h.symbol
+            SELECT p.run_id, p.rebalance_date, h.asset_id, h.symbol
             FROM temp_strategy_period_base AS p
             INNER JOIN gold.strategy_holdings AS h
                 ON h.run_id = p.run_id
                AND CAST(h.rebalance_date AS DATE) = p.rebalance_date
             UNION
-            SELECT p.run_id, p.rebalance_date, h.symbol
+            SELECT p.run_id, p.rebalance_date, h.asset_id, h.symbol
             FROM temp_strategy_period_base AS p
             INNER JOIN gold.strategy_holdings AS h
                 ON h.run_id = p.run_id
@@ -3081,6 +3132,7 @@ def _create_strategy_return_period_tables(con, run_ids: list[str]) -> None:
             SELECT
                 ps.run_id,
                 ps.rebalance_date,
+                ps.asset_id,
                 ps.symbol,
                 coalesce(current_h.target_weight, 0.0) AS current_weight,
                 coalesce(previous_h.target_weight, 0.0) AS previous_weight
@@ -3088,14 +3140,14 @@ def _create_strategy_return_period_tables(con, run_ids: list[str]) -> None:
             LEFT JOIN gold.strategy_holdings AS current_h
                 ON current_h.run_id = ps.run_id
                AND CAST(current_h.rebalance_date AS DATE) = ps.rebalance_date
-               AND current_h.symbol = ps.symbol
+               AND current_h.asset_id = ps.asset_id
             LEFT JOIN temp_strategy_period_base AS p
                 ON p.run_id = ps.run_id
                AND p.rebalance_date = ps.rebalance_date
             LEFT JOIN gold.strategy_holdings AS previous_h
                 ON previous_h.run_id = ps.run_id
                AND CAST(previous_h.rebalance_date AS DATE) = p.previous_rebalance_date
-               AND previous_h.symbol = ps.symbol
+               AND previous_h.asset_id = ps.asset_id
         )
         SELECT
             p.run_id,
@@ -3150,6 +3202,7 @@ def _create_strategy_return_period_tables(con, run_ids: list[str]) -> None:
                 p.volatility_window_days,
                 p.volatility_base_bps,
                 p.volatility_multiplier,
+                h.asset_id,
                 h.symbol
             FROM temp_strategy_period_turnover AS p
             INNER JOIN gold.strategy_holdings AS h
@@ -3163,7 +3216,7 @@ def _create_strategy_return_period_tables(con, run_ids: list[str]) -> None:
                 ts.rebalance_date,
                 r.close_return,
                 row_number() OVER (
-                    PARTITION BY ts.run_id, ts.rebalance_date, ts.symbol
+                    PARTITION BY ts.run_id, ts.rebalance_date, ts.asset_id
                     ORDER BY r.trade_date DESC
                 ) AS row_num,
                 ts.volatility_window_days,
@@ -3171,7 +3224,7 @@ def _create_strategy_return_period_tables(con, run_ids: list[str]) -> None:
                 ts.volatility_multiplier
             FROM traded_symbols AS ts
             INNER JOIN temp_strategy_symbol_returns AS r
-                ON r.symbol = ts.symbol
+                ON r.asset_id = ts.asset_id
                AND r.trade_date < ts.effective_start
                AND r.close_return IS NOT NULL
         )
@@ -3275,6 +3328,7 @@ def _materialize_returns(
                     p.volatility_base_bps,
                     p.trade_notional,
                     p.turnover,
+                    h.asset_id,
                     h.symbol,
                     h.target_weight,
                     CASE
@@ -3300,7 +3354,7 @@ def _materialize_returns(
                    AND CAST(h.rebalance_date AS DATE) = p.rebalance_date
                 LEFT JOIN temp_strategy_symbol_returns AS r
                     ON r.trade_date = d.trade_date
-                   AND r.symbol = h.symbol
+                   AND r.asset_id = h.asset_id
                 WHERE p.run_id = ?
             ),
             aggregated AS (

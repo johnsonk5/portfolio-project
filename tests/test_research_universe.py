@@ -193,6 +193,7 @@ def test_universe_eligibility_filters_no_metadata_artifacts(
             partition_key,
             pd.DataFrame(
                 {
+                    "asset_id": [1, 2, 3, 4, 5, 6],
                     "symbol": ["AAPL", "0P00000M7O", "LOW", "THIN", "ABCQ", "XYZW"],
                     "timestamp": [f"{partition_key}T21:00:00Z"] * 6,
                     "trade_date": [partition_key] * 6,
@@ -274,6 +275,7 @@ def test_universe_eligibility_excludes_market_holidays(
             partition_key,
             pd.DataFrame(
                 {
+                    "asset_id": [1],
                     "symbol": ["AAPL"],
                     "timestamp": [f"{partition_key}T21:00:00Z"],
                     "trade_date": [partition_key],

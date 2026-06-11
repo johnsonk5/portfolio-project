@@ -353,10 +353,15 @@ def _log_research_daily_prices_duplicate_symbol_date_check(
         log_duplicate_row_check(
             measured_con=measured_con,
             observability_con=context.resources.duckdb,
-            check_name="dq_research_daily_prices_uniqueness_symbol_trade_date",
-            relation_sql="SELECT * FROM read_parquet(?, hive_partitioning = false)",
+            check_name="dq_research_daily_prices_uniqueness_asset_id_trade_date",
+            relation_sql="""
+                SELECT
+                    coalesce(CAST(asset_id AS VARCHAR), upper(trim(symbol))) AS asset_key,
+                    trade_date
+                FROM read_parquet(?, hive_partitioning = false)
+            """,
             relation_params=[parquet_path.as_posix()],
-            key_columns=["symbol", "trade_date"],
+            key_columns=["asset_key", "trade_date"],
             details={"path": parquet_path.as_posix(), "table": "silver.research_daily_prices"},
             run_id=str(run_id) if run_id else None,
             job_name=job_name,

@@ -36,6 +36,11 @@ def _parquet_has_column(con, parquet_glob: str, column: str) -> bool:
 
 def _signals_select_sql(*, has_asset_id: bool) -> str:
     asset_id_sql = "CAST(p.asset_id AS BIGINT)" if has_asset_id else "NULL::BIGINT"
+    bucket_key_sql = (
+        "coalesce(CAST(p.asset_id AS VARCHAR), upper(trim(p.symbol)))"
+        if has_asset_id
+        else "upper(trim(p.symbol))"
+    )
     return """
         WITH prices AS (
             SELECT
@@ -56,7 +61,7 @@ def _signals_select_sql(*, has_asset_id: bool) -> str:
             WHERE p.trade_date IS NOT NULL
               AND p.symbol IS NOT NULL
               AND trim(p.symbol) <> ''
-              AND abs(hash(upper(trim(p.symbol)))) % ? = ?
+              AND abs(hash({bucket_key_sql})) % ? = ?
         ),
         returns_base AS (
             SELECT
@@ -208,7 +213,7 @@ def _signals_select_sql(*, has_asset_id: bool) -> str:
             ? AS signal_version,
             current_timestamp AS load_timestamp
         FROM with_volatility
-    """.format(asset_id_sql=asset_id_sql)
+    """.format(asset_id_sql=asset_id_sql, bucket_key_sql=bucket_key_sql)
 
 
 @asset(
@@ -285,6 +290,7 @@ def silver_signals_daily(context: AssetExecutionContext) -> None:
         relation_params=[],
         required_columns=[
             "date",
+            "asset_id",
             "symbol",
             "close",
             "adjusted_close",
