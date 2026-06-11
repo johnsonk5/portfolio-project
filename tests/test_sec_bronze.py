@@ -1,4 +1,5 @@
 import json
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,7 +12,10 @@ from portfolio_project.defs.research_db.bronze.sec import (
     SEC_BRONZE_DATASETS,
     bronze_sec_bulk_archives,
     materialize_bronze_sec_company_tickers,
+    materialize_bronze_sec_submissions,
     parse_company_tickers_exchange_json,
+    parse_submission_json_document,
+    parse_submissions_zip_to_parquet,
 )
 
 
@@ -50,6 +54,71 @@ def _company_tickers_payload() -> bytes:
             ],
         }
     ).encode()
+
+
+def _submission_document() -> dict:
+    return {
+        "cik": "0000320193",
+        "entityType": "operating",
+        "sic": "3571",
+        "sicDescription": "Electronic Computers",
+        "name": "Apple Inc.",
+        "tickers": ["AAPL"],
+        "exchanges": ["Nasdaq"],
+        "filings": {
+            "recent": {
+                "accessionNumber": ["0000320193-26-000001", "0000320193-25-000002"],
+                "filingDate": ["2026-01-31", "2025-01-31"],
+                "reportDate": ["2025-12-27", "2024-12-28"],
+                "acceptanceDateTime": [
+                    "2026-01-31T18:01:02.000Z",
+                    "2025-01-31T18:01:02.000Z",
+                ],
+                "act": ["34", "34"],
+                "form": ["10-K", "10-K"],
+                "fileNumber": ["001-36743", "001-36743"],
+                "filmNumber": ["26500001", "25500002"],
+                "items": ["", ""],
+                "core_type": ["10-K", "10-K"],
+                "size": [123456, 234567],
+                "isXBRL": [1, 1],
+                "isInlineXBRL": [1, 1],
+                "isXBRLNumeric": [1, 1],
+                "primaryDocument": ["aapl-20251227.htm", "aapl-20241228.htm"],
+                "primaryDocDescription": ["10-K", "10-K"],
+            }
+        },
+    }
+
+
+def _submission_chunk_document() -> dict:
+    return {
+        "accessionNumber": ["0001181431-10-016632"],
+        "filingDate": ["2010-03-16"],
+        "reportDate": ["2010-03-12"],
+        "acceptanceDateTime": ["2010-03-16T18:43:23.000Z"],
+        "act": ["34"],
+        "form": ["4"],
+        "fileNumber": ["001-00001"],
+        "filmNumber": ["10600001"],
+        "items": [""],
+        "core_type": ["4"],
+        "size": [9876],
+        "isXBRL": [0],
+        "isInlineXBRL": [0],
+        "isXBRLNumeric": [0],
+        "primaryDocument": ["xslF345X03/rrd270114.xml"],
+        "primaryDocDescription": ["FORM 4"],
+    }
+
+
+def _write_submissions_zip(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("CIK0000320193.json", json.dumps(_submission_document()))
+        archive.writestr(
+            "CIK0000005981-submissions-001.json",
+            json.dumps(_submission_chunk_document()),
+        )
 
 
 def test_bronze_sec_bulk_archives_writes_raw_files_and_ingestion_log(
@@ -269,3 +338,155 @@ def test_materialize_bronze_sec_company_tickers_writes_parquet_from_ingestion_lo
     }
     assert parsed["ticker"].tolist() == ["AAPL", "MSFT"]
     assert parsed["source_file"].tolist() == [str(raw_path), str(raw_path)]
+
+
+def test_parse_submission_json_document_emits_one_row_per_accession() -> None:
+    frame = parse_submission_json_document(
+        _submission_document(),
+        ingestion_date="2026-03-15",
+        source_archive_path="submissions.zip",
+        source_archive_content_hash="abc123",
+        source_member_name="CIK0000320193.json",
+        ingested_ts=pd.Timestamp("2026-03-15T09:30:00Z"),
+    )
+
+    assert list(frame.columns) == sec_bronze_module.SEC_SUBMISSIONS_COLUMNS
+    assert frame[["cik", "entity_name", "tickers", "exchanges"]].to_dict("records") == [
+        {
+            "cik": "320193",
+            "entity_name": "Apple Inc.",
+            "tickers": "AAPL",
+            "exchanges": "Nasdaq",
+        },
+        {
+            "cik": "320193",
+            "entity_name": "Apple Inc.",
+            "tickers": "AAPL",
+            "exchanges": "Nasdaq",
+        },
+    ]
+    assert frame["accession_number"].tolist() == [
+        "0000320193-26-000001",
+        "0000320193-25-000002",
+    ]
+    assert frame["form"].tolist() == ["10-K", "10-K"]
+    assert frame["source_row_number"].tolist() == [1, 2]
+
+
+def test_parse_submission_json_document_derives_cik_for_chunk_members() -> None:
+    frame = parse_submission_json_document(
+        _submission_chunk_document(),
+        ingestion_date="2026-03-15",
+        source_archive_path="submissions.zip",
+        source_archive_content_hash="abc123",
+        source_member_name="CIK0000005981-submissions-001.json",
+    )
+
+    assert frame["cik"].tolist() == ["5981"]
+    assert frame["entity_name"].isna().all()
+    assert frame["accession_number"].tolist() == ["0001181431-10-016632"]
+    assert frame["form"].tolist() == ["4"]
+
+
+def test_parse_submissions_zip_to_parquet_writes_fixture_archive(tmp_path: Path) -> None:
+    zip_path = tmp_path / "submissions.zip"
+    out_path = tmp_path / "submissions.parquet"
+    _write_submissions_zip(zip_path)
+
+    row_count = parse_submissions_zip_to_parquet(
+        zip_path,
+        out_path,
+        ingestion_date="2026-03-15",
+        source_archive_content_hash="abc123",
+        chunk_size=1,
+    )
+
+    parsed = pd.read_parquet(out_path)
+    assert row_count == 3
+    assert len(parsed) == 3
+    assert parsed["accession_number"].tolist() == [
+        "0000320193-26-000001",
+        "0000320193-25-000002",
+        "0001181431-10-016632",
+    ]
+    assert parsed["source_member_name"].tolist() == [
+        "CIK0000320193.json",
+        "CIK0000320193.json",
+        "CIK0000005981-submissions-001.json",
+    ]
+
+
+def test_parse_submissions_zip_to_parquet_rejects_malformed_json(tmp_path: Path) -> None:
+    zip_path = tmp_path / "submissions.zip"
+    out_path = tmp_path / "submissions.parquet"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("CIK0000320193.json", "{not json")
+
+    with pytest.raises(ValueError, match="Invalid SEC submissions JSON member"):
+        parse_submissions_zip_to_parquet(
+            zip_path,
+            out_path,
+            ingestion_date="2026-03-15",
+            source_archive_content_hash="abc123",
+        )
+
+
+def test_materialize_bronze_sec_submissions_writes_parquet_from_ingestion_log(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root = tmp_path / "data"
+    monkeypatch.setattr(sec_bronze_module, "DATA_ROOT", data_root)
+    raw_path = (
+        data_root
+        / "bronze"
+        / "sec"
+        / "submissions"
+        / "ingestion_date=2026-03-15"
+        / "submissions.zip"
+    )
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_submissions_zip(raw_path)
+
+    ingestion_log_path = data_root / "bronze" / "sec" / "ingestion_log.parquet"
+    ingestion_log_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "dataset": "submissions",
+                "source_url": "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip",
+                "retrieved_at": pd.Timestamp("2026-03-15T09:30:00Z"),
+                "ingestion_date": "2026-03-15",
+                "etag": "etag",
+                "last_modified": "Sun, 15 Mar 2026 08:00:00 GMT",
+                "content_hash": "abc123",
+                "file_size": raw_path.stat().st_size,
+                "local_path": str(raw_path),
+                "changed_flag": True,
+            }
+        ],
+        columns=sec_bronze_module.SEC_INGESTION_LOG_COLUMNS,
+    ).to_parquet(ingestion_log_path, index=False)
+
+    metrics = materialize_bronze_sec_submissions()
+
+    out_path = (
+        data_root
+        / "bronze"
+        / "sec_submissions"
+        / "ingestion_date=2026-03-15"
+        / "submissions.parquet"
+    )
+    parsed = pd.read_parquet(out_path)
+    assert metrics == {
+        "source_snapshot_count": 1,
+        "written_snapshot_count": 1,
+        "skipped_snapshot_count": 0,
+        "row_count": 3,
+        "latest_ingestion_date": "2026-03-15",
+    }
+    assert parsed["accession_number"].tolist() == [
+        "0000320193-26-000001",
+        "0000320193-25-000002",
+        "0001181431-10-016632",
+    ]
