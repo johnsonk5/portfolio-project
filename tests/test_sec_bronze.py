@@ -524,6 +524,49 @@ def test_parse_submissions_zip_to_parquet_rejects_malformed_json(tmp_path: Path)
         )
 
 
+def test_parse_submissions_zip_to_parquet_rejects_non_object_member(
+    tmp_path: Path,
+) -> None:
+    zip_path = tmp_path / "submissions.zip"
+    out_path = tmp_path / "submissions.parquet"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("CIK0000320193.json", json.dumps(["not", "an", "object"]))
+
+    with pytest.raises(ValueError, match="SEC submissions member is not a JSON object"):
+        parse_submissions_zip_to_parquet(
+            zip_path,
+            out_path,
+            ingestion_date="2026-03-15",
+            source_archive_content_hash="abc123",
+        )
+
+
+def test_parse_submissions_zip_to_parquet_writes_empty_schema_for_missing_accessions(
+    tmp_path: Path,
+) -> None:
+    zip_path = tmp_path / "submissions.zip"
+    out_path = tmp_path / "submissions.parquet"
+    missing_accessions_document = {
+        "cik": "0000320193",
+        "name": "Apple Inc.",
+        "filings": {"recent": {"filingDate": ["2026-01-31"], "form": ["10-K"]}},
+    }
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("CIK0000320193.json", json.dumps(missing_accessions_document))
+
+    row_count = parse_submissions_zip_to_parquet(
+        zip_path,
+        out_path,
+        ingestion_date="2026-03-15",
+        source_archive_content_hash="abc123",
+    )
+
+    parsed = pd.read_parquet(out_path)
+    assert row_count == 0
+    assert parsed.empty
+    assert list(parsed.columns) == sec_bronze_module.SEC_SUBMISSIONS_COLUMNS
+
+
 def test_materialize_bronze_sec_submissions_writes_parquet_from_ingestion_log(
     tmp_path: Path,
     monkeypatch,
@@ -645,6 +688,45 @@ def test_parse_company_facts_zip_to_parquet_rejects_malformed_json(tmp_path: Pat
             ingestion_date="2026-03-15",
             source_archive_content_hash="abc123",
         )
+
+
+def test_parse_company_facts_zip_to_parquet_rejects_non_object_member(
+    tmp_path: Path,
+) -> None:
+    zip_path = tmp_path / "companyfacts.zip"
+    out_path = tmp_path / "facts.parquet"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("CIK0000320193.json", json.dumps(["not", "an", "object"]))
+
+    with pytest.raises(ValueError, match="SEC company facts member is not a JSON object"):
+        parse_company_facts_zip_to_parquet(
+            zip_path,
+            out_path,
+            ingestion_date="2026-03-15",
+            source_archive_content_hash="abc123",
+        )
+
+
+def test_parse_company_facts_zip_to_parquet_writes_empty_schema_for_missing_facts(
+    tmp_path: Path,
+) -> None:
+    zip_path = tmp_path / "companyfacts.zip"
+    out_path = tmp_path / "facts.parquet"
+    missing_facts_document = {"cik": 320193, "entityName": "Apple Inc."}
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("CIK0000320193.json", json.dumps(missing_facts_document))
+
+    row_count = parse_company_facts_zip_to_parquet(
+        zip_path,
+        out_path,
+        ingestion_date="2026-03-15",
+        source_archive_content_hash="abc123",
+    )
+
+    parsed = pd.read_parquet(out_path)
+    assert row_count == 0
+    assert parsed.empty
+    assert list(parsed.columns) == sec_bronze_module.SEC_COMPANY_FACTS_COLUMNS
 
 
 def test_materialize_bronze_sec_company_facts_writes_parquet_from_ingestion_log(
