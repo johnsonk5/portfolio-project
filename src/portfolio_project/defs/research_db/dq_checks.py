@@ -218,6 +218,7 @@ def log_security_identifier_mapping_checks(
         WITH cik_mappings AS (
             SELECT DISTINCT
                 CAST(asset_id AS BIGINT) AS asset_id,
+                upper(trim(source_symbol)) AS source_symbol,
                 coalesce(
                     nullif(regexp_replace(trim(coalesce(cik, identifier_value)), '^0+', ''), ''),
                     '0'
@@ -233,16 +234,19 @@ def log_security_identifier_mapping_checks(
                       AND trim(identifier_value) <> ''
                   )
               )
+              AND source_symbol IS NOT NULL
+              AND trim(source_symbol) <> ''
         )
         SELECT
             cik,
+            source_symbol,
             count(DISTINCT asset_id) AS asset_count,
             string_agg(DISTINCT CAST(asset_id AS VARCHAR), ',' ORDER BY CAST(asset_id AS VARCHAR))
                 AS asset_ids
         FROM cik_mappings
-        GROUP BY cik
+        GROUP BY cik, source_symbol
         HAVING count(DISTINCT asset_id) > 1
-        ORDER BY asset_count DESC, cik
+        ORDER BY asset_count DESC, cik, source_symbol
         LIMIT 20
         """,
     )
@@ -256,7 +260,9 @@ def log_security_identifier_mapping_checks(
         threshold_value=0.0,
         details={
             "table": "silver.security_identifiers",
-            "conflict_definition": "current CIK values mapping to more than one asset_id",
+            "conflict_definition": (
+                "current CIK and source_symbol pairs mapping to more than one asset_id"
+            ),
             "conflicts_sample": cik_conflicts,
         },
         run_id=run_id,

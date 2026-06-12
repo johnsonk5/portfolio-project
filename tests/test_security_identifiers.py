@@ -324,8 +324,108 @@ def test_security_identifier_mapping_dq_checks_detect_conflicts_and_missing_asse
         """
     ).fetchall()
     assert rows == [
-        ("dq_security_identifiers_cik_to_asset_conflicts", "FAIL", 1.0),
+        ("dq_security_identifiers_cik_to_asset_conflicts", "PASS", 0.0),
         ("dq_security_identifiers_duplicate_asset_id_mappings", "FAIL", 1.0),
         ("dq_security_identifiers_missing_asset_id_rates_by_source", "FAIL", 0.5),
         ("dq_security_identifiers_symbol_to_asset_conflicts", "FAIL", 1.0),
     ]
+
+
+def test_security_identifier_cik_dq_allows_shared_cik_share_classes() -> None:
+    measured_con = duckdb.connect(":memory:")
+    observability_con = duckdb.connect(":memory:")
+    measured_con.execute("CREATE SCHEMA silver")
+    measured_con.execute(
+        """
+        CREATE TABLE silver.security_identifiers (
+            asset_id BIGINT,
+            source_symbol VARCHAR,
+            identifier_type VARCHAR,
+            identifier_value VARCHAR,
+            cik VARCHAR,
+            identifier_source VARCHAR,
+            valid_from_date DATE,
+            valid_to_date DATE,
+            is_current BOOLEAN
+        )
+        """
+    )
+    measured_con.execute(
+        """
+        INSERT INTO silver.security_identifiers VALUES
+            (10, 'GOOG', 'cik', '1652044', '1652044', 'sec_company_tickers',
+                DATE '1900-01-01', NULL, TRUE),
+            (11, 'GOOGL', 'cik', '1652044', '1652044', 'sec_company_tickers',
+                DATE '1900-01-01', NULL, TRUE),
+            (20, 'FOX', 'cik', '1754301', '1754301', 'sec_company_tickers',
+                DATE '1900-01-01', NULL, TRUE),
+            (21, 'FOXA', 'cik', '1754301', '1754301', 'sec_company_tickers',
+                DATE '1900-01-01', NULL, TRUE),
+            (30, 'NWS', 'cik', '1564708', '1564708', 'sec_company_tickers',
+                DATE '1900-01-01', NULL, TRUE),
+            (31, 'NWSA', 'cik', '1564708', '1564708', 'sec_company_tickers',
+                DATE '1900-01-01', NULL, TRUE)
+        """
+    )
+
+    log_security_identifier_mapping_checks(
+        measured_con=measured_con,
+        observability_con=observability_con,
+        run_id="run-1",
+        job_name="security_identifiers_job",
+    )
+
+    row = observability_con.execute(
+        """
+        SELECT status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_security_identifiers_cik_to_asset_conflicts'
+        """
+    ).fetchone()
+    assert row == ("PASS", 0.0)
+
+
+def test_security_identifier_cik_dq_fails_ambiguous_same_cik_and_source_symbol() -> None:
+    measured_con = duckdb.connect(":memory:")
+    observability_con = duckdb.connect(":memory:")
+    measured_con.execute("CREATE SCHEMA silver")
+    measured_con.execute(
+        """
+        CREATE TABLE silver.security_identifiers (
+            asset_id BIGINT,
+            source_symbol VARCHAR,
+            identifier_type VARCHAR,
+            identifier_value VARCHAR,
+            cik VARCHAR,
+            identifier_source VARCHAR,
+            valid_from_date DATE,
+            valid_to_date DATE,
+            is_current BOOLEAN
+        )
+        """
+    )
+    measured_con.execute(
+        """
+        INSERT INTO silver.security_identifiers VALUES
+            (10, 'GOOG', 'cik', '1652044', '1652044', 'sec_company_tickers',
+                DATE '1900-01-01', NULL, TRUE),
+            (11, 'GOOG', 'cik', '1652044', '1652044', 'bad_identifier_source',
+                DATE '1900-01-01', NULL, TRUE)
+        """
+    )
+
+    log_security_identifier_mapping_checks(
+        measured_con=measured_con,
+        observability_con=observability_con,
+        run_id="run-1",
+        job_name="security_identifiers_job",
+    )
+
+    row = observability_con.execute(
+        """
+        SELECT status, measured_value
+        FROM observability.data_quality_checks
+        WHERE check_name = 'dq_security_identifiers_cik_to_asset_conflicts'
+        """
+    ).fetchone()
+    assert row == ("FAIL", 1.0)
