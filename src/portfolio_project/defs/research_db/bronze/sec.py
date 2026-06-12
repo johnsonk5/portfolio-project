@@ -94,6 +94,64 @@ SEC_SUBMISSION_SOURCE_FIELDS = [
 
 SEC_SUBMISSIONS_CHUNK_SIZE = int(os.getenv("SEC_SUBMISSIONS_PARSE_CHUNK_SIZE", "100000"))
 
+SEC_COMPANY_FACTS_CHUNK_SIZE = int(os.getenv("SEC_COMPANY_FACTS_PARSE_CHUNK_SIZE", "100000"))
+
+SEC_COMPANY_FACTS_SUPPORTED_TAXONOMIES = ["us-gaap"]
+
+SEC_COMPANY_FACTS_SUPPORTED_TAGS = [
+    "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "RevenueFromContractWithCustomerIncludingAssessedTax",
+    "Revenues",
+    "SalesRevenueNet",
+    "NetIncomeLoss",
+    "ProfitLoss",
+    "NetIncomeLossAvailableToCommonStockholdersBasic",
+    "Assets",
+    "StockholdersEquity",
+    "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+    "ShortTermBorrowings",
+    "LongTermDebtCurrent",
+    "LongTermDebtNoncurrent",
+    "LongTermDebtAndCapitalLeaseObligationsCurrent",
+    "LongTermDebtAndCapitalLeaseObligations",
+    "LongTermDebt",
+    "CashAndCashEquivalentsAtCarryingValue",
+    "Cash",
+    "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+    "WeightedAverageNumberOfDilutedSharesOutstanding",
+    "EarningsPerShareDiluted",
+    "EarningsPerShareBasicAndDiluted",
+    "NetCashProvidedByUsedInOperatingActivities",
+    "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
+    "PaymentsToAcquirePropertyPlantAndEquipment",
+    "PaymentsToAcquireProductiveAssets",
+]
+
+SEC_COMPANY_FACTS_COLUMNS = [
+    "cik",
+    "entity_name",
+    "taxonomy",
+    "tag",
+    "label",
+    "description",
+    "unit",
+    "value",
+    "accession_number",
+    "fiscal_year",
+    "fiscal_period",
+    "form",
+    "filed_date",
+    "period_start_date",
+    "period_end_date",
+    "frame",
+    "ingestion_date",
+    "source_archive_path",
+    "source_archive_content_hash",
+    "source_member_name",
+    "source_row_number",
+    "ingested_ts",
+]
+
 
 @dataclass(frozen=True)
 class SecBronzeDataset:
@@ -193,6 +251,17 @@ def _parsed_submissions_path(ingestion_date: str) -> Path:
         / "sec_submissions"
         / f"ingestion_date={ingestion_date}"
         / "submissions.parquet"
+    )
+
+
+def _parsed_company_facts_path(ingestion_date: str, taxonomy: str) -> Path:
+    return (
+        DATA_ROOT
+        / "bronze"
+        / "sec_company_facts"
+        / f"ingestion_date={ingestion_date}"
+        / f"taxonomy={taxonomy}"
+        / "facts.parquet"
     )
 
 
@@ -549,6 +618,232 @@ def parse_submissions_zip_to_parquet(
             temp_path.unlink()
 
 
+def _fact_records(
+    document: dict,
+    *,
+    ingestion_date: str,
+    source_archive_path: str,
+    source_archive_content_hash: str,
+    source_member_name: str,
+    supported_taxonomies: set[str],
+    supported_tags: set[str],
+    ingested_ts: pd.Timestamp | None = None,
+) -> list[dict]:
+    facts = document.get("facts")
+    if not isinstance(facts, dict):
+        return []
+
+    cik = _normalize_cik(document.get("cik"))
+    entity_name = _normalize_text(document.get("entityName"))
+    now = ingested_ts or pd.Timestamp.utcnow()
+    records = []
+    row_number = 0
+
+    for taxonomy, taxonomy_facts in facts.items():
+        if taxonomy not in supported_taxonomies or not isinstance(taxonomy_facts, dict):
+            continue
+        for tag, tag_payload in taxonomy_facts.items():
+            if tag not in supported_tags or not isinstance(tag_payload, dict):
+                continue
+            units = tag_payload.get("units")
+            if not isinstance(units, dict):
+                continue
+            label = _normalize_text(tag_payload.get("label"))
+            description = _normalize_text(tag_payload.get("description"))
+            for unit, unit_facts in units.items():
+                if not isinstance(unit_facts, list):
+                    continue
+                for fact in unit_facts:
+                    if not isinstance(fact, dict):
+                        continue
+                    row_number += 1
+                    records.append(
+                        {
+                            "cik": cik,
+                            "entity_name": entity_name,
+                            "taxonomy": taxonomy,
+                            "tag": tag,
+                            "label": label,
+                            "description": description,
+                            "unit": _normalize_text(unit),
+                            "value": fact.get("val"),
+                            "accession_number": _normalize_text(fact.get("accn")),
+                            "fiscal_year": fact.get("fy"),
+                            "fiscal_period": _normalize_text(fact.get("fp")),
+                            "form": _normalize_text(fact.get("form")),
+                            "filed_date": _normalize_text(fact.get("filed")),
+                            "period_start_date": _normalize_text(fact.get("start")),
+                            "period_end_date": _normalize_text(fact.get("end")),
+                            "frame": _normalize_text(fact.get("frame")),
+                            "ingestion_date": ingestion_date,
+                            "source_archive_path": source_archive_path,
+                            "source_archive_content_hash": source_archive_content_hash,
+                            "source_member_name": source_member_name,
+                            "source_row_number": row_number,
+                            "ingested_ts": now,
+                        }
+                    )
+    return records
+
+
+def parse_company_facts_json_document(
+    document: dict,
+    *,
+    ingestion_date: str,
+    source_archive_path: str,
+    source_archive_content_hash: str,
+    source_member_name: str,
+    supported_taxonomies: set[str] | None = None,
+    supported_tags: set[str] | None = None,
+    ingested_ts: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """
+    Parse one SEC company facts JSON member into supported long-form fact rows.
+    """
+    records = _fact_records(
+        document,
+        ingestion_date=ingestion_date,
+        source_archive_path=source_archive_path,
+        source_archive_content_hash=source_archive_content_hash,
+        source_member_name=source_member_name,
+        supported_taxonomies=supported_taxonomies or set(SEC_COMPANY_FACTS_SUPPORTED_TAXONOMIES),
+        supported_tags=supported_tags or set(SEC_COMPANY_FACTS_SUPPORTED_TAGS),
+        ingested_ts=ingested_ts,
+    )
+    if not records:
+        return pd.DataFrame(columns=SEC_COMPANY_FACTS_COLUMNS)
+    return pd.DataFrame(records, columns=SEC_COMPANY_FACTS_COLUMNS)
+
+
+def _prepare_company_facts_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    prepared = frame.copy()
+    for column in SEC_COMPANY_FACTS_COLUMNS:
+        if column not in prepared.columns:
+            prepared[column] = pd.NA
+    prepared = prepared[SEC_COMPANY_FACTS_COLUMNS].copy()
+    string_columns = [
+        column
+        for column in SEC_COMPANY_FACTS_COLUMNS
+        if column
+        not in {
+            "value",
+            "fiscal_year",
+            "source_row_number",
+            "ingested_ts",
+        }
+    ]
+    for column in string_columns:
+        prepared[column] = prepared[column].astype("string")
+    prepared["value"] = pd.to_numeric(prepared["value"], errors="coerce")
+    prepared["fiscal_year"] = pd.to_numeric(prepared["fiscal_year"], errors="coerce").astype(
+        "Int64"
+    )
+    prepared["source_row_number"] = pd.to_numeric(
+        prepared["source_row_number"], errors="coerce"
+    ).astype("Int64")
+    prepared["ingested_ts"] = pd.to_datetime(prepared["ingested_ts"], errors="coerce")
+    return prepared
+
+
+def _write_company_facts_chunk(
+    writer: pq.ParquetWriter | None,
+    frame: pd.DataFrame,
+    output_path: Path,
+) -> pq.ParquetWriter:
+    table = pa.Table.from_pandas(_prepare_company_facts_frame(frame), preserve_index=False)
+    if writer is None:
+        writer = pq.ParquetWriter(output_path, table.schema)
+    writer.write_table(table)
+    return writer
+
+
+def parse_company_facts_zip_to_parquet(
+    source_path: Path,
+    output_path: Path,
+    *,
+    ingestion_date: str,
+    source_archive_content_hash: str,
+    taxonomy: str = "us-gaap",
+    supported_tags: set[str] | None = None,
+    chunk_size: int = SEC_COMPANY_FACTS_CHUNK_SIZE,
+) -> int:
+    """
+    Parse a SEC companyfacts.zip archive into one taxonomy-scoped bronze parquet file.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = output_path.with_suffix(".tmp.parquet")
+    if temp_path.exists():
+        temp_path.unlink()
+
+    writer = None
+    row_count = 0
+    pending_records = []
+    pending_rows = 0
+    source_archive_path = str(source_path)
+    ingested_ts = pd.Timestamp.utcnow()
+    selected_tags = supported_tags or set(SEC_COMPANY_FACTS_SUPPORTED_TAGS)
+
+    try:
+        with zipfile.ZipFile(source_path) as archive:
+            for member_name in archive.namelist():
+                if not member_name.endswith(".json"):
+                    continue
+                with archive.open(member_name) as member_file:
+                    try:
+                        document = json.load(member_file)
+                    except json.JSONDecodeError as exc:
+                        raise ValueError(
+                            f"Invalid SEC company facts JSON member: {member_name}"
+                        ) from exc
+                if not isinstance(document, dict):
+                    raise ValueError(
+                        f"SEC company facts member is not a JSON object: {member_name}"
+                    )
+
+                records = _fact_records(
+                    document,
+                    ingestion_date=ingestion_date,
+                    source_archive_path=source_archive_path,
+                    source_archive_content_hash=source_archive_content_hash,
+                    source_member_name=member_name,
+                    supported_taxonomies={taxonomy},
+                    supported_tags=selected_tags,
+                    ingested_ts=ingested_ts,
+                )
+                if not records:
+                    continue
+
+                pending_records.extend(records)
+                pending_rows += len(records)
+                row_count += len(records)
+                if pending_rows >= chunk_size:
+                    chunk = pd.DataFrame(pending_records, columns=SEC_COMPANY_FACTS_COLUMNS)
+                    writer = _write_company_facts_chunk(writer, chunk, temp_path)
+                    pending_records = []
+                    pending_rows = 0
+
+        if pending_records:
+            chunk = pd.DataFrame(pending_records, columns=SEC_COMPANY_FACTS_COLUMNS)
+            writer = _write_company_facts_chunk(writer, chunk, temp_path)
+
+        if writer is None:
+            empty = pd.DataFrame(columns=SEC_COMPANY_FACTS_COLUMNS)
+            empty.to_parquet(temp_path, index=False)
+        else:
+            writer.close()
+            writer = None
+
+        if output_path.exists():
+            output_path.unlink()
+        shutil.move(str(temp_path), output_path)
+        return row_count
+    finally:
+        if writer is not None:
+            writer.close()
+        if temp_path.exists():
+            temp_path.unlink()
+
+
 def _append_ingestion_log_rows(ingestion_log_path: Path, rows: list[dict]) -> pd.DataFrame:
     existing = _read_ingestion_log(ingestion_log_path)
     new_rows = pd.DataFrame(rows, columns=SEC_INGESTION_LOG_COLUMNS)
@@ -672,6 +967,46 @@ def materialize_bronze_sec_submissions(*, force: bool = False) -> dict[str, int]
     }
 
 
+def materialize_bronze_sec_company_facts(*, force: bool = False) -> dict[str, int]:
+    fact_rows = _dataset_ingestion_rows("companyfacts")
+    written_count = 0
+    skipped_count = 0
+    row_count = 0
+    latest_ingestion_date = None
+
+    for row in fact_rows.to_dict("records"):
+        ingestion_date = str(row["ingestion_date"])
+        source_path = Path(str(row["local_path"]))
+        if not source_path.exists():
+            raise FileNotFoundError(f"SEC company facts raw archive not found: {source_path}")
+
+        for taxonomy in SEC_COMPANY_FACTS_SUPPORTED_TAXONOMIES:
+            output_path = _parsed_company_facts_path(ingestion_date, taxonomy)
+            if output_path.exists() and not force:
+                skipped_count += 1
+                continue
+
+            parsed_rows = parse_company_facts_zip_to_parquet(
+                source_path,
+                output_path,
+                ingestion_date=ingestion_date,
+                source_archive_content_hash=str(row["content_hash"]),
+                taxonomy=taxonomy,
+            )
+
+            written_count += 1
+            row_count += parsed_rows
+            latest_ingestion_date = ingestion_date
+
+    return {
+        "source_snapshot_count": int(len(fact_rows)),
+        "written_snapshot_count": written_count,
+        "skipped_snapshot_count": skipped_count,
+        "row_count": row_count,
+        "latest_ingestion_date": latest_ingestion_date or "",
+    }
+
+
 @asset(name="bronze_sec_bulk_archives", required_resource_keys={"sec"})
 def bronze_sec_bulk_archives(context: AssetExecutionContext) -> None:
     """
@@ -758,6 +1093,23 @@ def bronze_sec_submissions(context: AssetExecutionContext) -> None:
         {
             "dataset": "sec_submissions",
             "output_root": str(DATA_ROOT / "bronze" / "sec_submissions"),
+            **metrics,
+        }
+    )
+
+
+@asset(name="bronze_sec_company_facts", deps=[bronze_sec_bulk_archives])
+def bronze_sec_company_facts(context: AssetExecutionContext) -> None:
+    """
+    Parse SEC companyfacts.zip raw snapshots into supported taxonomy bronze parquet.
+    """
+    metrics = materialize_bronze_sec_company_facts()
+    context.add_output_metadata(
+        {
+            "dataset": "sec_company_facts",
+            "output_root": str(DATA_ROOT / "bronze" / "sec_company_facts"),
+            "taxonomies": ",".join(SEC_COMPANY_FACTS_SUPPORTED_TAXONOMIES),
+            "supported_tag_count": len(SEC_COMPANY_FACTS_SUPPORTED_TAGS),
             **metrics,
         }
     )

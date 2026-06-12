@@ -66,6 +66,7 @@ from portfolio_project.defs.research_db.bronze.research_prices import (
 )
 from portfolio_project.defs.research_db.bronze.sec import (
     bronze_sec_bulk_archives,
+    bronze_sec_company_facts,
     bronze_sec_company_tickers,
     bronze_sec_submissions,
 )
@@ -197,6 +198,7 @@ factors_selection = AssetSelection.assets(
 
 sec_fundamentals_selection = AssetSelection.assets(
     bronze_sec_bulk_archives,
+    bronze_sec_company_facts,
     bronze_sec_company_tickers,
     bronze_sec_submissions,
 )
@@ -436,6 +438,7 @@ defs = Definitions(
         bronze_yahoo_news,
         bronze_fama_french_factors,
         bronze_sec_bulk_archives,
+        bronze_sec_company_facts,
         bronze_sec_company_tickers,
         bronze_sec_submissions,
         bronze_tranco_snapshot,

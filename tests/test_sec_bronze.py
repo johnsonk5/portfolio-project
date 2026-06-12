@@ -11,8 +11,11 @@ import portfolio_project.defs.research_db.bronze.sec as sec_bronze_module
 from portfolio_project.defs.research_db.bronze.sec import (
     SEC_BRONZE_DATASETS,
     bronze_sec_bulk_archives,
+    materialize_bronze_sec_company_facts,
     materialize_bronze_sec_company_tickers,
     materialize_bronze_sec_submissions,
+    parse_company_facts_json_document,
+    parse_company_facts_zip_to_parquet,
     parse_company_tickers_exchange_json,
     parse_submission_json_document,
     parse_submissions_zip_to_parquet,
@@ -119,6 +122,96 @@ def _write_submissions_zip(path: Path) -> None:
             "CIK0000005981-submissions-001.json",
             json.dumps(_submission_chunk_document()),
         )
+
+
+def _company_facts_document() -> dict:
+    return {
+        "cik": 320193,
+        "entityName": "Apple Inc.",
+        "facts": {
+            "us-gaap": {
+                "Revenues": {
+                    "label": "Revenue",
+                    "description": "Total revenue.",
+                    "units": {
+                        "USD": [
+                            {
+                                "start": "2025-09-28",
+                                "end": "2025-12-27",
+                                "val": 123456000000,
+                                "accn": "0000320193-26-000001",
+                                "fy": 2026,
+                                "fp": "Q1",
+                                "form": "10-Q",
+                                "filed": "2026-01-31",
+                                "frame": "CY2025Q4",
+                            }
+                        ]
+                    },
+                },
+                "Assets": {
+                    "label": "Assets",
+                    "description": "Total assets.",
+                    "units": {
+                        "USD": [
+                            {
+                                "end": "2025-12-27",
+                                "val": 500000000000,
+                                "accn": "0000320193-26-000001",
+                                "fy": 2026,
+                                "fp": "Q1",
+                                "form": "10-Q",
+                                "filed": "2026-01-31",
+                                "frame": "CY2025Q4I",
+                            }
+                        ]
+                    },
+                },
+                "GrossProfit": {
+                    "label": "Gross profit",
+                    "description": "Unsupported test concept.",
+                    "units": {
+                        "USD": [
+                            {
+                                "start": "2025-09-28",
+                                "end": "2025-12-27",
+                                "val": 1,
+                                "accn": "0000320193-26-000001",
+                                "fy": 2026,
+                                "fp": "Q1",
+                                "form": "10-Q",
+                                "filed": "2026-01-31",
+                            }
+                        ]
+                    },
+                },
+            },
+            "dei": {
+                "EntityCommonStockSharesOutstanding": {
+                    "label": "Common shares outstanding",
+                    "description": "Unsupported taxonomy test concept.",
+                    "units": {
+                        "shares": [
+                            {
+                                "end": "2025-12-27",
+                                "val": 15000000000,
+                                "accn": "0000320193-26-000001",
+                                "fy": 2026,
+                                "fp": "Q1",
+                                "form": "10-Q",
+                                "filed": "2026-01-31",
+                            }
+                        ]
+                    },
+                }
+            },
+        },
+    }
+
+
+def _write_company_facts_zip(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("CIK0000320193.json", json.dumps(_company_facts_document()))
 
 
 def test_bronze_sec_bulk_archives_writes_raw_files_and_ingestion_log(
@@ -490,3 +583,123 @@ def test_materialize_bronze_sec_submissions_writes_parquet_from_ingestion_log(
         "0000320193-25-000002",
         "0001181431-10-016632",
     ]
+
+
+def test_parse_company_facts_json_document_filters_to_supported_us_gaap_tags() -> None:
+    frame = parse_company_facts_json_document(
+        _company_facts_document(),
+        ingestion_date="2026-03-15",
+        source_archive_path="companyfacts.zip",
+        source_archive_content_hash="abc123",
+        source_member_name="CIK0000320193.json",
+        ingested_ts=pd.Timestamp("2026-03-15T09:30:00Z"),
+    )
+
+    assert list(frame.columns) == sec_bronze_module.SEC_COMPANY_FACTS_COLUMNS
+    assert frame["tag"].tolist() == ["Revenues", "Assets"]
+    assert frame["taxonomy"].tolist() == ["us-gaap", "us-gaap"]
+    assert frame["cik"].tolist() == ["320193", "320193"]
+    assert frame["entity_name"].tolist() == ["Apple Inc.", "Apple Inc."]
+    assert frame["accession_number"].tolist() == [
+        "0000320193-26-000001",
+        "0000320193-26-000001",
+    ]
+    assert frame["period_start_date"].tolist() == ["2025-09-28", pd.NA]
+    assert frame["period_end_date"].tolist() == ["2025-12-27", "2025-12-27"]
+
+
+def test_parse_company_facts_zip_to_parquet_writes_fixture_archive(tmp_path: Path) -> None:
+    zip_path = tmp_path / "companyfacts.zip"
+    out_path = tmp_path / "facts.parquet"
+    _write_company_facts_zip(zip_path)
+
+    row_count = parse_company_facts_zip_to_parquet(
+        zip_path,
+        out_path,
+        ingestion_date="2026-03-15",
+        source_archive_content_hash="abc123",
+        chunk_size=1,
+    )
+
+    parsed = pd.read_parquet(out_path)
+    assert row_count == 2
+    assert parsed["tag"].tolist() == ["Revenues", "Assets"]
+    assert parsed["unit"].tolist() == ["USD", "USD"]
+    assert parsed["value"].tolist() == [123456000000, 500000000000]
+    assert parsed["source_member_name"].tolist() == [
+        "CIK0000320193.json",
+        "CIK0000320193.json",
+    ]
+
+
+def test_parse_company_facts_zip_to_parquet_rejects_malformed_json(tmp_path: Path) -> None:
+    zip_path = tmp_path / "companyfacts.zip"
+    out_path = tmp_path / "facts.parquet"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("CIK0000320193.json", "{not json")
+
+    with pytest.raises(ValueError, match="Invalid SEC company facts JSON member"):
+        parse_company_facts_zip_to_parquet(
+            zip_path,
+            out_path,
+            ingestion_date="2026-03-15",
+            source_archive_content_hash="abc123",
+        )
+
+
+def test_materialize_bronze_sec_company_facts_writes_parquet_from_ingestion_log(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root = tmp_path / "data"
+    monkeypatch.setattr(sec_bronze_module, "DATA_ROOT", data_root)
+    raw_path = (
+        data_root
+        / "bronze"
+        / "sec"
+        / "companyfacts"
+        / "ingestion_date=2026-03-15"
+        / "companyfacts.zip"
+    )
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_company_facts_zip(raw_path)
+
+    ingestion_log_path = data_root / "bronze" / "sec" / "ingestion_log.parquet"
+    ingestion_log_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "dataset": "companyfacts",
+                "source_url": "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip",
+                "retrieved_at": pd.Timestamp("2026-03-15T09:30:00Z"),
+                "ingestion_date": "2026-03-15",
+                "etag": "etag",
+                "last_modified": "Sun, 15 Mar 2026 08:00:00 GMT",
+                "content_hash": "abc123",
+                "file_size": raw_path.stat().st_size,
+                "local_path": str(raw_path),
+                "changed_flag": True,
+            }
+        ],
+        columns=sec_bronze_module.SEC_INGESTION_LOG_COLUMNS,
+    ).to_parquet(ingestion_log_path, index=False)
+
+    metrics = materialize_bronze_sec_company_facts()
+
+    out_path = (
+        data_root
+        / "bronze"
+        / "sec_company_facts"
+        / "ingestion_date=2026-03-15"
+        / "taxonomy=us-gaap"
+        / "facts.parquet"
+    )
+    parsed = pd.read_parquet(out_path)
+    assert metrics == {
+        "source_snapshot_count": 1,
+        "written_snapshot_count": 1,
+        "skipped_snapshot_count": 0,
+        "row_count": 2,
+        "latest_ingestion_date": "2026-03-15",
+    }
+    assert parsed["tag"].tolist() == ["Revenues", "Assets"]
