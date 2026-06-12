@@ -13,6 +13,7 @@ from portfolio_project.defs.research_db.silver.security_identifiers import (
     build_asset_identity_bridge_frame,
     build_asset_symbol_bridge_frame,
     build_research_symbol_identifiers_frame,
+    build_sec_company_ticker_identifiers_frame,
     build_security_identifiers_from_assets_df,
     silver_security_identifiers,
 )
@@ -166,6 +167,85 @@ def test_silver_security_identifiers_materializes_from_portfolio_assets(
     ]
 
 
+def test_silver_security_identifiers_materializes_sec_company_tickers(
+    tmp_path, monkeypatch
+) -> None:
+    data_root = tmp_path / "data"
+    monkeypatch.setattr(identifiers_module, "DATA_ROOT", data_root)
+    tickers_path = (
+        data_root
+        / "bronze"
+        / "sec_company_tickers"
+        / "ingestion_date=2026-01-02"
+        / "tickers.parquet"
+    )
+    tickers_path.parent.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "cik": ["0000320193", "0001018724"],
+            "name": ["Apple Inc.", "Amazon.com Inc."],
+            "ticker": ["AAPL", "AMZN"],
+            "exchange": ["Nasdaq", "Nasdaq"],
+            "ingestion_date": [pd.Timestamp("2026-01-02").date()] * 2,
+            "source_file": ["company_tickers_exchange.json"] * 2,
+            "source_content_hash": ["hash"] * 2,
+            "source_row_number": [1, 2],
+            "ingested_ts": [pd.Timestamp("2026-01-02 00:00:00")] * 2,
+        }
+    ).to_parquet(tickers_path, index=False)
+
+    portfolio_con = duckdb.connect(":memory:")
+    research_con = duckdb.connect(":memory:")
+    portfolio_con.execute("CREATE SCHEMA silver")
+    portfolio_con.execute(
+        """
+        CREATE TABLE silver.assets (
+            asset_id BIGINT,
+            alpaca_id VARCHAR,
+            symbol VARCHAR,
+            name VARCHAR,
+            exchange VARCHAR,
+            is_active BOOLEAN
+        )
+        """
+    )
+    portfolio_con.execute(
+        """
+        INSERT INTO silver.assets VALUES
+            (1, 'alpaca-aapl', 'AAPL', 'Apple Inc.', 'NASDAQ', TRUE),
+            (2, 'alpaca-msft', 'MSFT', 'Microsoft Corp.', 'NASDAQ', TRUE)
+        """
+    )
+
+    result = materialize(
+        assets=[silver_security_identifiers],
+        resources={"duckdb": portfolio_con, "research_duckdb": research_con},
+    )
+
+    assert result.success
+    rows = research_con.execute(
+        """
+        SELECT asset_id, source_symbol, identifier_type, identifier_value, cik, identifier_source
+        FROM silver.security_identifiers
+        WHERE identifier_source = 'sec_company_tickers'
+        ORDER BY asset_id, identifier_type
+        """
+    ).fetchall()
+    assert rows == [
+        (1, "AAPL", "cik", "320193", "320193", "sec_company_tickers"),
+        (1, "AAPL", "sec_ticker", "AAPL", "320193", "sec_company_tickers"),
+    ]
+
+    identity_row = research_con.execute(
+        """
+        SELECT asset_id, current_symbol, cik
+        FROM silver.asset_identity_bridge
+        WHERE asset_id = 1
+        """
+    ).fetchone()
+    assert identity_row == (1, "AAPL", "320193")
+
+
 def test_build_research_symbol_identifiers_assigns_research_only_asset_ids() -> None:
     portfolio_identifiers = build_security_identifiers_from_assets_df(
         pd.DataFrame(
@@ -209,6 +289,85 @@ def test_build_research_symbol_identifiers_assigns_research_only_asset_ids() -> 
             "identifier_source": "research_daily_prices",
             "source_priority": 50,
             "valid_from_date": pd.Timestamp("2021-03-04").date(),
+        },
+    ]
+
+
+def test_build_sec_company_ticker_identifiers_maps_existing_project_symbols() -> None:
+    portfolio_identifiers = build_security_identifiers_from_assets_df(
+        pd.DataFrame(
+            {
+                "asset_id": [1, 2],
+                "symbol": ["AAPL", "MSFT"],
+                "name": ["Apple Inc.", "Microsoft Corp."],
+                "alpaca_id": ["alpaca-aapl", "alpaca-msft"],
+                "exchange": ["NASDAQ", "NASDAQ"],
+            }
+        )
+    )
+    sec_tickers = pd.DataFrame(
+        {
+            "cik": ["0000320193", "0000789019", "0001018724"],
+            "name": ["Apple Inc.", "Microsoft Corp.", "Amazon.com Inc."],
+            "ticker": ["aapl", "MSFT", "AMZN"],
+            "exchange": ["Nasdaq", "Nasdaq", "Nasdaq"],
+            "ingestion_date": ["2026-01-02", "2026-01-02", "2026-01-02"],
+            "ingested_ts": pd.to_datetime(
+                ["2026-01-02 00:00:00", "2026-01-02 00:00:00", "2026-01-02 00:00:00"]
+            ),
+        }
+    )
+
+    frame = build_sec_company_ticker_identifiers_frame(sec_tickers, portfolio_identifiers)
+
+    assert list(frame.columns) == SECURITY_IDENTIFIERS_COLUMNS
+    rows = frame[
+        [
+            "asset_id",
+            "source_symbol",
+            "identifier_type",
+            "identifier_value",
+            "cik",
+            "identifier_source",
+            "source_priority",
+        ]
+    ].to_dict("records")
+    assert rows == [
+        {
+            "asset_id": 1,
+            "source_symbol": "AAPL",
+            "identifier_type": "cik",
+            "identifier_value": "320193",
+            "cik": "320193",
+            "identifier_source": "sec_company_tickers",
+            "source_priority": 15,
+        },
+        {
+            "asset_id": 1,
+            "source_symbol": "AAPL",
+            "identifier_type": "sec_ticker",
+            "identifier_value": "AAPL",
+            "cik": "320193",
+            "identifier_source": "sec_company_tickers",
+            "source_priority": 15,
+        },
+        {
+            "asset_id": 2,
+            "source_symbol": "MSFT",
+            "identifier_type": "cik",
+            "identifier_value": "789019",
+            "cik": "789019",
+            "identifier_source": "sec_company_tickers",
+            "source_priority": 15,
+        },
+        {
+            "asset_id": 2,
+            "source_symbol": "MSFT",
+            "identifier_type": "sec_ticker",
+            "identifier_value": "MSFT",
+            "cik": "789019",
+            "identifier_source": "sec_company_tickers",
+            "source_priority": 15,
         },
     ]
 

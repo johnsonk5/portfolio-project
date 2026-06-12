@@ -290,6 +290,157 @@ def _load_sp500_identifiers(
     return pd.DataFrame(rows, columns=SECURITY_IDENTIFIERS_COLUMNS)
 
 
+def _sec_company_tickers_root(data_root: Path | None = None) -> Path:
+    root = data_root or DATA_ROOT
+    return root / "bronze" / "sec_company_tickers"
+
+
+def _sec_company_tickers_files(data_root: Path | None = None) -> list[Path]:
+    tickers_root = _sec_company_tickers_root(data_root)
+    if not tickers_root.exists():
+        return []
+    return sorted(tickers_root.glob("ingestion_date=*/tickers.parquet"))
+
+
+def _load_sec_company_tickers(data_root: Path | None = None) -> pd.DataFrame:
+    files = _sec_company_tickers_files(data_root)
+    if not files:
+        return pd.DataFrame(
+            columns=[
+                "cik",
+                "name",
+                "ticker",
+                "exchange",
+                "ingestion_date",
+                "ingested_ts",
+            ]
+        )
+    reader_con = duckdb.connect(":memory:")
+    try:
+        return reader_con.execute(
+            """
+            SELECT
+                cik,
+                name,
+                ticker,
+                exchange,
+                CAST(ingestion_date AS DATE) AS ingestion_date,
+                CAST(ingested_ts AS TIMESTAMP) AS ingested_ts
+            FROM read_parquet(?, union_by_name = true)
+            WHERE cik IS NOT NULL
+              AND trim(cik) <> ''
+              AND ticker IS NOT NULL
+              AND trim(ticker) <> ''
+            QUALIFY row_number() OVER (
+                PARTITION BY upper(trim(ticker)), coalesce(nullif(trim(cik), ''), '0')
+                ORDER BY CAST(ingestion_date AS DATE) DESC, CAST(ingested_ts AS TIMESTAMP) DESC
+            ) = 1
+            ORDER BY upper(trim(ticker)), coalesce(nullif(trim(cik), ''), '0')
+            """,
+            [[path.as_posix() for path in files]],
+        ).fetch_df()
+    finally:
+        reader_con.close()
+
+
+def build_sec_company_ticker_identifiers_frame(
+    sec_company_tickers_df: pd.DataFrame,
+    portfolio_identifiers_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if sec_company_tickers_df is None or sec_company_tickers_df.empty:
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+
+    sec_df = sec_company_tickers_df.copy()
+    for column in ["cik", "name", "ticker", "exchange", "ingestion_date", "ingested_ts"]:
+        if column not in sec_df.columns:
+            sec_df[column] = pd.NA
+    sec_df["source_symbol"] = sec_df["ticker"].astype("string").str.strip().str.upper()
+    sec_df["cik"] = sec_df["cik"].map(_normalize_cik)
+    sec_df["security_name"] = sec_df["name"].astype("string").str.strip()
+    sec_df["exchange"] = sec_df["exchange"].astype("string").str.strip().str.upper()
+    sec_df["ingestion_date"] = pd.to_datetime(sec_df["ingestion_date"], errors="coerce")
+    sec_df["ingested_ts"] = pd.to_datetime(sec_df["ingested_ts"], errors="coerce", utc=True)
+    sec_df = sec_df.dropna(subset=["source_symbol", "cik"]).copy()
+    sec_df = sec_df[sec_df["source_symbol"].ne("")]
+    if sec_df.empty:
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+
+    if portfolio_identifiers_df is None or portfolio_identifiers_df.empty:
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+    project_symbols_df = portfolio_identifiers_df[
+        portfolio_identifiers_df["identifier_type"].eq("symbol")
+        & portfolio_identifiers_df["asset_id"].notna()
+    ][["source_symbol", "asset_id", "alpaca_id"]].copy()
+    project_symbols_df["source_symbol"] = (
+        project_symbols_df["source_symbol"].astype("string").str.strip().str.upper()
+    )
+    project_symbols_df = project_symbols_df.dropna(subset=["source_symbol", "asset_id"])
+    project_symbols_df = project_symbols_df.drop_duplicates(
+        subset=["source_symbol"], keep="first"
+    )
+    if project_symbols_df.empty:
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+
+    sec_df = sec_df.merge(
+        project_symbols_df,
+        on="source_symbol",
+        how="inner",
+        suffixes=("", "_project"),
+    )
+    if sec_df.empty:
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+    sec_df["asset_id"] = pd.to_numeric(sec_df["asset_id"], errors="coerce").astype("Int64")
+    sec_df = sec_df.dropna(subset=["asset_id"])
+    sec_df = sec_df.sort_values(
+        ["source_symbol", "cik", "ingestion_date", "ingested_ts"],
+        ascending=[True, True, False, False],
+        kind="stable",
+    ).drop_duplicates(subset=["asset_id", "source_symbol", "cik"], keep="first")
+
+    rows = []
+    now = pd.Timestamp.utcnow()
+    for row in sec_df.to_dict("records"):
+        ingestion_date = pd.to_datetime(row.get("ingestion_date"), errors="coerce")
+        ingested_ts = pd.to_datetime(row.get("ingested_ts"), errors="coerce")
+        base = {
+            "asset_id": int(row["asset_id"]),
+            "source_symbol": row["source_symbol"],
+            "security_name": row.get("security_name", pd.NA),
+            "cik": row["cik"],
+            "sec_ticker": row["source_symbol"],
+            "alpaca_id": row.get("alpaca_id", pd.NA),
+            "exchange": row.get("exchange", pd.NA),
+            "identifier_source": "sec_company_tickers",
+            "source_priority": 15,
+            "mapping_confidence": 0.9,
+            "valid_from_date": pd.Timestamp("1900-01-01").date(),
+            "valid_to_date": pd.NaT,
+            "is_current": True,
+            "ingestion_date": (
+                ingestion_date.date() if not pd.isna(ingestion_date) else now.date()
+            ),
+            "ingested_ts": ingested_ts if not pd.isna(ingested_ts) else now,
+        }
+        rows.append(
+            {
+                **base,
+                "identifier_type": "cik",
+                "identifier_value": row["cik"],
+            }
+        )
+        rows.append(
+            {
+                **base,
+                "identifier_type": "sec_ticker",
+                "identifier_value": row["source_symbol"],
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+    return pd.DataFrame(rows, columns=SECURITY_IDENTIFIERS_COLUMNS)
+
+
 def _research_prices_glob(data_root: Path | None = None) -> str:
     root = data_root or DATA_ROOT
     return (root / "silver" / "research_daily_prices" / "month=*" / "date=*.parquet").as_posix()
@@ -742,6 +893,11 @@ def materialize_security_identifier_tables(
         portfolio_con,
         portfolio_identifiers_df,
     )
+    sec_company_tickers_df = _load_sec_company_tickers(data_root)
+    sec_company_ticker_identifiers_df = build_sec_company_ticker_identifiers_frame(
+        sec_company_tickers_df,
+        portfolio_identifiers_df,
+    )
     research_symbols_df = _load_research_price_symbols(research_con, data_root)
     existing_research_identifiers_df = _load_existing_research_identifier_map(research_con)
     research_identifiers_df = build_research_symbol_identifiers_frame(
@@ -751,7 +907,12 @@ def materialize_security_identifier_tables(
     )
     identifier_frames = [
         frame
-        for frame in [portfolio_identifiers_df, sp500_identifiers_df, research_identifiers_df]
+        for frame in [
+            portfolio_identifiers_df,
+            sec_company_ticker_identifiers_df,
+            sp500_identifiers_df,
+            research_identifiers_df,
+        ]
         if frame is not None and not frame.empty
     ]
     if identifier_frames:
@@ -786,6 +947,7 @@ def materialize_security_identifier_tables(
         "row_count": int(row_count or 0),
         "asset_count": int(asset_count or 0),
         "portfolio_identifier_rows": len(portfolio_identifiers_df),
+        "sec_company_ticker_identifier_rows": len(sec_company_ticker_identifiers_df),
         "sp500_identifier_rows": len(sp500_identifiers_df),
         "research_identifier_rows": len(research_identifiers_df),
         "identity_bridge_rows": int(identity_bridge_count or 0),

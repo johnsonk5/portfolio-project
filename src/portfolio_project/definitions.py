@@ -201,6 +201,7 @@ sec_fundamentals_selection = AssetSelection.assets(
     bronze_sec_company_facts,
     bronze_sec_company_tickers,
     bronze_sec_submissions,
+    silver_security_identifiers,
 )
 
 monthly_factors_job = define_asset_job(
