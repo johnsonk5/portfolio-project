@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+
+import pandas as pd
 
 from portfolio_project.defs.portfolio_db.observability.observability_modules import (
     write_dq_log,
@@ -148,6 +150,386 @@ def _fetch_records(con, sql: str, params: Sequence[object] | None = None) -> lis
 
 def _status_for_zero_threshold(measured_value: float) -> str:
     return "PASS" if measured_value == 0 else "FAIL"
+
+
+def _table_exists(con, schema: str, table: str) -> bool:
+    return (
+        con.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = ?
+              AND table_name = ?
+            LIMIT 1
+            """,
+            [schema, table],
+        ).fetchone()
+        is not None
+    )
+
+
+def _log_count_check(
+    *,
+    observability_con,
+    check_name: str,
+    measured_value: float,
+    details: dict,
+    run_id: str | None = None,
+    job_name: str | None = None,
+    partition_key: str | None = None,
+) -> None:
+    write_dq_log(
+        con=observability_con,
+        check_name=check_name,
+        severity="RED",
+        status=_status_for_zero_threshold(measured_value),
+        measured_value=measured_value,
+        threshold_value=0.0,
+        details=details,
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+        dedupe_by_run_check=True,
+    )
+
+
+def _required_field_violation_count(
+    *,
+    con,
+    table_name: str,
+    required_columns: Sequence[str],
+) -> tuple[float, dict[str, int], int]:
+    select_sql = ",\n                ".join(
+        [
+            (
+                f"sum(CASE WHEN {_quote_identifier(column)} IS NULL "
+                f"OR trim(CAST({_quote_identifier(column)} AS VARCHAR)) = '' "
+                f"THEN 1 ELSE 0 END) AS {_quote_identifier(column)}"
+            )
+            for column in required_columns
+        ]
+    )
+    result = con.execute(
+        f"""
+        SELECT
+            count(*) AS row_count,
+            {select_sql}
+        FROM silver.{table_name}
+        """
+    ).fetchone()
+    row_count = int(result[0] or 0)
+    null_counts = {
+        column: int(result[index + 1] or 0) for index, column in enumerate(required_columns)
+    }
+    return float(sum(null_counts.values())), null_counts, row_count
+
+
+def _log_sec_required_field_check(
+    *,
+    measured_con,
+    observability_con,
+    table_name: str,
+    required_columns: Sequence[str],
+    run_id: str | None,
+    job_name: str | None,
+    partition_key: str | None,
+) -> None:
+    measured_value, null_counts, row_count = _required_field_violation_count(
+        con=measured_con,
+        table_name=table_name,
+        required_columns=required_columns,
+    )
+    _log_count_check(
+        observability_con=observability_con,
+        check_name=f"dq_{table_name}_required_fields",
+        measured_value=measured_value,
+        details={
+            "table": f"silver.{table_name}",
+            "row_count": row_count,
+            "required_columns": list(required_columns),
+            "null_or_blank_counts": null_counts,
+        },
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
+
+
+def log_sec_fundamentals_quality_checks(
+    *,
+    measured_con,
+    observability_con,
+    supported_units_by_tag: Mapping[str, Sequence[str]],
+    run_id: str | None = None,
+    job_name: str | None = None,
+    partition_key: str | None = None,
+) -> None:
+    """Log SEC silver table quality checks into observability.data_quality_checks."""
+
+    if _table_exists(measured_con, "silver", "sec_submissions"):
+        _log_sec_required_field_check(
+            measured_con=measured_con,
+            observability_con=observability_con,
+            table_name="sec_submissions",
+            required_columns=[
+                "cik",
+                "accession_number",
+                "accession_number_nodash",
+                "form",
+                "filing_date",
+                "source_url",
+                "ingestion_date",
+                "ingested_ts",
+            ],
+            run_id=run_id,
+            job_name=job_name,
+            partition_key=partition_key,
+        )
+
+        duplicate_accessions = measured_con.execute(
+            """
+            SELECT coalesce(sum(cnt - 1), 0)
+            FROM (
+                SELECT
+                    coalesce(CAST(asset_id AS VARCHAR), '<unmapped>') AS asset_key,
+                    cik,
+                    accession_number,
+                    count(*) AS cnt
+                FROM silver.sec_submissions
+                GROUP BY asset_key, cik, accession_number
+                HAVING count(*) > 1
+            )
+            """
+        ).fetchone()[0]
+        _log_count_check(
+            observability_con=observability_con,
+            check_name="dq_sec_submissions_accession_uniqueness",
+            measured_value=float(duplicate_accessions or 0),
+            details={
+                "table": "silver.sec_submissions",
+                "key_columns": ["asset_id", "cik", "accession_number"],
+            },
+            run_id=run_id,
+            job_name=job_name,
+            partition_key=partition_key,
+        )
+
+    if _table_exists(measured_con, "silver", "sec_facts_long"):
+        _log_sec_required_field_check(
+            measured_con=measured_con,
+            observability_con=observability_con,
+            table_name="sec_facts_long",
+            required_columns=[
+                "cik",
+                "accession_number",
+                "taxonomy",
+                "tag",
+                "unit",
+                "value",
+                "period_end_date",
+                "period_type",
+                "source_snapshot_date",
+                "ingestion_date",
+                "ingested_ts",
+            ],
+            run_id=run_id,
+            job_name=job_name,
+            partition_key=partition_key,
+        )
+
+        duplicate_facts = measured_con.execute(
+            """
+            SELECT coalesce(sum(cnt - 1), 0)
+            FROM (
+                SELECT
+                    coalesce(CAST(asset_id AS VARCHAR), '<unmapped>') AS asset_key,
+                    cik,
+                    accession_number,
+                    taxonomy,
+                    tag,
+                    unit,
+                    period_start_date,
+                    period_end_date,
+                    coalesce(frame, '') AS frame_key,
+                    count(*) AS cnt
+                FROM silver.sec_facts_long
+                GROUP BY
+                    asset_key,
+                    cik,
+                    accession_number,
+                    taxonomy,
+                    tag,
+                    unit,
+                    period_start_date,
+                    period_end_date,
+                    frame_key
+                HAVING count(*) > 1
+            )
+            """
+        ).fetchone()[0]
+        _log_count_check(
+            observability_con=observability_con,
+            check_name="dq_sec_facts_long_duplicate_facts",
+            measured_value=float(duplicate_facts or 0),
+            details={
+                "table": "silver.sec_facts_long",
+                "key_columns": [
+                    "asset_id",
+                    "cik",
+                    "accession_number",
+                    "taxonomy",
+                    "tag",
+                    "unit",
+                    "period_start_date",
+                    "period_end_date",
+                    "frame",
+                ],
+            },
+            run_id=run_id,
+            job_name=job_name,
+            partition_key=partition_key,
+        )
+
+        supported_unit_rows = [
+            {"tag": tag, "unit": unit}
+            for tag, units in supported_units_by_tag.items()
+            for unit in units
+        ]
+        supported_units = pd.DataFrame(supported_unit_rows, columns=["tag", "unit"])
+        try:
+            measured_con.unregister("sec_supported_units_df")
+        except Exception:
+            pass
+        measured_con.register("sec_supported_units_df", supported_units)
+        unsupported_unit_rows = _fetch_records(
+            measured_con,
+            """
+            SELECT
+                f.tag,
+                f.unit,
+                count(*) AS row_count
+            FROM silver.sec_facts_long AS f
+            LEFT JOIN sec_supported_units_df AS u
+              ON f.tag = u.tag
+             AND f.unit = u.unit
+            WHERE f.taxonomy = 'us-gaap'
+              AND u.tag IS NULL
+            GROUP BY f.tag, f.unit
+            ORDER BY row_count DESC, f.tag, f.unit
+            LIMIT 20
+            """,
+        )
+        unsupported_unit_count = float(sum(int(row["row_count"]) for row in unsupported_unit_rows))
+        _log_count_check(
+            observability_con=observability_con,
+            check_name="dq_sec_facts_long_unsupported_units",
+            measured_value=unsupported_unit_count,
+            details={
+                "table": "silver.sec_facts_long",
+                "supported_units_by_tag": supported_units_by_tag,
+                "unsupported_units_sample": unsupported_unit_rows,
+            },
+            run_id=run_id,
+            job_name=job_name,
+            partition_key=partition_key,
+        )
+
+    if _table_exists(measured_con, "silver", "sec_statement_items"):
+        _log_sec_required_field_check(
+            measured_con=measured_con,
+            observability_con=observability_con,
+            table_name="sec_statement_items",
+            required_columns=[
+                "cik",
+                "accession_number",
+                "canonical_metric",
+                "statement_type",
+                "taxonomy",
+                "tag",
+                "unit",
+                "value",
+                "period_end_date",
+                "filing_date",
+                "availability_date",
+                "mapping_version",
+                "mapping_priority",
+            ],
+            run_id=run_id,
+            job_name=job_name,
+            partition_key=partition_key,
+        )
+
+    if _table_exists(measured_con, "silver", "security_identifiers"):
+        ticker_cik_conflicts = _fetch_records(
+            measured_con,
+            """
+            WITH current_mappings AS (
+                SELECT DISTINCT
+                    CAST(asset_id AS BIGINT) AS asset_id,
+                    upper(trim(source_symbol)) AS ticker,
+                    coalesce(
+                        nullif(regexp_replace(trim(cik), '^0+', ''), ''),
+                        '0'
+                    ) AS cik
+                FROM silver.security_identifiers
+                WHERE coalesce(is_current, TRUE) = TRUE
+                  AND source_symbol IS NOT NULL
+                  AND trim(source_symbol) <> ''
+                  AND cik IS NOT NULL
+                  AND trim(cik) <> ''
+            ),
+            ticker_to_cik AS (
+                SELECT
+                    'ticker_to_cik' AS conflict_type,
+                    ticker,
+                    CAST(NULL AS VARCHAR) AS cik,
+                    count(DISTINCT cik) AS conflict_count,
+                    string_agg(DISTINCT cik, ',' ORDER BY cik) AS conflicting_values
+                FROM current_mappings
+                GROUP BY ticker
+                HAVING count(DISTINCT cik) > 1
+            ),
+            ticker_cik_to_asset AS (
+                SELECT
+                    'ticker_cik_to_asset' AS conflict_type,
+                    ticker,
+                    cik,
+                    count(DISTINCT asset_id) AS conflict_count,
+                    string_agg(
+                        DISTINCT CAST(asset_id AS VARCHAR),
+                        ',' ORDER BY CAST(asset_id AS VARCHAR)
+                    ) AS conflicting_values
+                FROM current_mappings
+                WHERE asset_id IS NOT NULL
+                GROUP BY ticker, cik
+                HAVING count(DISTINCT asset_id) > 1
+            )
+            SELECT *
+            FROM ticker_to_cik
+            UNION ALL
+            SELECT *
+            FROM ticker_cik_to_asset
+            ORDER BY conflict_count DESC, conflict_type, ticker, cik
+            LIMIT 20
+            """,
+        )
+        conflict_count = float(sum(int(row["conflict_count"]) - 1 for row in ticker_cik_conflicts))
+        _log_count_check(
+            observability_con=observability_con,
+            check_name="dq_sec_cik_ticker_mapping_conflicts",
+            measured_value=conflict_count,
+            details={
+                "table": "silver.security_identifiers",
+                "conflict_definition": (
+                    "current tickers mapping to multiple CIKs, or current "
+                    "ticker/CIK pairs mapping to multiple asset_ids"
+                ),
+                "conflicts_sample": ticker_cik_conflicts,
+            },
+            run_id=run_id,
+            job_name=job_name,
+            partition_key=partition_key,
+        )
 
 
 def log_security_identifier_mapping_checks(

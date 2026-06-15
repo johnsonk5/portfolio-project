@@ -4,6 +4,9 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 from dagster import AssetExecutionContext, AssetKey, asset
+from dagster._core.errors import DagsterInvalidPropertyError, DagsterInvariantViolationError
+
+from portfolio_project.defs.research_db.dq_checks import log_sec_fundamentals_quality_checks
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 
@@ -366,9 +369,15 @@ def build_cik_asset_id_map_frame(identifiers_df: pd.DataFrame) -> pd.DataFrame:
             df[column] = pd.NA
     df["asset_id"] = pd.to_numeric(df["asset_id"], errors="coerce").astype("Int64")
     df["cik"] = df["cik"].map(_normalize_cik)
-    missing_cik = df["cik"].isna()
-    df.loc[missing_cik, "cik"] = df.loc[missing_cik, "identifier_value"].map(_normalize_cik)
     df["identifier_type"] = df["identifier_type"].astype("string").str.strip().str.lower()
+    missing_cik = df["cik"].isna()
+    if has_identifier_type:
+        identifier_value_cik_mask = missing_cik & df["identifier_type"].eq("cik")
+    else:
+        identifier_value_cik_mask = missing_cik
+    df.loc[identifier_value_cik_mask, "cik"] = df.loc[
+        identifier_value_cik_mask, "identifier_value"
+    ].map(_normalize_cik)
     current_mask = df["is_current"].map(lambda value: True if pd.isna(value) else bool(value))
     if has_identifier_type:
         identifier_mask = df["identifier_type"].isin(["cik", "sec_ticker"])
@@ -680,6 +689,50 @@ def build_silver_sec_facts_long_frame(
 
 def _mapping_frame() -> pd.DataFrame:
     return pd.DataFrame(SEC_DIRECT_CONCEPT_MAPPINGS)
+
+
+def _supported_sec_units_by_tag() -> dict[str, list[str]]:
+    supported: dict[str, set[str]] = {}
+    for mapping in SEC_DIRECT_CONCEPT_MAPPINGS:
+        supported.setdefault(str(mapping["tag"]), set()).add(str(mapping["unit"]))
+    for mapping in SEC_DEBT_COMPONENT_MAPPINGS:
+        for tag in [*mapping["required_tags"], *mapping["optional_tags"]]:
+            supported.setdefault(str(tag), set()).add("USD")
+    return {tag: sorted(units) for tag, units in sorted(supported.items())}
+
+
+def _context_dq_metadata(
+    context: AssetExecutionContext,
+) -> tuple[str | None, str | None, str | None]:
+    try:
+        run = getattr(context, "run", None)
+    except DagsterInvalidPropertyError:
+        run = None
+    run_id = getattr(run, "run_id", None)
+    try:
+        job_name = getattr(context, "job_name", None)
+    except DagsterInvalidPropertyError:
+        job_name = None
+    try:
+        partition_key = getattr(context, "partition_key", None)
+    except (DagsterInvalidPropertyError, DagsterInvariantViolationError):
+        partition_key = None
+    return str(run_id) if run_id else None, job_name, partition_key
+
+
+def _log_sec_dq_checks(context: AssetExecutionContext) -> None:
+    resources = getattr(context, "resources", None)
+    if resources is None or not hasattr(resources, "duckdb"):
+        return
+    run_id, job_name, partition_key = _context_dq_metadata(context)
+    log_sec_fundamentals_quality_checks(
+        measured_con=context.resources.research_duckdb,
+        observability_con=context.resources.duckdb,
+        supported_units_by_tag=_supported_sec_units_by_tag(),
+        run_id=run_id,
+        job_name=job_name,
+        partition_key=partition_key,
+    )
 
 
 def _period_match_type(row: pd.Series) -> str:
@@ -1564,6 +1617,7 @@ def materialize_silver_sec_submissions(
         _bronze_sec_submissions_files(data_root),
         cik_asset_id_map_df,
     )
+    _log_sec_dq_checks(context)
     return _silver_table_metrics(con, "sec_submissions", cik_asset_id_map_df)
 
 
@@ -1579,12 +1633,14 @@ def materialize_silver_sec_facts_long(
         _bronze_sec_facts_files(data_root),
         cik_asset_id_map_df,
     )
+    _log_sec_dq_checks(context)
     return _silver_table_metrics(con, "sec_facts_long", cik_asset_id_map_df)
 
 
 def materialize_silver_sec_statement_items(context: AssetExecutionContext) -> dict[str, int]:
     con = context.resources.research_duckdb
     _write_silver_sec_statement_items(con)
+    _log_sec_dq_checks(context)
     row_count = con.execute("SELECT count(*) FROM silver.sec_statement_items").fetchone()[0]
     mapped_asset_id_rows = con.execute(
         "SELECT count(*) FROM silver.sec_statement_items WHERE asset_id IS NOT NULL"
@@ -1603,7 +1659,7 @@ def materialize_silver_sec_statement_items(context: AssetExecutionContext) -> di
     name="sec_submissions",
     key_prefix=["silver"],
     deps=[AssetKey("bronze_sec_submissions"), AssetKey(["silver", "security_identifiers"])],
-    required_resource_keys={"research_duckdb"},
+    required_resource_keys={"duckdb", "research_duckdb"},
 )
 def silver_sec_submissions(context: AssetExecutionContext) -> None:
     metrics = materialize_silver_sec_submissions(context)
@@ -1614,7 +1670,7 @@ def silver_sec_submissions(context: AssetExecutionContext) -> None:
     name="sec_facts_long",
     key_prefix=["silver"],
     deps=[AssetKey("bronze_sec_company_facts"), AssetKey(["silver", "security_identifiers"])],
-    required_resource_keys={"research_duckdb"},
+    required_resource_keys={"duckdb", "research_duckdb"},
 )
 def silver_sec_facts_long(context: AssetExecutionContext) -> None:
     metrics = materialize_silver_sec_facts_long(context)
@@ -1625,7 +1681,7 @@ def silver_sec_facts_long(context: AssetExecutionContext) -> None:
     name="sec_statement_items",
     key_prefix=["silver"],
     deps=[AssetKey(["silver", "sec_facts_long"]), AssetKey(["silver", "sec_submissions"])],
-    required_resource_keys={"research_duckdb"},
+    required_resource_keys={"duckdb", "research_duckdb"},
 )
 def silver_sec_statement_items(context: AssetExecutionContext) -> None:
     metrics = materialize_silver_sec_statement_items(context)

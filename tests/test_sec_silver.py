@@ -3,12 +3,15 @@ import pandas as pd
 from dagster import materialize
 
 import portfolio_project.defs.research_db.silver.sec as sec_silver_module
+from portfolio_project.defs.research_db.dq_checks import log_sec_fundamentals_quality_checks
 from portfolio_project.defs.research_db.silver.sec import (
     SEC_FACTS_LONG_COLUMNS,
     SEC_STATEMENT_ITEMS_COLUMNS,
+    SEC_STATEMENT_MAPPING_VERSION,
     SEC_SUBMISSIONS_COLUMNS,
     _bronze_sec_facts_files,
     _bronze_sec_submissions_files,
+    _supported_sec_units_by_tag,
     build_cik_asset_id_map_frame,
     build_silver_sec_facts_long_frame,
     build_silver_sec_statement_items_frame,
@@ -37,6 +40,88 @@ def test_build_cik_asset_id_map_allows_shared_cik_asset_ids() -> None:
         {"cik": "1652044", "asset_id": 10},
         {"cik": "1652044", "asset_id": 11},
         {"cik": "320193", "asset_id": 20},
+    ]
+
+
+def test_build_cik_asset_id_map_ignores_sec_ticker_without_cik() -> None:
+    identifiers = pd.DataFrame(
+        {
+            "asset_id": [10, 11],
+            "cik": [None, "0001652044"],
+            "identifier_type": ["sec_ticker", "sec_ticker"],
+            "identifier_value": ["GOOG", "GOOGL"],
+            "is_current": [True, True],
+        }
+    )
+
+    frame = build_cik_asset_id_map_frame(identifiers)
+
+    assert frame.to_dict("records") == [{"cik": "1652044", "asset_id": 11}]
+
+
+def test_sec_statement_concept_mapping_is_stable() -> None:
+    mappings = sec_silver_module._mapping_frame()
+
+    selected = mappings[
+        mappings["canonical_metric"].isin(["revenue", "debt", "capex", "diluted_eps"])
+    ].sort_values(["canonical_metric", "mapping_priority", "tag"])
+
+    assert SEC_STATEMENT_MAPPING_VERSION == "sec_us_gaap_v1"
+    assert selected[["canonical_metric", "mapping_priority", "tag", "unit"]].to_dict("records") == [
+        {
+            "canonical_metric": "capex",
+            "mapping_priority": 10,
+            "tag": "PaymentsToAcquirePropertyPlantAndEquipment",
+            "unit": "USD",
+        },
+        {
+            "canonical_metric": "capex",
+            "mapping_priority": 20,
+            "tag": "PaymentsToAcquireProductiveAssets",
+            "unit": "USD",
+        },
+        {
+            "canonical_metric": "debt",
+            "mapping_priority": 50,
+            "tag": "LongTermDebt",
+            "unit": "USD",
+        },
+        {
+            "canonical_metric": "diluted_eps",
+            "mapping_priority": 10,
+            "tag": "EarningsPerShareDiluted",
+            "unit": "USD/shares",
+        },
+        {
+            "canonical_metric": "diluted_eps",
+            "mapping_priority": 20,
+            "tag": "EarningsPerShareBasicAndDiluted",
+            "unit": "USD/shares",
+        },
+        {
+            "canonical_metric": "revenue",
+            "mapping_priority": 10,
+            "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "unit": "USD",
+        },
+        {
+            "canonical_metric": "revenue",
+            "mapping_priority": 20,
+            "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "unit": "USD",
+        },
+        {
+            "canonical_metric": "revenue",
+            "mapping_priority": 30,
+            "tag": "Revenues",
+            "unit": "USD",
+        },
+        {
+            "canonical_metric": "revenue",
+            "mapping_priority": 40,
+            "tag": "SalesRevenueNet",
+            "unit": "USD",
+        },
     ]
 
 
@@ -352,6 +437,7 @@ def test_silver_sec_assets_materialize_asset_ids_from_security_identifiers(
         """
         CREATE TABLE silver.security_identifiers (
             asset_id BIGINT,
+            source_symbol VARCHAR,
             cik VARCHAR,
             identifier_type VARCHAR,
             identifier_value VARCHAR,
@@ -362,13 +448,14 @@ def test_silver_sec_assets_materialize_asset_ids_from_security_identifiers(
     con.execute(
         """
         INSERT INTO silver.security_identifiers VALUES
-            (1, '320193', 'cik', '320193', TRUE)
+            (1, 'AAPL', '320193', 'cik', '320193', TRUE)
         """
     )
 
+    observability_con = duckdb.connect(":memory:")
     result = materialize(
         assets=[silver_sec_submissions, silver_sec_facts_long, silver_sec_statement_items],
-        resources={"research_duckdb": con},
+        resources={"duckdb": observability_con, "research_duckdb": con},
     )
 
     assert result.success
@@ -385,4 +472,143 @@ def test_silver_sec_assets_materialize_asset_ids_from_security_identifiers(
     ).fetchall() == [
         (1, "320193", "debt", 550.0),
         (1, "320193", "revenue", 1000.0),
+    ]
+
+
+def test_sec_fundamentals_dq_checks_detect_reliability_violations() -> None:
+    measured_con = duckdb.connect(":memory:")
+    observability_con = duckdb.connect(":memory:")
+    measured_con.execute("CREATE SCHEMA silver")
+    measured_con.execute(
+        """
+        CREATE TABLE silver.sec_submissions (
+            asset_id BIGINT,
+            cik VARCHAR,
+            accession_number VARCHAR,
+            accession_number_nodash VARCHAR,
+            form VARCHAR,
+            filing_date DATE,
+            source_url VARCHAR,
+            ingestion_date DATE,
+            ingested_ts TIMESTAMP
+        )
+        """
+    )
+    measured_con.execute(
+        """
+        INSERT INTO silver.sec_submissions VALUES
+            (1, '320193', 'acc-1', 'acc1', '10-K', DATE '2026-02-01',
+                'submissions.zip#CIK0000320193.json', DATE '2026-02-02',
+                TIMESTAMP '2026-02-02 00:00:00'),
+            (1, '320193', 'acc-1', 'acc1', '10-K', DATE '2026-02-01',
+                'submissions.zip#CIK0000320193.json', DATE '2026-02-02',
+                TIMESTAMP '2026-02-02 00:00:00'),
+            (2, '789019', '', '', NULL, NULL, NULL, DATE '2026-02-02',
+                TIMESTAMP '2026-02-02 00:00:00')
+        """
+    )
+    measured_con.execute(
+        """
+        CREATE TABLE silver.sec_facts_long (
+            asset_id BIGINT,
+            cik VARCHAR,
+            accession_number VARCHAR,
+            taxonomy VARCHAR,
+            tag VARCHAR,
+            unit VARCHAR,
+            value DOUBLE,
+            period_start_date DATE,
+            period_end_date DATE,
+            frame VARCHAR,
+            period_type VARCHAR,
+            source_snapshot_date DATE,
+            ingestion_date DATE,
+            ingested_ts TIMESTAMP
+        )
+        """
+    )
+    measured_con.execute(
+        """
+        INSERT INTO silver.sec_facts_long VALUES
+            (1, '320193', 'acc-1', 'us-gaap', 'Revenues', 'USD', 100.0,
+                DATE '2025-01-01', DATE '2025-12-31', 'CY2025', 'duration',
+                DATE '2026-02-02', DATE '2026-02-02', TIMESTAMP '2026-02-02'),
+            (1, '320193', 'acc-1', 'us-gaap', 'Revenues', 'USD', 100.0,
+                DATE '2025-01-01', DATE '2025-12-31', 'CY2025', 'duration',
+                DATE '2026-02-02', DATE '2026-02-02', TIMESTAMP '2026-02-02'),
+            (1, '320193', 'acc-2', 'us-gaap', 'Revenues', 'shares', 10.0,
+                DATE '2025-01-01', DATE '2025-12-31', 'CY2025', 'duration',
+                DATE '2026-02-02', DATE '2026-02-02', TIMESTAMP '2026-02-02')
+        """
+    )
+    measured_con.execute(
+        """
+        CREATE TABLE silver.sec_statement_items (
+            cik VARCHAR,
+            accession_number VARCHAR,
+            canonical_metric VARCHAR,
+            statement_type VARCHAR,
+            taxonomy VARCHAR,
+            tag VARCHAR,
+            unit VARCHAR,
+            value DOUBLE,
+            period_end_date DATE,
+            filing_date DATE,
+            availability_date DATE,
+            mapping_version VARCHAR,
+            mapping_priority BIGINT
+        )
+        """
+    )
+    measured_con.execute(
+        """
+        INSERT INTO silver.sec_statement_items VALUES
+            ('320193', 'acc-1', 'revenue', 'income_statement', 'us-gaap',
+                'Revenues', 'USD', 100.0, DATE '2025-12-31', DATE '2026-02-01',
+                DATE '2026-02-01', 'sec_us_gaap_v1', 30)
+        """
+    )
+    measured_con.execute(
+        """
+        CREATE TABLE silver.security_identifiers (
+            asset_id BIGINT,
+            source_symbol VARCHAR,
+            cik VARCHAR,
+            is_current BOOLEAN
+        )
+        """
+    )
+    measured_con.execute(
+        """
+        INSERT INTO silver.security_identifiers VALUES
+            (1, 'AAPL', '320193', TRUE),
+            (2, 'AAPL', '789019', TRUE),
+            (3, 'MSFT', '789019', TRUE),
+            (4, 'MSFT', '789019', TRUE)
+        """
+    )
+
+    log_sec_fundamentals_quality_checks(
+        measured_con=measured_con,
+        observability_con=observability_con,
+        supported_units_by_tag=_supported_sec_units_by_tag(),
+        run_id="run-1",
+        job_name="sec_fundamentals_job",
+    )
+
+    rows = observability_con.execute(
+        """
+        SELECT check_name, status, measured_value
+        FROM observability.data_quality_checks
+        ORDER BY check_name
+        """
+    ).fetchall()
+    assert rows == [
+        ("dq_sec_cik_ticker_mapping_conflicts", "FAIL", 2.0),
+        ("dq_sec_facts_long_duplicate_facts", "FAIL", 1.0),
+        ("dq_sec_facts_long_required_fields", "PASS", 0.0),
+        ("dq_sec_facts_long_unsupported_units", "FAIL", 1.0),
+        ("dq_sec_statement_items_required_fields", "PASS", 0.0),
+        ("dq_sec_submissions_accession_uniqueness", "FAIL", 1.0),
+        ("dq_sec_submissions_required_fields", "FAIL", 5.0),
     ]
