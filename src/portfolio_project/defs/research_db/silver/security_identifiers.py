@@ -11,6 +11,9 @@ from portfolio_project.defs.research_db.dq_checks import (
 )
 
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
+DEFAULT_SECURITY_IDENTIFIER_OVERRIDES_PATH = (
+    Path(__file__).resolve().parents[3] / "config" / "security_identifier_overrides.csv"
+)
 
 SECURITY_IDENTIFIERS_COLUMNS = [
     "asset_id",
@@ -375,9 +378,7 @@ def build_sec_company_ticker_identifiers_frame(
         project_symbols_df["source_symbol"].astype("string").str.strip().str.upper()
     )
     project_symbols_df = project_symbols_df.dropna(subset=["source_symbol", "asset_id"])
-    project_symbols_df = project_symbols_df.drop_duplicates(
-        subset=["source_symbol"], keep="first"
-    )
+    project_symbols_df = project_symbols_df.drop_duplicates(subset=["source_symbol"], keep="first")
     if project_symbols_df.empty:
         return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
 
@@ -581,6 +582,156 @@ def build_research_symbol_identifiers_frame(
                 "is_current": True,
                 "ingestion_date": pd.Timestamp.utcnow().date(),
                 "ingested_ts": pd.Timestamp.utcnow(),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+    return pd.DataFrame(rows, columns=SECURITY_IDENTIFIERS_COLUMNS)
+
+
+def _load_security_identifier_overrides() -> pd.DataFrame:
+    configured_path = os.getenv("PORTFOLIO_SECURITY_IDENTIFIER_OVERRIDES_PATH")
+    path = Path(configured_path) if configured_path else DEFAULT_SECURITY_IDENTIFIER_OVERRIDES_PATH
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path)
+
+
+def build_manual_security_identifier_overrides_frame(
+    overrides_df: pd.DataFrame,
+    mapped_identifiers_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if overrides_df is None or overrides_df.empty:
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+    if mapped_identifiers_df is None or mapped_identifiers_df.empty:
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+
+    symbol_map_df = mapped_identifiers_df[
+        mapped_identifiers_df["identifier_type"].eq("symbol")
+        & mapped_identifiers_df["asset_id"].notna()
+        & mapped_identifiers_df["source_symbol"].notna()
+    ][["source_symbol", "asset_id", "alpaca_id", "identifier_source"]].copy()
+    symbol_map_df["source_symbol"] = (
+        symbol_map_df["source_symbol"].astype("string").str.strip().str.upper()
+    )
+    symbol_map_df = symbol_map_df.dropna(subset=["source_symbol", "asset_id"])
+    symbol_counts = symbol_map_df.groupby("source_symbol")["asset_id"].nunique().reset_index()
+    unambiguous_symbols = set(
+        symbol_counts.loc[symbol_counts["asset_id"].eq(1), "source_symbol"].astype(str)
+    )
+    symbol_map_df = symbol_map_df[symbol_map_df["source_symbol"].isin(unambiguous_symbols)]
+    research_symbols = set(
+        symbol_map_df.loc[
+            symbol_map_df["identifier_source"].eq("research_daily_prices"),
+            "source_symbol",
+        ].astype(str)
+    )
+    symbol_map_df = symbol_map_df.drop_duplicates(subset=["source_symbol"], keep="first")
+    if symbol_map_df.empty:
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+
+    overrides = overrides_df.copy()
+    for column in [
+        "source_symbol",
+        "canonical_symbol",
+        "asset_id",
+        "security_name",
+        "cik",
+        "sec_ticker",
+        "exchange",
+        "valid_from_date",
+        "valid_to_date",
+        "is_current",
+        "mapping_source",
+        "confidence",
+        "notes",
+    ]:
+        if column not in overrides.columns:
+            overrides[column] = pd.NA
+    overrides["source_symbol"] = overrides["source_symbol"].astype("string").str.strip().str.upper()
+    overrides["canonical_symbol"] = (
+        overrides["canonical_symbol"].astype("string").str.strip().str.upper()
+    )
+    missing_canonical = overrides["canonical_symbol"].isna() | overrides["canonical_symbol"].eq("")
+    overrides.loc[missing_canonical, "canonical_symbol"] = overrides.loc[
+        missing_canonical, "source_symbol"
+    ]
+    overrides["cik"] = overrides["cik"].map(_normalize_cik)
+    overrides["sec_ticker"] = overrides["sec_ticker"].astype("string").str.strip().str.upper()
+    missing_sec_ticker = overrides["sec_ticker"].isna() | overrides["sec_ticker"].eq("")
+    overrides.loc[missing_sec_ticker, "sec_ticker"] = overrides.loc[
+        missing_sec_ticker, "source_symbol"
+    ]
+    overrides["exchange"] = overrides["exchange"].astype("string").str.strip().str.upper()
+    overrides["mapping_source"] = overrides["mapping_source"].astype("string").str.strip()
+    overrides["confidence"] = pd.to_numeric(overrides["confidence"], errors="coerce").fillna(0.0)
+    overrides["valid_from_date"] = (
+        pd.to_datetime(
+            overrides["valid_from_date"],
+            errors="coerce",
+        )
+        .fillna(pd.Timestamp("1900-01-01"))
+        .dt.date
+    )
+    overrides["valid_to_date"] = pd.to_datetime(overrides["valid_to_date"], errors="coerce").dt.date
+    overrides["is_current"] = overrides["is_current"].map(
+        lambda value: str(value).strip().lower() not in {"0", "false", "f", "no", "n"}
+    )
+    overrides["asset_id"] = pd.to_numeric(overrides["asset_id"], errors="coerce").astype("Int64")
+    overrides = overrides.dropna(subset=["source_symbol", "canonical_symbol", "cik"])
+    overrides = overrides[overrides["source_symbol"].ne("") & overrides["canonical_symbol"].ne("")]
+    if overrides.empty:
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+
+    overrides = overrides[overrides["canonical_symbol"].isin(research_symbols)]
+    if overrides.empty:
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+
+    overrides = overrides.merge(
+        symbol_map_df.rename(columns={"source_symbol": "canonical_symbol"}),
+        on="canonical_symbol",
+        how="inner",
+        suffixes=("", "_derived"),
+    )
+    if overrides.empty:
+        return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+    missing_asset_id = overrides["asset_id"].isna()
+    overrides.loc[missing_asset_id, "asset_id"] = overrides.loc[
+        missing_asset_id, "asset_id_derived"
+    ]
+    overrides = overrides[
+        overrides["asset_id"].astype("Int64").eq(overrides["asset_id_derived"].astype("Int64"))
+    ].copy()
+    overrides["asset_id"] = pd.to_numeric(overrides["asset_id"], errors="coerce").astype("Int64")
+    overrides = overrides.dropna(subset=["asset_id"])
+
+    now = pd.Timestamp.utcnow()
+    rows = []
+    for row in overrides.to_dict("records"):
+        base = {
+            "asset_id": int(row["asset_id"]),
+            "source_symbol": row["source_symbol"],
+            "security_name": row.get("security_name", pd.NA),
+            "cik": row["cik"],
+            "sec_ticker": row["sec_ticker"],
+            "alpaca_id": row.get("alpaca_id", pd.NA),
+            "exchange": row.get("exchange", pd.NA),
+            "identifier_source": "manual_security_identifier_overrides",
+            "source_priority": 18,
+            "mapping_confidence": float(row["confidence"]),
+            "valid_from_date": row["valid_from_date"],
+            "valid_to_date": row["valid_to_date"],
+            "is_current": bool(row["is_current"]),
+            "ingestion_date": now.date(),
+            "ingested_ts": now,
+        }
+        rows.append({**base, "identifier_type": "cik", "identifier_value": row["cik"]})
+        rows.append(
+            {
+                **base,
+                "identifier_type": "sec_ticker",
+                "identifier_value": row["sec_ticker"],
             }
         )
 
@@ -905,6 +1056,20 @@ def materialize_security_identifier_tables(
         portfolio_identifiers_df,
         existing_research_identifiers_df,
     )
+    mapped_identifier_frames = [
+        frame
+        for frame in [portfolio_identifiers_df, research_identifiers_df]
+        if frame is not None and not frame.empty
+    ]
+    mapped_identifiers_df = (
+        pd.concat(mapped_identifier_frames, ignore_index=True)
+        if mapped_identifier_frames
+        else pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
+    )
+    manual_identifier_overrides_df = build_manual_security_identifier_overrides_frame(
+        _load_security_identifier_overrides(),
+        mapped_identifiers_df,
+    )
     identifier_frames = [
         frame
         for frame in [
@@ -912,6 +1077,7 @@ def materialize_security_identifier_tables(
             sec_company_ticker_identifiers_df,
             sp500_identifiers_df,
             research_identifiers_df,
+            manual_identifier_overrides_df,
         ]
         if frame is not None and not frame.empty
     ]
@@ -950,6 +1116,7 @@ def materialize_security_identifier_tables(
         "sec_company_ticker_identifier_rows": len(sec_company_ticker_identifiers_df),
         "sp500_identifier_rows": len(sp500_identifiers_df),
         "research_identifier_rows": len(research_identifiers_df),
+        "manual_identifier_override_rows": len(manual_identifier_overrides_df),
         "identity_bridge_rows": int(identity_bridge_count or 0),
         "symbol_bridge_rows": int(symbol_bridge_count or 0),
     }

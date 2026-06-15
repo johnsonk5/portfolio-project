@@ -12,6 +12,7 @@ from portfolio_project.defs.research_db.silver.security_identifiers import (
     SECURITY_IDENTIFIERS_COLUMNS,
     build_asset_identity_bridge_frame,
     build_asset_symbol_bridge_frame,
+    build_manual_security_identifier_overrides_frame,
     build_research_symbol_identifiers_frame,
     build_sec_company_ticker_identifiers_frame,
     build_security_identifiers_from_assets_df,
@@ -291,6 +292,116 @@ def test_build_research_symbol_identifiers_assigns_research_only_asset_ids() -> 
             "valid_from_date": pd.Timestamp("2021-03-04").date(),
         },
     ]
+
+
+def test_manual_security_identifier_overrides_map_research_only_symbols() -> None:
+    research_identifiers = build_research_symbol_identifiers_frame(
+        pd.DataFrame(
+            {
+                "source_symbol": ["HES"],
+                "first_trade_date": ["2000-01-03"],
+            }
+        ),
+        pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS),
+        pd.DataFrame({"source_symbol": ["HES"], "asset_id": [43037]}),
+    )
+    overrides = pd.DataFrame(
+        {
+            "source_symbol": ["HES"],
+            "canonical_symbol": ["HES"],
+            "security_name": ["Hess Corp"],
+            "cik": ["0000004447"],
+            "sec_ticker": ["HES"],
+            "exchange": ["NYSE"],
+            "mapping_source": ["manual_review_eodhd_sec_symbol"],
+            "confidence": [0.9],
+            "notes": ["Reviewed exact historical ticker; not a company-name-only match."],
+        }
+    )
+
+    frame = build_manual_security_identifier_overrides_frame(overrides, research_identifiers)
+
+    assert frame[
+        ["asset_id", "source_symbol", "identifier_type", "identifier_value", "cik"]
+    ].to_dict("records") == [
+        {
+            "asset_id": 43037,
+            "source_symbol": "HES",
+            "identifier_type": "cik",
+            "identifier_value": "4447",
+            "cik": "4447",
+        },
+        {
+            "asset_id": 43037,
+            "source_symbol": "HES",
+            "identifier_type": "sec_ticker",
+            "identifier_value": "HES",
+            "cik": "4447",
+        },
+    ]
+
+
+def test_manual_security_identifier_overrides_skip_ambiguous_symbols() -> None:
+    mapped_identifiers = pd.DataFrame(
+        [
+            {
+                "asset_id": 1,
+                "source_symbol": "ABC",
+                "identifier_type": "symbol",
+                "identifier_source": "research_daily_prices",
+                "alpaca_id": pd.NA,
+            },
+            {
+                "asset_id": 2,
+                "source_symbol": "ABC",
+                "identifier_type": "symbol",
+                "identifier_source": "research_daily_prices",
+                "alpaca_id": pd.NA,
+            },
+        ]
+    )
+    overrides = pd.DataFrame(
+        {
+            "source_symbol": ["ABC"],
+            "canonical_symbol": ["ABC"],
+            "cik": ["1234"],
+            "sec_ticker": ["ABC"],
+            "mapping_source": ["manual_review"],
+            "confidence": [0.95],
+        }
+    )
+
+    frame = build_manual_security_identifier_overrides_frame(overrides, mapped_identifiers)
+
+    assert frame.empty
+
+
+def test_manual_security_identifier_overrides_require_research_universe_symbol() -> None:
+    mapped_identifiers = pd.DataFrame(
+        [
+            {
+                "asset_id": 1,
+                "source_symbol": "ABC",
+                "identifier_type": "symbol",
+                "identifier_source": "portfolio_silver_assets",
+                "alpaca_id": "alpaca-abc",
+            }
+        ]
+    )
+    overrides = pd.DataFrame(
+        {
+            "source_symbol": ["ABC"],
+            "canonical_symbol": ["ABC"],
+            "cik": ["1234"],
+            "sec_ticker": ["ABC"],
+            "mapping_source": ["manual_review"],
+            "confidence": [0.95],
+        }
+    )
+
+    frame = build_manual_security_identifier_overrides_frame(overrides, mapped_identifiers)
+
+    assert frame.empty
 
 
 def test_build_sec_company_ticker_identifiers_maps_existing_project_symbols() -> None:
