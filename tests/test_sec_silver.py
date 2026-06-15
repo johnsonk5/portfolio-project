@@ -5,14 +5,17 @@ from dagster import materialize
 import portfolio_project.defs.research_db.silver.sec as sec_silver_module
 from portfolio_project.defs.research_db.silver.sec import (
     SEC_FACTS_LONG_COLUMNS,
+    SEC_STATEMENT_ITEMS_COLUMNS,
     SEC_SUBMISSIONS_COLUMNS,
     _bronze_sec_facts_files,
     _bronze_sec_submissions_files,
     build_cik_asset_id_map_frame,
     build_silver_sec_facts_long_frame,
+    build_silver_sec_statement_items_frame,
     build_silver_sec_submissions_frame,
     resolve_sec_statement_item_asset_ids,
     silver_sec_facts_long,
+    silver_sec_statement_items,
     silver_sec_submissions,
 )
 
@@ -155,6 +158,75 @@ def test_resolve_sec_statement_item_asset_ids_expands_shared_cik() -> None:
     ]
 
 
+def test_build_silver_sec_statement_items_maps_direct_and_component_facts() -> None:
+    facts = pd.DataFrame(
+        {
+            "asset_id": [1, 1, 1, 1, 1, 1],
+            "cik": ["320193"] * 6,
+            "accession_number": ["acc-1"] * 6,
+            "taxonomy": ["us-gaap"] * 6,
+            "tag": [
+                "Revenues",
+                "RevenueFromContractWithCustomerExcludingAssessedTax",
+                "LongTermDebtCurrent",
+                "LongTermDebtNoncurrent",
+                "ShortTermBorrowings",
+                "PaymentsToAcquirePropertyPlantAndEquipment",
+            ],
+            "label": [""] * 6,
+            "description": [""] * 6,
+            "unit": ["USD"] * 6,
+            "value": [900, 1000, 100, 400, 50, -25],
+            "value_raw": ["900", "1000", "100", "400", "50", "-25"],
+            "decimals": [None] * 6,
+            "period_start_date": [
+                "2025-01-01",
+                "2025-01-01",
+                None,
+                None,
+                None,
+                "2025-01-01",
+            ],
+            "period_end_date": ["2025-12-31"] * 6,
+            "period_type": [
+                "duration",
+                "duration",
+                "instant",
+                "instant",
+                "instant",
+                "duration",
+            ],
+            "fiscal_year": [2025] * 6,
+            "fiscal_period": ["FY"] * 6,
+            "form": ["10-K"] * 6,
+            "filed_date": ["2026-02-01"] * 6,
+            "frame": ["CY2025"] * 6,
+            "source_snapshot_date": ["2026-02-02"] * 6,
+            "ingestion_date": ["2026-02-02"] * 6,
+            "ingested_ts": [pd.Timestamp("2026-02-02")] * 6,
+        }
+    )
+    submissions = pd.DataFrame(
+        {
+            "accession_number": ["acc-1"],
+            "filing_date": ["2026-02-01"],
+            "acceptance_datetime": [pd.Timestamp("2026-02-01 12:00:00", tz="UTC")],
+        }
+    )
+
+    frame = build_silver_sec_statement_items_frame(facts, submissions)
+
+    assert list(frame.columns) == SEC_STATEMENT_ITEMS_COLUMNS
+    selected = frame.set_index("canonical_metric")
+    assert selected.loc["revenue", "tag"] == "RevenueFromContractWithCustomerExcludingAssessedTax"
+    assert selected.loc["revenue", "mapping_priority"] == 10
+    assert selected.loc["debt", "value"] == 550
+    assert selected.loc["debt", "is_component_sum"]
+    assert selected.loc["capex", "value"] == 25
+    assert selected.loc["capex", "canonical_sign_rule"] == "positive_cash_outflow"
+    assert selected.loc["revenue", "availability_date"].isoformat() == "2026-02-01"
+
+
 def test_bronze_sec_file_selection_uses_latest_snapshots(tmp_path, monkeypatch) -> None:
     data_root = tmp_path / "data"
     monkeypatch.setattr(sec_silver_module, "DATA_ROOT", data_root)
@@ -249,23 +321,28 @@ def test_silver_sec_assets_materialize_asset_ids_from_security_identifiers(
     ).to_parquet(submissions_path, index=False)
     pd.DataFrame(
         {
-            "cik": ["0000320193"],
-            "accession_number": ["acc-1"],
-            "taxonomy": ["us-gaap"],
-            "tag": ["Revenues"],
-            "label": ["Revenue"],
-            "description": ["Revenue"],
-            "unit": ["USD"],
-            "value": [1000],
-            "fiscal_year": [2025],
-            "fiscal_period": ["FY"],
-            "form": ["10-K"],
-            "filed_date": ["2026-02-01"],
-            "period_start_date": ["2025-01-01"],
-            "period_end_date": ["2025-12-31"],
-            "frame": ["CY2025"],
-            "ingestion_date": ["2026-02-02"],
-            "ingested_ts": [pd.Timestamp("2026-02-02")],
+            "cik": ["0000320193"] * 4,
+            "accession_number": ["acc-1"] * 4,
+            "taxonomy": ["us-gaap"] * 4,
+            "tag": [
+                "Revenues",
+                "LongTermDebtCurrent",
+                "LongTermDebtNoncurrent",
+                "ShortTermBorrowings",
+            ],
+            "label": ["Revenue", "Debt current", "Debt noncurrent", "Borrowings"],
+            "description": ["Revenue", "Debt current", "Debt noncurrent", "Borrowings"],
+            "unit": ["USD"] * 4,
+            "value": [1000, 100, 400, 50],
+            "fiscal_year": [2025] * 4,
+            "fiscal_period": ["FY"] * 4,
+            "form": ["10-K"] * 4,
+            "filed_date": ["2026-02-01"] * 4,
+            "period_start_date": ["2025-01-01", None, None, None],
+            "period_end_date": ["2025-12-31"] * 4,
+            "frame": ["CY2025", None, None, None],
+            "ingestion_date": ["2026-02-02"] * 4,
+            "ingested_ts": [pd.Timestamp("2026-02-02")] * 4,
         }
     ).to_parquet(facts_path, index=False)
 
@@ -290,7 +367,7 @@ def test_silver_sec_assets_materialize_asset_ids_from_security_identifiers(
     )
 
     result = materialize(
-        assets=[silver_sec_submissions, silver_sec_facts_long],
+        assets=[silver_sec_submissions, silver_sec_facts_long, silver_sec_statement_items],
         resources={"research_duckdb": con},
     )
 
@@ -298,6 +375,14 @@ def test_silver_sec_assets_materialize_asset_ids_from_security_identifiers(
     assert con.execute("SELECT asset_id, cik FROM silver.sec_submissions").fetchall() == [
         (1, "320193")
     ]
-    assert con.execute("SELECT asset_id, cik FROM silver.sec_facts_long").fetchall() == [
-        (1, "320193")
+    assert con.execute("SELECT count(*) FROM silver.sec_facts_long").fetchone() == (4,)
+    assert con.execute(
+        """
+        SELECT asset_id, cik, canonical_metric, value
+        FROM silver.sec_statement_items
+        ORDER BY canonical_metric
+        """
+    ).fetchall() == [
+        (1, "320193", "debt", 550.0),
+        (1, "320193", "revenue", 1000.0),
     ]

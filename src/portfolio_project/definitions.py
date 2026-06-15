@@ -92,6 +92,7 @@ from portfolio_project.defs.research_db.silver.research_prices import (
 )
 from portfolio_project.defs.research_db.silver.sec import (
     silver_sec_facts_long,
+    silver_sec_statement_items,
     silver_sec_submissions,
 )
 from portfolio_project.defs.research_db.silver.sec_cik_review import unmapped_sec_cik_review
@@ -209,6 +210,7 @@ sec_fundamentals_selection = AssetSelection.assets(
     silver_security_identifiers,
     silver_sec_submissions,
     silver_sec_facts_long,
+    silver_sec_statement_items,
     unmapped_sec_cik_review,
 )
 
@@ -467,6 +469,7 @@ defs = Definitions(
         silver_security_identifiers,
         silver_sec_submissions,
         silver_sec_facts_long,
+        silver_sec_statement_items,
         unmapped_sec_cik_review,
         silver_research_daily_prices,
         silver_signals_daily,
