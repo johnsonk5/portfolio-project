@@ -441,6 +441,8 @@ def test_build_sec_company_ticker_identifiers_maps_existing_project_symbols() ->
             "cik",
             "identifier_source",
             "source_priority",
+            "source_snapshot_date",
+            "is_current",
         ]
     ].to_dict("records")
     assert rows == [
@@ -452,6 +454,8 @@ def test_build_sec_company_ticker_identifiers_maps_existing_project_symbols() ->
             "cik": "320193",
             "identifier_source": "sec_company_tickers",
             "source_priority": 15,
+            "source_snapshot_date": pd.Timestamp("2026-01-02").date(),
+            "is_current": True,
         },
         {
             "asset_id": 1,
@@ -461,6 +465,8 @@ def test_build_sec_company_ticker_identifiers_maps_existing_project_symbols() ->
             "cik": "320193",
             "identifier_source": "sec_company_tickers",
             "source_priority": 15,
+            "source_snapshot_date": pd.Timestamp("2026-01-02").date(),
+            "is_current": True,
         },
         {
             "asset_id": 2,
@@ -470,6 +476,8 @@ def test_build_sec_company_ticker_identifiers_maps_existing_project_symbols() ->
             "cik": "789019",
             "identifier_source": "sec_company_tickers",
             "source_priority": 15,
+            "source_snapshot_date": pd.Timestamp("2026-01-02").date(),
+            "is_current": True,
         },
         {
             "asset_id": 2,
@@ -479,6 +487,74 @@ def test_build_sec_company_ticker_identifiers_maps_existing_project_symbols() ->
             "cik": "789019",
             "identifier_source": "sec_company_tickers",
             "source_priority": 15,
+            "source_snapshot_date": pd.Timestamp("2026-01-02").date(),
+            "is_current": True,
+        },
+    ]
+
+
+def test_build_sec_company_ticker_identifiers_preserves_source_snapshot_dates() -> None:
+    portfolio_identifiers = build_security_identifiers_from_assets_df(
+        pd.DataFrame(
+            {
+                "asset_id": [1],
+                "symbol": ["AAPL"],
+                "name": ["Apple Inc."],
+                "alpaca_id": ["alpaca-aapl"],
+                "exchange": ["NASDAQ"],
+            }
+        )
+    )
+    sec_tickers = pd.DataFrame(
+        {
+            "cik": ["0000320193", "0000320193"],
+            "name": ["Apple Inc.", "Apple Inc."],
+            "ticker": ["AAPL", "AAPL"],
+            "exchange": ["Nasdaq", "Nasdaq"],
+            "ingestion_date": ["2026-01-02", "2026-02-03"],
+            "ingested_ts": pd.to_datetime(["2026-01-02 00:00:00", "2026-02-03 00:00:00"]),
+        }
+    )
+
+    frame = build_sec_company_ticker_identifiers_frame(sec_tickers, portfolio_identifiers)
+
+    rows = frame[
+        [
+            "identifier_type",
+            "identifier_value",
+            "source_snapshot_date",
+            "ingestion_date",
+            "is_current",
+        ]
+    ].to_dict("records")
+    assert rows == [
+        {
+            "identifier_type": "cik",
+            "identifier_value": "320193",
+            "source_snapshot_date": pd.Timestamp("2026-01-02").date(),
+            "ingestion_date": pd.Timestamp("2026-01-02").date(),
+            "is_current": False,
+        },
+        {
+            "identifier_type": "sec_ticker",
+            "identifier_value": "AAPL",
+            "source_snapshot_date": pd.Timestamp("2026-01-02").date(),
+            "ingestion_date": pd.Timestamp("2026-01-02").date(),
+            "is_current": False,
+        },
+        {
+            "identifier_type": "cik",
+            "identifier_value": "320193",
+            "source_snapshot_date": pd.Timestamp("2026-02-03").date(),
+            "ingestion_date": pd.Timestamp("2026-02-03").date(),
+            "is_current": True,
+        },
+        {
+            "identifier_type": "sec_ticker",
+            "identifier_value": "AAPL",
+            "source_snapshot_date": pd.Timestamp("2026-02-03").date(),
+            "ingestion_date": pd.Timestamp("2026-02-03").date(),
+            "is_current": True,
         },
     ]
 

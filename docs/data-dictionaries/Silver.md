@@ -36,12 +36,18 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 
 | Column | Type | Description |
 | --- | --- | --- |
+| `asset_id` | `int` | Durable project asset key when the symbol has a high-confidence identifier mapping. |
 | `symbol` | `object` | Source ticker symbol. |
 | `canonical_symbol` | `object` | Normalized ticker symbol used for joins and de-duplication. |
 | `security_name` | `object` | Security name from source metadata when available. |
+| `cik` | `object` | SEC Central Index Key without left-padding when available from a high-confidence identifier mapping. |
+| `sec_ticker` | `object` | Ticker reported by SEC company ticker data when available. |
 | `security_type` | `object` | Broad classification such as `equity`, `fund`, `derivative`, or `unknown`. |
 | `security_subtype` | `object` | More specific classification such as `common_stock`, `etf`, or `adr`. |
 | `exchange` | `object` | Normalized exchange code from source metadata when available. |
+| `identifier_source` | `object` | Identifier source used to enrich the security master when the mapping confidence exceeds research-symbol-only metadata. |
+| `identifier_confidence` | `float` | Confidence score for the selected identifier mapping. |
+| `identifier_source_snapshot_date` | `date` | Source snapshot date for the identifier mapping used to enrich the row. |
 | `classification_confidence` | `float` | Heuristic confidence score between 0 and 1. |
 | `classification_reason` | `object` | Human-readable reason for the classification and investability decision. |
 | `classification_source` | `object` | Classification method identifier, currently based on symbols present in research prices and signals with metadata fallback where available. |
@@ -77,6 +83,7 @@ Stores effective-dated external identifier mappings for project securities. The 
 | `valid_from_date` | `date` | First date the mapping is considered valid. |
 | `valid_to_date` | `date` | Last date the mapping is considered valid, null for current mappings. |
 | `is_current` | `bool` | Whether this row is the active mapping for the identifier source and symbol. |
+| `source_snapshot_date` | `date` | Source snapshot date for the raw identifier mapping, usually the SEC company ticker ingestion date when no source-provided effective date exists. |
 | `ingestion_date` | `date` | Bronze ingestion date of the source snapshot that produced the mapping. |
 | `ingested_ts` | `timestamp` | ETL ingest timestamp. |
 
@@ -118,6 +125,7 @@ One row per durable `asset_id` and known source symbol. Use this table to resolv
 | `valid_from_date` | `date` | First date the mapping is considered valid. |
 | `valid_to_date` | `date` | Last date the mapping is considered valid, null for open-ended mappings. |
 | `is_current` | `bool` | Whether the selected source-symbol mapping is current. |
+| `source_snapshot_date` | `date` | Source snapshot date for the selected source-symbol mapping. |
 | `asof_ts` | `timestamp` | Bridge table build timestamp. |
 
 ## `silver.prices`

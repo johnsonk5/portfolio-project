@@ -31,6 +31,7 @@ SECURITY_IDENTIFIERS_COLUMNS = [
     "valid_from_date",
     "valid_to_date",
     "is_current",
+    "source_snapshot_date",
     "ingestion_date",
     "ingested_ts",
 ]
@@ -60,6 +61,7 @@ ASSET_SYMBOL_BRIDGE_COLUMNS = [
     "valid_from_date",
     "valid_to_date",
     "is_current",
+    "source_snapshot_date",
     "asof_ts",
 ]
 
@@ -100,6 +102,7 @@ def _create_empty_security_identifiers(con) -> None:
             valid_from_date DATE,
             valid_to_date DATE,
             is_current BOOLEAN,
+            source_snapshot_date DATE,
             ingestion_date DATE,
             ingested_ts TIMESTAMP
         )
@@ -156,6 +159,7 @@ def build_security_identifiers_from_assets_df(assets_df: pd.DataFrame) -> pd.Dat
                 "valid_from_date": pd.Timestamp("1900-01-01").date(),
                 "valid_to_date": pd.NaT,
                 "is_current": True,
+                "source_snapshot_date": pd.NaT,
                 "ingestion_date": pd.Timestamp.utcnow().date(),
                 "ingested_ts": pd.Timestamp.utcnow(),
             }
@@ -175,6 +179,7 @@ def build_security_identifiers_from_assets_df(assets_df: pd.DataFrame) -> pd.Dat
                     "valid_from_date": pd.Timestamp("1900-01-01").date(),
                     "valid_to_date": pd.NaT,
                     "is_current": True,
+                    "source_snapshot_date": pd.NaT,
                     "ingestion_date": pd.Timestamp.utcnow().date(),
                     "ingested_ts": pd.Timestamp.utcnow(),
                 }
@@ -272,6 +277,7 @@ def _load_sp500_identifiers(
             "valid_from_date": pd.Timestamp("1900-01-01").date(),
             "valid_to_date": pd.NaT,
             "is_current": True,
+            "source_snapshot_date": pd.NaT,
             "ingestion_date": now.date(),
             "ingested_ts": now,
         }
@@ -334,11 +340,11 @@ def _load_sec_company_tickers(data_root: Path | None = None) -> pd.DataFrame:
               AND trim(cik) <> ''
               AND ticker IS NOT NULL
               AND trim(ticker) <> ''
-            QUALIFY row_number() OVER (
-                PARTITION BY upper(trim(ticker)), coalesce(nullif(trim(cik), ''), '0')
-                ORDER BY CAST(ingestion_date AS DATE) DESC, CAST(ingested_ts AS TIMESTAMP) DESC
-            ) = 1
-            ORDER BY upper(trim(ticker)), coalesce(nullif(trim(cik), ''), '0')
+            ORDER BY
+                upper(trim(ticker)),
+                coalesce(nullif(trim(cik), ''), '0'),
+                CAST(ingestion_date AS DATE),
+                CAST(ingested_ts AS TIMESTAMP)
             """,
             [[path.as_posix() for path in files]],
         ).fetch_df()
@@ -392,11 +398,18 @@ def build_sec_company_ticker_identifiers_frame(
         return pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS)
     sec_df["asset_id"] = pd.to_numeric(sec_df["asset_id"], errors="coerce").astype("Int64")
     sec_df = sec_df.dropna(subset=["asset_id"])
+    sec_df["source_snapshot_date"] = sec_df["ingestion_date"].dt.date
     sec_df = sec_df.sort_values(
         ["source_symbol", "cik", "ingestion_date", "ingested_ts"],
-        ascending=[True, True, False, False],
+        ascending=[True, True, True, True],
         kind="stable",
-    ).drop_duplicates(subset=["asset_id", "source_symbol", "cik"], keep="first")
+    ).drop_duplicates(
+        subset=["asset_id", "source_symbol", "cik", "source_snapshot_date"],
+        keep="last",
+    )
+    sec_df["latest_snapshot_date"] = sec_df.groupby(
+        ["asset_id", "source_symbol", "cik"], dropna=False
+    )["source_snapshot_date"].transform("max")
 
     rows = []
     now = pd.Timestamp.utcnow()
@@ -416,7 +429,8 @@ def build_sec_company_ticker_identifiers_frame(
             "mapping_confidence": 0.9,
             "valid_from_date": pd.Timestamp("1900-01-01").date(),
             "valid_to_date": pd.NaT,
-            "is_current": True,
+            "is_current": row.get("source_snapshot_date") == row.get("latest_snapshot_date"),
+            "source_snapshot_date": row.get("source_snapshot_date", pd.NaT),
             "ingestion_date": (
                 ingestion_date.date() if not pd.isna(ingestion_date) else now.date()
             ),
@@ -580,6 +594,7 @@ def build_research_symbol_identifiers_frame(
                 "valid_from_date": valid_from_date,
                 "valid_to_date": pd.NaT,
                 "is_current": True,
+                "source_snapshot_date": pd.NaT,
                 "ingestion_date": pd.Timestamp.utcnow().date(),
                 "ingested_ts": pd.Timestamp.utcnow(),
             }
@@ -723,6 +738,7 @@ def build_manual_security_identifier_overrides_frame(
             "valid_from_date": row["valid_from_date"],
             "valid_to_date": row["valid_to_date"],
             "is_current": bool(row["is_current"]),
+            "source_snapshot_date": pd.NaT,
             "ingestion_date": now.date(),
             "ingested_ts": now,
         }
@@ -789,6 +805,9 @@ def _prepare_identifier_frame(identifiers_df: pd.DataFrame) -> pd.DataFrame:
         prepared["mapping_confidence"], errors="coerce"
     ).fillna(0.0)
     prepared["cik"] = prepared["cik"].map(_normalize_cik)
+    prepared["source_snapshot_date"] = pd.to_datetime(
+        prepared["source_snapshot_date"], errors="coerce"
+    ).dt.date
     prepared = prepared.dropna(subset=["asset_id"])
     return prepared
 
@@ -915,6 +934,7 @@ def build_asset_symbol_bridge_frame(identifiers_df: pd.DataFrame) -> pd.DataFram
                 "valid_from_date": row["valid_from_date"],
                 "valid_to_date": row["valid_to_date"],
                 "is_current": _bool_or_false(row["is_current"]),
+                "source_snapshot_date": row["source_snapshot_date"],
                 "asof_ts": now,
             }
         )
@@ -944,6 +964,7 @@ def _write_identifier_tables(con, identifiers_df: pd.DataFrame) -> None:
             valid_from_date::DATE AS valid_from_date,
             valid_to_date::DATE AS valid_to_date,
             is_current::BOOLEAN AS is_current,
+            source_snapshot_date::DATE AS source_snapshot_date,
             ingestion_date::DATE AS ingestion_date,
             ingested_ts::TIMESTAMP AS ingested_ts
         FROM security_identifiers_df
@@ -986,6 +1007,7 @@ def _write_identifier_tables(con, identifiers_df: pd.DataFrame) -> None:
             valid_from_date::DATE AS valid_from_date,
             valid_to_date::DATE AS valid_to_date,
             is_current::BOOLEAN AS is_current,
+            source_snapshot_date::DATE AS source_snapshot_date,
             asof_ts::TIMESTAMP AS asof_ts
         FROM asset_symbol_bridge_df
         """

@@ -17,6 +17,7 @@ def test_build_security_master_classifies_core_security_types() -> None:
         [
             {
                 "symbol": "AAPL",
+                "asset_id": 1,
                 "name": "Apple Inc. Common Stock",
                 "asset_class": "us_equity",
                 "exchange": "NASDAQ",
@@ -121,6 +122,7 @@ def test_silver_security_master_materializes_from_research_prices_and_signals(
         assets=[
             silver_security_master,
             SourceAsset(AssetKey(["silver", "signals_daily"])),
+            SourceAsset(AssetKey(["silver", "security_identifiers"])),
         ],
         resources={"research_duckdb": con},
     )
@@ -131,13 +133,124 @@ def test_silver_security_master_materializes_from_research_prices_and_signals(
 
     rows = con.execute(
         """
-        SELECT symbol, security_subtype, is_investable_common_equity
+        SELECT asset_id, symbol, security_subtype, is_investable_common_equity
         FROM silver.security_master
         ORDER BY symbol
         """
     ).fetchall()
     assert rows == [
-        ("AAPL", "common_stock", True),
-        ("MSFT", "common_stock", True),
-        ("QQQ", "etf", False),
+        (None, "AAPL", "common_stock", True),
+        (None, "MSFT", "common_stock", True),
+        (None, "QQQ", "etf", False),
     ]
+
+
+def test_silver_security_master_enriches_from_high_confidence_sec_identifiers(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root = tmp_path / "data"
+    monkeypatch.setattr(security_master_module, "DATA_ROOT", data_root)
+    prices_path = (
+        data_root / "silver" / "research_daily_prices" / "month=2026-02" / "date=2026-02-13.parquet"
+    )
+    prices_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "symbol": ["AAPL"],
+            "trade_date": ["2026-02-13"],
+            "close": [100.0],
+        }
+    ).to_parquet(prices_path, index=False)
+
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA silver")
+    con.execute(
+        """
+        CREATE TABLE silver.security_identifiers (
+            asset_id BIGINT,
+            source_symbol VARCHAR,
+            security_name VARCHAR,
+            identifier_type VARCHAR,
+            identifier_value VARCHAR,
+            cik VARCHAR,
+            sec_ticker VARCHAR,
+            alpaca_id VARCHAR,
+            exchange VARCHAR,
+            identifier_source VARCHAR,
+            source_priority INTEGER,
+            mapping_confidence DOUBLE,
+            valid_from_date DATE,
+            valid_to_date DATE,
+            is_current BOOLEAN,
+            source_snapshot_date DATE,
+            ingestion_date DATE,
+            ingested_ts TIMESTAMP
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO silver.security_identifiers VALUES
+            (
+                1,
+                'AAPL',
+                'Apple Inc.',
+                'cik',
+                '320193',
+                '320193',
+                'AAPL',
+                NULL,
+                'Nasdaq',
+                'sec_company_tickers',
+                15,
+                0.9,
+                DATE '1900-01-01',
+                NULL,
+                TRUE,
+                DATE '2026-01-02',
+                DATE '2026-01-02',
+                TIMESTAMP '2026-01-02 00:00:00'
+            )
+        """
+    )
+
+    result = materialize(
+        assets=[
+            silver_security_master,
+            SourceAsset(AssetKey(["silver", "signals_daily"])),
+            SourceAsset(AssetKey(["silver", "security_identifiers"])),
+        ],
+        resources={"research_duckdb": con},
+    )
+
+    assert result.success
+    row = con.execute(
+        """
+        SELECT
+            asset_id,
+            symbol,
+            security_name,
+            cik,
+            sec_ticker,
+            exchange,
+            identifier_source,
+            identifier_confidence,
+            identifier_source_snapshot_date,
+            classification_source
+        FROM silver.security_master
+        WHERE symbol = 'AAPL'
+        """
+    ).fetchone()
+    assert row == (
+        1,
+        "AAPL",
+        "Apple Inc.",
+        "320193",
+        "AAPL",
+        "NASDAQ",
+        "sec_company_tickers",
+        0.9,
+        pd.Timestamp("2026-01-02").date(),
+        "sec_identifier_enriched_v1",
+    )

@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 
 import pandas as pd
-from dagster import AssetExecutionContext, asset
+from dagster import AssetExecutionContext, AssetKey, asset
 
 from portfolio_project.defs.research_db.silver.signals import silver_signals_daily
 
@@ -11,12 +11,18 @@ CLASSIFICATION_SOURCE = "research_dataset_heuristic_v1"
 DATA_ROOT = Path(os.getenv("PORTFOLIO_DATA_DIR", "data"))
 
 SECURITY_MASTER_COLUMNS = [
+    "asset_id",
     "symbol",
     "canonical_symbol",
     "security_name",
+    "cik",
+    "sec_ticker",
     "security_type",
     "security_subtype",
     "exchange",
+    "identifier_source",
+    "identifier_confidence",
+    "identifier_source_snapshot_date",
     "classification_confidence",
     "classification_reason",
     "classification_source",
@@ -263,6 +269,11 @@ def _classify_security(row: pd.Series) -> dict[str, object]:
     if is_bankruptcy_related or is_derivative_security or is_etf:
         confidence += 0.05
     confidence = max(0.05, min(0.99, confidence))
+    identifier_confidence = pd.to_numeric(
+        pd.Series([row.get("identifier_confidence", pd.NA)]), errors="coerce"
+    ).iloc[0]
+    if not pd.isna(identifier_confidence) and float(identifier_confidence) > confidence:
+        confidence = min(0.99, float(identifier_confidence))
 
     if is_investable_common_equity:
         reason = "Classified as tradable common equity from research dataset metadata."
@@ -270,17 +281,25 @@ def _classify_security(row: pd.Series) -> dict[str, object]:
         reason = "Excluded from investable common equity: " + "; ".join(exclusion_reasons) + "."
     else:
         reason = "Insufficient metadata to classify as investable common equity."
+    if _clean_text(row.get("identifier_source")):
+        reason = f"{reason} Enriched with current SEC identifier mapping."
 
     return {
+        "asset_id": row.get("asset_id", pd.NA),
         "symbol": symbol,
         "canonical_symbol": canonical_symbol,
         "security_name": security_name,
+        "cik": row.get("cik", pd.NA),
+        "sec_ticker": row.get("sec_ticker", pd.NA),
         "security_type": security_type,
         "security_subtype": security_subtype,
         "exchange": exchange,
+        "identifier_source": row.get("identifier_source", pd.NA),
+        "identifier_confidence": row.get("identifier_confidence", pd.NA),
+        "identifier_source_snapshot_date": row.get("identifier_source_snapshot_date", pd.NaT),
         "classification_confidence": round(confidence, 2),
         "classification_reason": reason,
-        "classification_source": CLASSIFICATION_SOURCE,
+        "classification_source": row.get("classification_source_override", CLASSIFICATION_SOURCE),
         "is_common_stock": bool(is_common_stock),
         "is_etf": bool(is_etf),
         "is_adr": bool(is_adr),
@@ -300,6 +319,101 @@ def build_security_master_frame(assets_df: pd.DataFrame) -> pd.DataFrame:
     frame = pd.DataFrame(rows, columns=SECURITY_MASTER_COLUMNS)
     frame = frame.drop_duplicates(subset=["canonical_symbol"], keep="first")
     return frame.sort_values("canonical_symbol", kind="stable").reset_index(drop=True)
+
+
+def _load_security_identifier_enrichment(con) -> pd.DataFrame:
+    if not _table_exists(con, "silver", "security_identifiers"):
+        return pd.DataFrame()
+
+    columns = {
+        str(row[0]) for row in con.execute("DESCRIBE silver.security_identifiers").fetchall()
+    }
+    source_snapshot_expr = (
+        "source_snapshot_date" if "source_snapshot_date" in columns else "CAST(NULL AS DATE)"
+    )
+    return con.execute(
+        f"""
+        WITH sec_identifiers AS (
+            SELECT
+                asset_id,
+                upper(trim(source_symbol)) AS symbol,
+                security_name,
+                cik,
+                sec_ticker,
+                exchange,
+                identifier_source,
+                mapping_confidence,
+                {source_snapshot_expr} AS source_snapshot_date,
+                source_priority
+            FROM silver.security_identifiers
+            WHERE asset_id IS NOT NULL
+              AND source_symbol IS NOT NULL
+              AND trim(source_symbol) <> ''
+              AND is_current = true
+              AND lower(trim(identifier_type)) IN ('cik', 'sec_ticker')
+              AND lower(trim(identifier_source)) IN (
+                  'sec_company_tickers',
+                  'manual_security_identifier_overrides',
+                  'sp500_wikipedia'
+              )
+              AND mapping_confidence >= 0.85
+        )
+        SELECT
+            asset_id,
+            symbol,
+            security_name,
+            cik,
+            sec_ticker,
+            exchange,
+            identifier_source,
+            mapping_confidence AS identifier_confidence,
+            source_snapshot_date AS identifier_source_snapshot_date
+        FROM sec_identifiers
+        QUALIFY row_number() OVER (
+            PARTITION BY symbol
+            ORDER BY
+                mapping_confidence DESC,
+                source_priority ASC,
+                source_snapshot_date DESC NULLS LAST,
+                asset_id ASC
+        ) = 1
+        ORDER BY symbol
+        """
+    ).fetch_df()
+
+
+def _enrich_candidates_with_sec_identifiers(
+    candidates_df: pd.DataFrame,
+    identifiers_df: pd.DataFrame,
+) -> pd.DataFrame:
+    if candidates_df is None or candidates_df.empty:
+        return pd.DataFrame() if candidates_df is None else candidates_df
+    if identifiers_df is None or identifiers_df.empty:
+        return candidates_df
+
+    candidates = candidates_df.copy()
+    candidates["symbol"] = candidates["symbol"].astype("string").str.strip().str.upper()
+    identifiers = identifiers_df.copy()
+    identifiers["symbol"] = identifiers["symbol"].astype("string").str.strip().str.upper()
+    enriched = candidates.merge(
+        identifiers,
+        on="symbol",
+        how="left",
+        suffixes=("", "_identifier"),
+    )
+    has_identifier = enriched["identifier_source"].notna()
+    for target, source in [
+        ("security_name", "security_name_identifier"),
+        ("exchange", "exchange_identifier"),
+    ]:
+        if source in enriched.columns:
+            source_has_value = enriched[source].notna() & enriched[source].astype("string").ne("")
+            enriched.loc[has_identifier & source_has_value, target] = enriched.loc[
+                has_identifier & source_has_value, source
+            ]
+            enriched = enriched.drop(columns=[source])
+    enriched.loc[has_identifier, "classification_source_override"] = "sec_identifier_enriched_v1"
+    return enriched
 
 
 def _table_exists(con, schema: str, table: str) -> bool:
@@ -397,7 +511,7 @@ def _load_research_security_candidates(con, context: AssetExecutionContext) -> p
 
 @asset(
     name="silver_security_master",
-    deps=[silver_signals_daily],
+    deps=[silver_signals_daily, AssetKey(["silver", "security_identifiers"])],
     required_resource_keys={"research_duckdb"},
 )
 def silver_security_master(context: AssetExecutionContext) -> None:
@@ -408,18 +522,26 @@ def silver_security_master(context: AssetExecutionContext) -> None:
     con.execute("CREATE SCHEMA IF NOT EXISTS silver")
 
     assets_df = _load_research_security_candidates(con, context)
+    identifier_enrichment_df = _load_security_identifier_enrichment(con)
+    assets_df = _enrich_candidates_with_sec_identifiers(assets_df, identifier_enrichment_df)
     security_master_df = build_security_master_frame(assets_df)
     con.register("security_master_df", security_master_df)
     con.execute(
         """
         CREATE OR REPLACE TABLE silver.security_master AS
         SELECT
+            asset_id::BIGINT AS asset_id,
             symbol::VARCHAR AS symbol,
             canonical_symbol::VARCHAR AS canonical_symbol,
             security_name::VARCHAR AS security_name,
+            cik::VARCHAR AS cik,
+            sec_ticker::VARCHAR AS sec_ticker,
             security_type::VARCHAR AS security_type,
             security_subtype::VARCHAR AS security_subtype,
             exchange::VARCHAR AS exchange,
+            identifier_source::VARCHAR AS identifier_source,
+            identifier_confidence::DOUBLE AS identifier_confidence,
+            identifier_source_snapshot_date::DATE AS identifier_source_snapshot_date,
             classification_confidence::DOUBLE AS classification_confidence,
             classification_reason::VARCHAR AS classification_reason,
             classification_source::VARCHAR AS classification_source,
