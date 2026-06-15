@@ -36,12 +36,18 @@ In order to best manage pipeline speed and query runtime, some of these tables r
 
 | Column | Type | Description |
 | --- | --- | --- |
+| `asset_id` | `int` | Durable project asset key when the symbol has a high-confidence identifier mapping. |
 | `symbol` | `object` | Source ticker symbol. |
 | `canonical_symbol` | `object` | Normalized ticker symbol used for joins and de-duplication. |
 | `security_name` | `object` | Security name from source metadata when available. |
+| `cik` | `object` | SEC Central Index Key without left-padding when available from a high-confidence identifier mapping. |
+| `sec_ticker` | `object` | Ticker reported by SEC company ticker data when available. |
 | `security_type` | `object` | Broad classification such as `equity`, `fund`, `derivative`, or `unknown`. |
 | `security_subtype` | `object` | More specific classification such as `common_stock`, `etf`, or `adr`. |
 | `exchange` | `object` | Normalized exchange code from source metadata when available. |
+| `identifier_source` | `object` | Identifier source used to enrich the security master when the mapping confidence exceeds research-symbol-only metadata. |
+| `identifier_confidence` | `float` | Confidence score for the selected identifier mapping. |
+| `identifier_source_snapshot_date` | `date` | Source snapshot date for the identifier mapping used to enrich the row. |
 | `classification_confidence` | `float` | Heuristic confidence score between 0 and 1. |
 | `classification_reason` | `object` | Human-readable reason for the classification and investability decision. |
 | `classification_source` | `object` | Classification method identifier, currently based on symbols present in research prices and signals with metadata fallback where available. |
@@ -77,6 +83,7 @@ Stores effective-dated external identifier mappings for project securities. The 
 | `valid_from_date` | `date` | First date the mapping is considered valid. |
 | `valid_to_date` | `date` | Last date the mapping is considered valid, null for current mappings. |
 | `is_current` | `bool` | Whether this row is the active mapping for the identifier source and symbol. |
+| `source_snapshot_date` | `date` | Source snapshot date for the raw identifier mapping, usually the SEC company ticker ingestion date when no source-provided effective date exists. |
 | `ingestion_date` | `date` | Bronze ingestion date of the source snapshot that produced the mapping. |
 | `ingested_ts` | `timestamp` | ETL ingest timestamp. |
 
@@ -118,6 +125,7 @@ One row per durable `asset_id` and known source symbol. Use this table to resolv
 | `valid_from_date` | `date` | First date the mapping is considered valid. |
 | `valid_to_date` | `date` | Last date the mapping is considered valid, null for open-ended mappings. |
 | `is_current` | `bool` | Whether the selected source-symbol mapping is current. |
+| `source_snapshot_date` | `date` | Source snapshot date for the selected source-symbol mapping. |
 | `asof_ts` | `timestamp` | Bridge table build timestamp. |
 
 ## `silver.prices`
@@ -291,6 +299,10 @@ One row per SEC filing accession. The natural key is `accession_number`; `cik` a
 
 Deduplication rule: repeated rows for the same accession across source snapshots collapse to one row when filing metadata is equivalent, retaining the latest source snapshot metadata. If repeated accession rows disagree on core filing metadata such as CIK, form, filing date, report date, acceptance datetime, or primary document, the silver asset keeps the row from the latest SEC source snapshot and records the conflict through a DQ check. Duplicate checks must preserve unmapped issuers by coalescing null `asset_id` with CIK where an asset-scoped key is needed. Amendments are separate filings keyed by their own accession number; `amended_accession_number` is lineage metadata and does not replace the amendment accession as the row key.
 
+DQ checks:
+- `dq_sec_submissions_required_fields`: required SEC filing lineage fields must be present.
+- `dq_sec_submissions_accession_uniqueness`: each `asset_id`, CIK, and accession combination should appear once after silver deduplication.
+
 | Column | Type | Description |
 | --- | --- | --- |
 | `asset_id` | `int` | Durable project asset key resolved from CIK bridge mappings; nullable only when the SEC issuer CIK is unmapped. |
@@ -321,6 +333,11 @@ Deduplication rule: repeated rows for the same accession across source snapshots
 Normalized long-form XBRL facts from SEC company facts. The deduplication key is `cik`, `accession_number`, `taxonomy`, `tag`, `unit`, `period_start_date`, `period_end_date`, and `frame`, with latest source snapshot metadata retained when duplicate source rows are equivalent. SEC silver assets must carry `asset_id` alongside CIK by resolving CIK through `silver.asset_identity_bridge` or `silver.security_identifiers`. `asset_id` may be null only when the SEC issuer's CIK is not mapped to a project asset.
 
 Deduplication rule: exact duplicate source facts collapse to one row while retaining the latest `source_snapshot_date`, `ingestion_date`, and `ingested_ts`. Duplicate detection must normalize null key components, such as null `period_start_date` for instant facts and null `frame`, to sentinel values in comparison queries. If duplicate-key rows disagree on value, decimals, fiscal metadata, form, or filed date, the silver asset keeps the row from the latest SEC source snapshot and records the conflict through a DQ check.
+
+DQ checks:
+- `dq_sec_facts_long_required_fields`: required SEC fact lineage and period fields must be present.
+- `dq_sec_facts_long_duplicate_facts`: the SEC fact key should remain unique after silver deduplication.
+- `dq_sec_facts_long_unsupported_units`: supported concepts must use the unit expected by the SEC statement mapping rules.
 
 | Column | Type | Description |
 | --- | --- | --- |
@@ -354,6 +371,10 @@ Deduplication rule: exact duplicate source facts collapse to one row while retai
 Curated, concept-mapped facts used to build gold fundamentals. The natural key is `asset_id`, `cik`, `accession_number`, `canonical_metric`, `period_end_date`, `fiscal_year`, and `fiscal_period`.
 
 Deduplication rule: `asset_id` is required for mapped project securities and must be carried from upstream SEC silver rows alongside CIK. Rows for unmapped SEC issuers may be retained with null `asset_id`, but duplicate checks must coalesce null `asset_id` with CIK so unmapped issuers are still checked. When multiple source facts can populate the same canonical metric, the selection order is lowest `mapping_priority`, exact period matches before derived period matches, direct facts before component-sum expressions, latest `source_acceptance_datetime` or `source_filed_date`, then latest `source_snapshot_date`. Mapping metadata, source accession metadata, period match fields, and derivation flags are retained so the selected canonical value is auditable.
+
+DQ checks:
+- `dq_sec_statement_items_required_fields`: required canonical metric, source concept, period, filing availability, and mapping metadata fields must be present.
+- `dq_sec_cik_ticker_mapping_conflicts`: current ticker-to-CIK and ticker/CIK-to-asset mappings in `silver.security_identifiers` should be unambiguous before SEC facts are joined to project securities.
 
 | Column | Type | Description |
 | --- | --- | --- |

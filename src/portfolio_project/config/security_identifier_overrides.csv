@@ -1,0 +1,2 @@
+source_symbol,canonical_symbol,asset_id,security_name,cik,sec_ticker,exchange,valid_from_date,valid_to_date,is_current,mapping_source,confidence,notes
+HES,HES,,Hess Corp,4447,HES,NYSE,1900-01-01,,false,manual_review_eodhd_sec_symbol,0.9,"Reviewed EODHD-only project symbol HES against SEC CIK 4447; not inferred from company-name similarity. is_current=false because Chevron acquired Hess in 2025."

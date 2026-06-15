@@ -90,6 +90,12 @@ from portfolio_project.defs.research_db.silver.factors import (
 from portfolio_project.defs.research_db.silver.research_prices import (
     silver_research_daily_prices,
 )
+from portfolio_project.defs.research_db.silver.sec import (
+    silver_sec_facts_long,
+    silver_sec_statement_items,
+    silver_sec_submissions,
+)
+from portfolio_project.defs.research_db.silver.sec_cik_review import unmapped_sec_cik_review
 from portfolio_project.defs.research_db.silver.security_identifiers import (
     silver_security_identifiers,
 )
@@ -201,6 +207,11 @@ sec_fundamentals_selection = AssetSelection.assets(
     bronze_sec_company_facts,
     bronze_sec_company_tickers,
     bronze_sec_submissions,
+    silver_security_identifiers,
+    silver_sec_submissions,
+    silver_sec_facts_long,
+    silver_sec_statement_items,
+    unmapped_sec_cik_review,
 )
 
 monthly_factors_job = define_asset_job(
@@ -456,6 +467,10 @@ defs = Definitions(
         silver_alpaca_prices_compact,
         silver_alpaca_corporate_actions,
         silver_security_identifiers,
+        silver_sec_submissions,
+        silver_sec_facts_long,
+        silver_sec_statement_items,
+        unmapped_sec_cik_review,
         silver_research_daily_prices,
         silver_signals_daily,
         silver_strategy_definitions,
