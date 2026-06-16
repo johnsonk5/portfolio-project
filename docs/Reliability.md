@@ -100,6 +100,11 @@ DQ checks run on successful runs and write to `observability.data_quality_checks
   - Latest Tranco snapshot schema, uniqueness, range checks.
 - `asset_status_updates_job`:
   - `silver.assets` schema, uniqueness, null-threshold checks.
+- `sec_fundamentals_job`:
+  - `silver.sec_submissions` required-field checks and accession uniqueness on `asset_id` + `cik` + `accession_number`.
+  - `silver.sec_facts_long` required-field checks, duplicate fact checks, and unsupported unit checks against supported SEC concept mappings.
+  - `silver.sec_statement_items` required-field checks for mapped canonical statement rows.
+  - SEC CIK/ticker mapping conflict checks using current `silver.security_identifiers` mappings.
 - Gold strategy holdings:
   - `gold.strategy_rankings` expected rebalance-date coverage.
   - `gold.strategy_holdings` expected rebalance-date coverage.

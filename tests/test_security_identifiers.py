@@ -12,7 +12,9 @@ from portfolio_project.defs.research_db.silver.security_identifiers import (
     SECURITY_IDENTIFIERS_COLUMNS,
     build_asset_identity_bridge_frame,
     build_asset_symbol_bridge_frame,
+    build_manual_security_identifier_overrides_frame,
     build_research_symbol_identifiers_frame,
+    build_sec_company_ticker_identifiers_frame,
     build_security_identifiers_from_assets_df,
     silver_security_identifiers,
 )
@@ -166,6 +168,85 @@ def test_silver_security_identifiers_materializes_from_portfolio_assets(
     ]
 
 
+def test_silver_security_identifiers_materializes_sec_company_tickers(
+    tmp_path, monkeypatch
+) -> None:
+    data_root = tmp_path / "data"
+    monkeypatch.setattr(identifiers_module, "DATA_ROOT", data_root)
+    tickers_path = (
+        data_root
+        / "bronze"
+        / "sec_company_tickers"
+        / "ingestion_date=2026-01-02"
+        / "tickers.parquet"
+    )
+    tickers_path.parent.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "cik": ["0000320193", "0001018724"],
+            "name": ["Apple Inc.", "Amazon.com Inc."],
+            "ticker": ["AAPL", "AMZN"],
+            "exchange": ["Nasdaq", "Nasdaq"],
+            "ingestion_date": [pd.Timestamp("2026-01-02").date()] * 2,
+            "source_file": ["company_tickers_exchange.json"] * 2,
+            "source_content_hash": ["hash"] * 2,
+            "source_row_number": [1, 2],
+            "ingested_ts": [pd.Timestamp("2026-01-02 00:00:00")] * 2,
+        }
+    ).to_parquet(tickers_path, index=False)
+
+    portfolio_con = duckdb.connect(":memory:")
+    research_con = duckdb.connect(":memory:")
+    portfolio_con.execute("CREATE SCHEMA silver")
+    portfolio_con.execute(
+        """
+        CREATE TABLE silver.assets (
+            asset_id BIGINT,
+            alpaca_id VARCHAR,
+            symbol VARCHAR,
+            name VARCHAR,
+            exchange VARCHAR,
+            is_active BOOLEAN
+        )
+        """
+    )
+    portfolio_con.execute(
+        """
+        INSERT INTO silver.assets VALUES
+            (1, 'alpaca-aapl', 'AAPL', 'Apple Inc.', 'NASDAQ', TRUE),
+            (2, 'alpaca-msft', 'MSFT', 'Microsoft Corp.', 'NASDAQ', TRUE)
+        """
+    )
+
+    result = materialize(
+        assets=[silver_security_identifiers],
+        resources={"duckdb": portfolio_con, "research_duckdb": research_con},
+    )
+
+    assert result.success
+    rows = research_con.execute(
+        """
+        SELECT asset_id, source_symbol, identifier_type, identifier_value, cik, identifier_source
+        FROM silver.security_identifiers
+        WHERE identifier_source = 'sec_company_tickers'
+        ORDER BY asset_id, identifier_type
+        """
+    ).fetchall()
+    assert rows == [
+        (1, "AAPL", "cik", "320193", "320193", "sec_company_tickers"),
+        (1, "AAPL", "sec_ticker", "AAPL", "320193", "sec_company_tickers"),
+    ]
+
+    identity_row = research_con.execute(
+        """
+        SELECT asset_id, current_symbol, cik
+        FROM silver.asset_identity_bridge
+        WHERE asset_id = 1
+        """
+    ).fetchone()
+    assert identity_row == (1, "AAPL", "320193")
+
+
 def test_build_research_symbol_identifiers_assigns_research_only_asset_ids() -> None:
     portfolio_identifiers = build_security_identifiers_from_assets_df(
         pd.DataFrame(
@@ -209,6 +290,271 @@ def test_build_research_symbol_identifiers_assigns_research_only_asset_ids() -> 
             "identifier_source": "research_daily_prices",
             "source_priority": 50,
             "valid_from_date": pd.Timestamp("2021-03-04").date(),
+        },
+    ]
+
+
+def test_manual_security_identifier_overrides_map_research_only_symbols() -> None:
+    research_identifiers = build_research_symbol_identifiers_frame(
+        pd.DataFrame(
+            {
+                "source_symbol": ["HES"],
+                "first_trade_date": ["2000-01-03"],
+            }
+        ),
+        pd.DataFrame(columns=SECURITY_IDENTIFIERS_COLUMNS),
+        pd.DataFrame({"source_symbol": ["HES"], "asset_id": [43037]}),
+    )
+    overrides = pd.DataFrame(
+        {
+            "source_symbol": ["HES"],
+            "canonical_symbol": ["HES"],
+            "security_name": ["Hess Corp"],
+            "cik": ["0000004447"],
+            "sec_ticker": ["HES"],
+            "exchange": ["NYSE"],
+            "mapping_source": ["manual_review_eodhd_sec_symbol"],
+            "confidence": [0.9],
+            "notes": ["Reviewed exact historical ticker; not a company-name-only match."],
+        }
+    )
+
+    frame = build_manual_security_identifier_overrides_frame(overrides, research_identifiers)
+
+    assert frame[
+        ["asset_id", "source_symbol", "identifier_type", "identifier_value", "cik"]
+    ].to_dict("records") == [
+        {
+            "asset_id": 43037,
+            "source_symbol": "HES",
+            "identifier_type": "cik",
+            "identifier_value": "4447",
+            "cik": "4447",
+        },
+        {
+            "asset_id": 43037,
+            "source_symbol": "HES",
+            "identifier_type": "sec_ticker",
+            "identifier_value": "HES",
+            "cik": "4447",
+        },
+    ]
+
+
+def test_manual_security_identifier_overrides_skip_ambiguous_symbols() -> None:
+    mapped_identifiers = pd.DataFrame(
+        [
+            {
+                "asset_id": 1,
+                "source_symbol": "ABC",
+                "identifier_type": "symbol",
+                "identifier_source": "research_daily_prices",
+                "alpaca_id": pd.NA,
+            },
+            {
+                "asset_id": 2,
+                "source_symbol": "ABC",
+                "identifier_type": "symbol",
+                "identifier_source": "research_daily_prices",
+                "alpaca_id": pd.NA,
+            },
+        ]
+    )
+    overrides = pd.DataFrame(
+        {
+            "source_symbol": ["ABC"],
+            "canonical_symbol": ["ABC"],
+            "cik": ["1234"],
+            "sec_ticker": ["ABC"],
+            "mapping_source": ["manual_review"],
+            "confidence": [0.95],
+        }
+    )
+
+    frame = build_manual_security_identifier_overrides_frame(overrides, mapped_identifiers)
+
+    assert frame.empty
+
+
+def test_manual_security_identifier_overrides_require_research_universe_symbol() -> None:
+    mapped_identifiers = pd.DataFrame(
+        [
+            {
+                "asset_id": 1,
+                "source_symbol": "ABC",
+                "identifier_type": "symbol",
+                "identifier_source": "portfolio_silver_assets",
+                "alpaca_id": "alpaca-abc",
+            }
+        ]
+    )
+    overrides = pd.DataFrame(
+        {
+            "source_symbol": ["ABC"],
+            "canonical_symbol": ["ABC"],
+            "cik": ["1234"],
+            "sec_ticker": ["ABC"],
+            "mapping_source": ["manual_review"],
+            "confidence": [0.95],
+        }
+    )
+
+    frame = build_manual_security_identifier_overrides_frame(overrides, mapped_identifiers)
+
+    assert frame.empty
+
+
+def test_build_sec_company_ticker_identifiers_maps_existing_project_symbols() -> None:
+    portfolio_identifiers = build_security_identifiers_from_assets_df(
+        pd.DataFrame(
+            {
+                "asset_id": [1, 2],
+                "symbol": ["AAPL", "MSFT"],
+                "name": ["Apple Inc.", "Microsoft Corp."],
+                "alpaca_id": ["alpaca-aapl", "alpaca-msft"],
+                "exchange": ["NASDAQ", "NASDAQ"],
+            }
+        )
+    )
+    sec_tickers = pd.DataFrame(
+        {
+            "cik": ["0000320193", "0000789019", "0001018724"],
+            "name": ["Apple Inc.", "Microsoft Corp.", "Amazon.com Inc."],
+            "ticker": ["aapl", "MSFT", "AMZN"],
+            "exchange": ["Nasdaq", "Nasdaq", "Nasdaq"],
+            "ingestion_date": ["2026-01-02", "2026-01-02", "2026-01-02"],
+            "ingested_ts": pd.to_datetime(
+                ["2026-01-02 00:00:00", "2026-01-02 00:00:00", "2026-01-02 00:00:00"]
+            ),
+        }
+    )
+
+    frame = build_sec_company_ticker_identifiers_frame(sec_tickers, portfolio_identifiers)
+
+    assert list(frame.columns) == SECURITY_IDENTIFIERS_COLUMNS
+    rows = frame[
+        [
+            "asset_id",
+            "source_symbol",
+            "identifier_type",
+            "identifier_value",
+            "cik",
+            "identifier_source",
+            "source_priority",
+            "source_snapshot_date",
+            "is_current",
+        ]
+    ].to_dict("records")
+    assert rows == [
+        {
+            "asset_id": 1,
+            "source_symbol": "AAPL",
+            "identifier_type": "cik",
+            "identifier_value": "320193",
+            "cik": "320193",
+            "identifier_source": "sec_company_tickers",
+            "source_priority": 15,
+            "source_snapshot_date": pd.Timestamp("2026-01-02").date(),
+            "is_current": True,
+        },
+        {
+            "asset_id": 1,
+            "source_symbol": "AAPL",
+            "identifier_type": "sec_ticker",
+            "identifier_value": "AAPL",
+            "cik": "320193",
+            "identifier_source": "sec_company_tickers",
+            "source_priority": 15,
+            "source_snapshot_date": pd.Timestamp("2026-01-02").date(),
+            "is_current": True,
+        },
+        {
+            "asset_id": 2,
+            "source_symbol": "MSFT",
+            "identifier_type": "cik",
+            "identifier_value": "789019",
+            "cik": "789019",
+            "identifier_source": "sec_company_tickers",
+            "source_priority": 15,
+            "source_snapshot_date": pd.Timestamp("2026-01-02").date(),
+            "is_current": True,
+        },
+        {
+            "asset_id": 2,
+            "source_symbol": "MSFT",
+            "identifier_type": "sec_ticker",
+            "identifier_value": "MSFT",
+            "cik": "789019",
+            "identifier_source": "sec_company_tickers",
+            "source_priority": 15,
+            "source_snapshot_date": pd.Timestamp("2026-01-02").date(),
+            "is_current": True,
+        },
+    ]
+
+
+def test_build_sec_company_ticker_identifiers_preserves_source_snapshot_dates() -> None:
+    portfolio_identifiers = build_security_identifiers_from_assets_df(
+        pd.DataFrame(
+            {
+                "asset_id": [1],
+                "symbol": ["AAPL"],
+                "name": ["Apple Inc."],
+                "alpaca_id": ["alpaca-aapl"],
+                "exchange": ["NASDAQ"],
+            }
+        )
+    )
+    sec_tickers = pd.DataFrame(
+        {
+            "cik": ["0000320193", "0000320193"],
+            "name": ["Apple Inc.", "Apple Inc."],
+            "ticker": ["AAPL", "AAPL"],
+            "exchange": ["Nasdaq", "Nasdaq"],
+            "ingestion_date": ["2026-01-02", "2026-02-03"],
+            "ingested_ts": pd.to_datetime(["2026-01-02 00:00:00", "2026-02-03 00:00:00"]),
+        }
+    )
+
+    frame = build_sec_company_ticker_identifiers_frame(sec_tickers, portfolio_identifiers)
+
+    rows = frame[
+        [
+            "identifier_type",
+            "identifier_value",
+            "source_snapshot_date",
+            "ingestion_date",
+            "is_current",
+        ]
+    ].to_dict("records")
+    assert rows == [
+        {
+            "identifier_type": "cik",
+            "identifier_value": "320193",
+            "source_snapshot_date": pd.Timestamp("2026-01-02").date(),
+            "ingestion_date": pd.Timestamp("2026-01-02").date(),
+            "is_current": False,
+        },
+        {
+            "identifier_type": "sec_ticker",
+            "identifier_value": "AAPL",
+            "source_snapshot_date": pd.Timestamp("2026-01-02").date(),
+            "ingestion_date": pd.Timestamp("2026-01-02").date(),
+            "is_current": False,
+        },
+        {
+            "identifier_type": "cik",
+            "identifier_value": "320193",
+            "source_snapshot_date": pd.Timestamp("2026-02-03").date(),
+            "ingestion_date": pd.Timestamp("2026-02-03").date(),
+            "is_current": True,
+        },
+        {
+            "identifier_type": "sec_ticker",
+            "identifier_value": "AAPL",
+            "source_snapshot_date": pd.Timestamp("2026-02-03").date(),
+            "ingestion_date": pd.Timestamp("2026-02-03").date(),
+            "is_current": True,
         },
     ]
 
