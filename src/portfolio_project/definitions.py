@@ -70,6 +70,10 @@ from portfolio_project.defs.research_db.bronze.sec import (
     bronze_sec_company_tickers,
     bronze_sec_submissions,
 )
+from portfolio_project.defs.research_db.gold.fundamentals import (
+    gold_fundamental_signals_daily,
+    gold_fundamentals_quarterly,
+)
 from portfolio_project.defs.research_db.gold.strategy import (
     gold_strategy_holdings,
     gold_strategy_performance,
@@ -212,6 +216,8 @@ sec_fundamentals_selection = AssetSelection.assets(
     silver_sec_facts_long,
     silver_sec_statement_items,
     unmapped_sec_cik_review,
+    gold_fundamentals_quarterly,
+    gold_fundamental_signals_daily,
 )
 
 monthly_factors_job = define_asset_job(
@@ -486,6 +492,8 @@ defs = Definitions(
         gold_strategy_holdings,
         gold_strategy_returns,
         gold_strategy_performance,
+        gold_fundamentals_quarterly,
+        gold_fundamental_signals_daily,
         gold_alpaca_prices,
         gold_activity,
         bronze_sp500_companies,
