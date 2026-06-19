@@ -75,6 +75,7 @@ Ingest SEC company fundamentals and publish point-in-time research features for 
 - Downstream SEC assets should carry `asset_id` when a CIK can be mapped to a project security and allow nullable `asset_id` for unmapped SEC issuers.
 - Strategy features should keep explicit missing-fundamentals indicators so survivorship bias is not introduced by silently dropping symbols without SEC coverage.
 - Historical joins must preserve source symbols and use effective-dated CIK/ticker mappings where available, because ticker reuse, symbol changes, issuer actions, and delistings can otherwise create survivorship-biased joins.
+- Strategy definitions can opt into SEC-derived ranking fields by adding `signal_source = fundamental_signals_daily` to strategy parameters. Existing price-only strategies continue to rank from `silver.signals_daily`, and fundamental strategies produce no rankings when `gold.fundamental_signals_daily` has not been materialized.
 
 ### Lookahead Rules
 - Fundamental values become research-usable only on or after their SEC availability date.

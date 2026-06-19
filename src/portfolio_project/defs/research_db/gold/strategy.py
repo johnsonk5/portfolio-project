@@ -260,6 +260,27 @@ def _candidate_eligibility_join_sql(con) -> str:
     return "\n".join(joins)
 
 
+def _normalize_signal_source(raw_value: Any) -> str:
+    signal_source = str(raw_value or "silver_signals_daily").strip().lower()
+    if signal_source in {"", "silver.signals_daily", "signals_daily"}:
+        return "silver_signals_daily"
+    if signal_source in {"gold.fundamental_signals_daily", "fundamentals", "fundamentals_daily"}:
+        return "fundamental_signals_daily"
+    return signal_source
+
+
+def _signal_source_available(con, signal_source: str) -> bool:
+    if signal_source == "fundamental_signals_daily":
+        return _table_exists(con, "gold", "fundamental_signals_daily")
+    return True
+
+
+def _signal_table_columns(con, signal_source: str) -> set[str]:
+    if signal_source == "fundamental_signals_daily":
+        return _table_columns(con, "gold", "fundamental_signals_daily")
+    return _table_columns(con, "silver", "signals_daily")
+
+
 def _safe_json_loads(raw_value: Any) -> dict[str, Any]:
     if raw_value in (None, ""):
         return {}
@@ -654,12 +675,25 @@ def _build_rankings_for_strategy(
         ranking_method = _ranking_method_for_strategy(con, strategy.strategy_id)
         signal_column = str(parameters.get("signal_column") or "momentum_12_1").strip()
         secondary_signal_column = str(parameters.get("secondary_signal_column") or "").strip()
+        signal_source = _normalize_signal_source(parameters.get("signal_source"))
         ranking_direction = str(parameters.get("ranking_direction") or "desc").strip().lower()
         score_method = str(parameters.get("score_method") or "").strip().lower()
         universe_name = str(strategy.config.get("universe") or "").strip().lower()
         selection_mode = str(strategy.config.get("selection_mode") or "").strip().lower()
         fixed_symbol = str(parameters.get("symbol") or strategy.benchmark_symbol).strip().upper()
         max_pct_below_52w_high = parameters.get("max_pct_below_52w_high")
+        source_alias = "f" if signal_source == "fundamental_signals_daily" else "s"
+        source_join_sql = ""
+        source_filter_sql = ""
+        if signal_source == "fundamental_signals_daily":
+            if not _signal_source_available(con, signal_source):
+                continue
+            source_join_sql = """
+                INNER JOIN gold.fundamental_signals_daily AS f
+                    ON CAST(f.date AS DATE) = CAST(s.date AS DATE)
+                   AND CAST(f.asset_id AS BIGINT) = CAST(s.asset_id AS BIGINT)
+            """
+            source_filter_sql = " AND coalesce(f.has_fundamentals, FALSE) = TRUE"
 
         if selection_mode == "fixed_symbol" or universe_name == "benchmark_only":
             candidate_rows = con.execute(
@@ -696,32 +730,41 @@ def _build_rankings_for_strategy(
             sql += " ORDER BY symbol"
             candidate_rows = con.execute(sql, random_params).fetchall()
         else:
+            source_columns = _signal_table_columns(con, signal_source)
+            if signal_column not in source_columns:
+                continue
+            if secondary_signal_column and secondary_signal_column not in source_columns:
+                continue
             eligibility_join_sql = _candidate_eligibility_join_sql(con)
             secondary_select_sql = ""
             secondary_not_null_sql = ""
             if secondary_signal_column:
                 secondary_identifier = _quote_identifier(secondary_signal_column)
                 secondary_select_sql = (
-                    f", CAST(s.{secondary_identifier} AS DOUBLE) AS secondary_score"
+                    f", CAST({source_alias}.{secondary_identifier} AS DOUBLE) AS secondary_score"
                 )
                 secondary_not_null_sql = (
-                    f" AND CAST(s.{secondary_identifier} AS DOUBLE) IS NOT NULL"
+                    f" AND CAST({source_alias}.{secondary_identifier} AS DOUBLE) IS NOT NULL"
                 )
             sql = f"""
                 SELECT
                     upper(trim(s.symbol)) AS symbol,
                     CAST(s.asset_id AS BIGINT) AS asset_id,
-                    CAST(s.{_quote_identifier(signal_column)} AS DOUBLE) AS primary_score
+                    CAST({source_alias}.{_quote_identifier(signal_column)} AS DOUBLE)
+                        AS primary_score
                     {secondary_select_sql}
                 FROM silver.signals_daily AS s
                 INNER JOIN silver.universe_membership_daily AS u
                     ON CAST(u.member_date AS DATE) = CAST(s.date AS DATE)
                    AND CAST(u.asset_id AS BIGINT) = CAST(s.asset_id AS BIGINT)
+                {source_join_sql}
                 {eligibility_join_sql}
                 WHERE CAST(s.date AS DATE) = ?
                   AND s.asset_id IS NOT NULL
-                  AND CAST(s.{_quote_identifier(signal_column)} AS DOUBLE) IS NOT NULL
+                  AND CAST({source_alias}.{_quote_identifier(signal_column)} AS DOUBLE)
+                      IS NOT NULL
                   {secondary_not_null_sql}
+                  {source_filter_sql}
             """
             params: list[Any] = [rebalance_date]
             min_avg_dollar_volume_21d = parameters.get("min_avg_dollar_volume_21d")
@@ -884,6 +927,7 @@ def _strategy_rebalance_plan_records(
                     "secondary_signal_column": str(parameters.get("secondary_signal_column") or "")
                     .strip()
                     .lower(),
+                    "signal_source": _normalize_signal_source(parameters.get("signal_source")),
                     "ranking_direction": str(parameters.get("ranking_direction") or "desc")
                     .strip()
                     .lower(),
@@ -920,6 +964,7 @@ def _ensure_strategy_rebalance_plan(
         "long_short_flag",
         "signal_column",
         "secondary_signal_column",
+        "signal_source",
         "ranking_direction",
         "score_method",
         "universe_name",
@@ -947,6 +992,7 @@ def _ensure_strategy_rebalance_plan(
             CAST(long_short_flag AS BOOLEAN) AS long_short_flag,
             CAST(signal_column AS VARCHAR) AS signal_column,
             CAST(secondary_signal_column AS VARCHAR) AS secondary_signal_column,
+            CAST(signal_source AS VARCHAR) AS signal_source,
             CAST(ranking_direction AS VARCHAR) AS ranking_direction,
             CAST(score_method AS VARCHAR) AS score_method,
             CAST(universe_name AS VARCHAR) AS universe_name,
@@ -1781,17 +1827,23 @@ def _materialize_rankings(
         SELECT DISTINCT
             signal_column,
             secondary_signal_column,
+            signal_source,
             score_method,
             ranking_direction
         FROM temp_strategy_rebalance_plan
         WHERE ranking_method <> 'random_selection'
           AND selection_mode <> 'fixed_symbol'
           AND universe_name <> 'benchmark_only'
-        ORDER BY signal_column, secondary_signal_column, score_method, ranking_direction
+        ORDER BY
+            signal_source,
+            signal_column,
+            secondary_signal_column,
+            score_method,
+            ranking_direction
         """
     ).fetchall()
     eligibility_join_sql = _candidate_eligibility_join_sql(con)
-    signal_table_columns = _table_columns(con, "silver", "signals_daily")
+    price_signal_table_columns = _table_columns(con, "silver", "signals_daily")
     filter_sql_by_column = {
         "avg_dollar_volume_21d": (
             """
@@ -1801,7 +1853,7 @@ def _materialize_rankings(
                            >= p.min_avg_dollar_volume_21d
                   )
             """
-            if "avg_dollar_volume_21d" in signal_table_columns
+            if "avg_dollar_volume_21d" in price_signal_table_columns
             else " AND p.min_avg_dollar_volume_21d IS NULL"
         ),
         "price_to_sma_200": (
@@ -1811,7 +1863,7 @@ def _materialize_rankings(
                         OR CAST(s.price_to_sma_200 AS DOUBLE) >= p.min_price_to_sma_200
                   )
             """
-            if "price_to_sma_200" in signal_table_columns
+            if "price_to_sma_200" in price_signal_table_columns
             else " AND p.min_price_to_sma_200 IS NULL"
         ),
         "momentum_12_1": (
@@ -1821,7 +1873,7 @@ def _materialize_rankings(
                         OR CAST(s.momentum_12_1 AS DOUBLE) > p.min_momentum_12_1
                   )
             """
-            if "momentum_12_1" in signal_table_columns
+            if "momentum_12_1" in price_signal_table_columns
             else " AND p.min_momentum_12_1 IS NULL"
         ),
         "pct_below_52w_high": (
@@ -1832,21 +1884,47 @@ def _materialize_rankings(
                            <= p.max_pct_below_52w_high
                   )
             """
-            if "pct_below_52w_high" in signal_table_columns
+            if "pct_below_52w_high" in price_signal_table_columns
             else " AND p.max_pct_below_52w_high IS NULL"
         ),
     }
-    for signal_column, secondary_signal_column, score_method, ranking_direction in ranking_groups:
+    for (
+        signal_column,
+        secondary_signal_column,
+        signal_source,
+        score_method,
+        ranking_direction,
+    ) in ranking_groups:
+        signal_source = str(signal_source or "silver_signals_daily")
+        if not _signal_source_available(con, signal_source):
+            continue
+        source_alias = "f" if signal_source == "fundamental_signals_daily" else "s"
+        source_join_sql = ""
+        source_filter_sql = ""
+        if signal_source == "fundamental_signals_daily":
+            source_join_sql = """
+                INNER JOIN gold.fundamental_signals_daily AS f
+                    ON CAST(f.date AS DATE) = CAST(s.date AS DATE)
+                   AND CAST(f.asset_id AS BIGINT) = CAST(s.asset_id AS BIGINT)
+            """
+            source_filter_sql = "AND coalesce(f.has_fundamentals, FALSE) = TRUE"
+        source_columns = _signal_table_columns(con, signal_source)
+        if str(signal_column) not in source_columns:
+            continue
+        if secondary_signal_column and str(secondary_signal_column) not in source_columns:
+            continue
         signal_identifier = _quote_identifier(str(signal_column))
         secondary_signal = str(secondary_signal_column or "")
         secondary_identifier = _quote_identifier(secondary_signal) if secondary_signal else ""
         secondary_select_sql = (
-            f", CAST(s.{secondary_identifier} AS DOUBLE) AS secondary_score"
+            f", CAST({source_alias}.{secondary_identifier} AS DOUBLE) AS secondary_score"
             if secondary_signal
             else ", NULL::DOUBLE AS secondary_score"
         )
         secondary_not_null_sql = (
-            f"AND CAST(s.{secondary_identifier} AS DOUBLE) IS NOT NULL" if secondary_signal else ""
+            f"AND CAST({source_alias}.{secondary_identifier} AS DOUBLE) IS NOT NULL"
+            if secondary_signal
+            else ""
         )
         ratio_filter_sql = (
             "WHERE secondary_score IS NOT NULL AND secondary_score > 0"
@@ -1892,7 +1970,7 @@ def _materialize_rankings(
                     p.target_count,
                     CAST(s.asset_id AS BIGINT) AS asset_id,
                     upper(trim(s.symbol)) AS symbol,
-                    CAST(s.{signal_identifier} AS DOUBLE) AS primary_score
+                    CAST({source_alias}.{signal_identifier} AS DOUBLE) AS primary_score
                     {secondary_select_sql}
                 FROM temp_strategy_rebalance_plan AS p
                 INNER JOIN silver.signals_daily AS s
@@ -1900,17 +1978,20 @@ def _materialize_rankings(
                 INNER JOIN silver.universe_membership_daily AS u
                     ON CAST(u.member_date AS DATE) = CAST(s.date AS DATE)
                    AND CAST(u.asset_id AS BIGINT) = CAST(s.asset_id AS BIGINT)
+                {source_join_sql}
                 {eligibility_join_sql}
                 WHERE p.signal_column = ?
                   AND p.secondary_signal_column = ?
+                  AND p.signal_source = ?
                   AND p.score_method = ?
                   AND p.ranking_direction = ?
                   AND p.ranking_method <> 'random_selection'
                   AND p.selection_mode <> 'fixed_symbol'
                   AND p.universe_name <> 'benchmark_only'
                   AND s.asset_id IS NOT NULL
-                  AND CAST(s.{signal_identifier} AS DOUBLE) IS NOT NULL
+                  AND CAST({source_alias}.{signal_identifier} AS DOUBLE) IS NOT NULL
                   {secondary_not_null_sql}
+                  {source_filter_sql}
                   {filter_sql_by_column["avg_dollar_volume_21d"]}
                   {filter_sql_by_column["price_to_sma_200"]}
                   {filter_sql_by_column["momentum_12_1"]}
@@ -1963,6 +2044,7 @@ def _materialize_rankings(
             [
                 signal_column,
                 secondary_signal_column,
+                signal_source,
                 score_method,
                 ranking_direction,
                 asof_ts,

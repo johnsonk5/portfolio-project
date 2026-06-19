@@ -92,6 +92,14 @@ REQUIRED_PARAMETERS_BY_RANKING_METHOD: dict[str, set[str]] = {
     "momentum_12_1_desc": {"signal_column", "ranking_direction"},
     "realized_vol_21d_asc": {"signal_column", "ranking_direction"},
     "returns_5d_asc": {"signal_column", "ranking_direction"},
+    "fundamental_signal_desc": {"signal_source", "signal_column", "ranking_direction"},
+    "composite_fundamental_ratio_desc": {
+        "signal_source",
+        "signal_column",
+        "secondary_signal_column",
+        "score_method",
+        "ranking_direction",
+    },
     "composite_realized_vol_21d_63d_asc": {
         "signal_column",
         "secondary_signal_column",
@@ -124,6 +132,7 @@ SUPPORTED_REBALANCE_FREQUENCIES = {"daily", "weekly", "monthly"}
 SUPPORTED_WEIGHTING_METHODS = {"equal", "rank", "volatility"}
 SUPPORTED_RANKING_DIRECTIONS = {"asc", "desc"}
 SUPPORTED_SCORE_METHODS = {"ratio", "zscore_sum"}
+SUPPORTED_SIGNAL_SOURCES = {"silver_signals_daily", "fundamental_signals_daily"}
 
 
 def _quote_identifier(identifier: str) -> str:
@@ -280,6 +289,11 @@ def _validate_parameter_value_ranges(strategy: dict[str, Any]) -> None:
                 raise ValueError(
                     f"Strategy {strategy_id} parameter score_method must be one of: "
                     f"{', '.join(sorted(SUPPORTED_SCORE_METHODS))}"
+                )
+            if parameter_name == "signal_source" and value not in SUPPORTED_SIGNAL_SOURCES:
+                raise ValueError(
+                    f"Strategy {strategy_id} parameter signal_source must be one of: "
+                    f"{', '.join(sorted(SUPPORTED_SIGNAL_SOURCES))}"
                 )
             if parameter_name == "min_avg_dollar_volume_21d" and float(value) < 0:
                 raise ValueError(
