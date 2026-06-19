@@ -58,6 +58,9 @@ This document describes each source, what it powers, and important operational d
 - Raw SEC bulk downloads are stored in bronze under `data/bronze/sec/` and tracked by an ingestion log.
 - Parsed bronze parquet datasets provide the repeatable input surface for downstream silver assets.
 - Fundamental values become research-usable only on or after the SEC filing date or acceptance datetime.
+- SEC requests must use the configured declared `User-Agent`, timeout, retry policy, and request-rate limits from the SEC resource.
+- Unchanged bulk downloads are represented by ingestion log rows that point to the existing archive for the same content hash instead of duplicating archive bytes.
+- Full-history bootstrap/backfill should be run manually after first setup or parser changes; recurring schedules are intended for daily refreshes.
 
 ## Yahoo Finance Search API
 

@@ -2526,6 +2526,229 @@ def test_strategy_rankings_require_universe_eligibility_and_investable_security(
     ]
 
 
+def test_strategy_rankings_can_read_fundamental_signal_table() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA IF NOT EXISTS silver")
+    con.execute("CREATE SCHEMA IF NOT EXISTS gold")
+    con.execute(
+        """
+        CREATE TABLE silver.signals_daily AS
+        SELECT *
+        FROM (
+            VALUES
+                ('2024-01-31', 1, 'AAA', 5000000.0),
+                ('2024-01-31', 2, 'BBB', 5000000.0),
+                ('2024-01-31', 3, 'CCC', 5000000.0)
+        ) AS t(date, asset_id, symbol, avg_dollar_volume_21d)
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE silver.universe_membership_daily AS
+        SELECT *
+        FROM (
+            VALUES
+                ('2024-01-31', 1, 'AAA', 1, 5000000.0, 'test', current_timestamp),
+                ('2024-01-31', 2, 'BBB', 2, 5000000.0, 'test', current_timestamp),
+                ('2024-01-31', 3, 'CCC', 3, 5000000.0, 'test', current_timestamp)
+        ) AS t(
+            member_date,
+            asset_id,
+            symbol,
+            liquidity_rank,
+            rolling_avg_dollar_volume,
+            source,
+            ingested_ts
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE gold.fundamental_signals_daily AS
+        SELECT *
+        FROM (
+            VALUES
+                ('2024-01-31', 1, 'AAA', TRUE, 0.08),
+                ('2024-01-31', 2, 'BBB', TRUE, 0.14),
+                ('2024-01-31', 3, 'CCC', FALSE, 0.40)
+        ) AS t(date, asset_id, symbol, has_fundamentals, free_cash_flow_yield)
+        """
+    )
+    strategy_parameters_df = pd.DataFrame(
+        [
+            {
+                "strategy_id": "fundamental_value_top_1",
+                "parameter_name": "signal_source",
+                "parameter_value": "fundamental_signals_daily",
+                "parameter_type": "string",
+                "effective_start_date": "2000-01-01",
+                "effective_end_date": None,
+                "is_active": True,
+                "description": "",
+                "ingest_ts": pd.Timestamp("2024-01-01"),
+                "asof_ts": pd.Timestamp("2024-01-01"),
+                "run_id": "run-001",
+            },
+            {
+                "strategy_id": "fundamental_value_top_1",
+                "parameter_name": "signal_column",
+                "parameter_value": "free_cash_flow_yield",
+                "parameter_type": "string",
+                "effective_start_date": "2000-01-01",
+                "effective_end_date": None,
+                "is_active": True,
+                "description": "",
+                "ingest_ts": pd.Timestamp("2024-01-01"),
+                "asof_ts": pd.Timestamp("2024-01-01"),
+                "run_id": "run-001",
+            },
+            {
+                "strategy_id": "fundamental_value_top_1",
+                "parameter_name": "ranking_direction",
+                "parameter_value": "desc",
+                "parameter_type": "string",
+                "effective_start_date": "2000-01-01",
+                "effective_end_date": None,
+                "is_active": True,
+                "description": "",
+                "ingest_ts": pd.Timestamp("2024-01-01"),
+                "asof_ts": pd.Timestamp("2024-01-01"),
+                "run_id": "run-001",
+            },
+        ]
+    )
+    con.register("strategy_parameters_df", strategy_parameters_df)
+    con.execute("CREATE TABLE silver.strategy_parameters AS SELECT * FROM strategy_parameters_df")
+
+    strategy = gold_strategy_module.StrategyConfig(
+        strategy_id="fundamental_value_top_1",
+        rebalance_frequency="Monthly",
+        benchmark_symbol="SPY",
+        target_count=1,
+        weighting_method="equal",
+        long_short_flag=False,
+        start_date=date(2024, 1, 1),
+        end_date=None,
+        config={"universe": "universe_membership_daily", "selection_mode": "top_n"},
+        run_id="run-001",
+    )
+
+    ranking_rows = gold_strategy_module._build_rankings_for_strategy(
+        con,
+        strategy,
+        gold_strategy_module._now_utc_naive(),
+    )
+
+    assert [(row["symbol"], row["rank"], row["selected_flag"]) for row in ranking_rows] == [
+        ("BBB", 1, True),
+        ("AAA", 2, False),
+    ]
+
+
+def test_fundamental_strategy_rankings_skip_cleanly_when_sec_table_absent() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE SCHEMA IF NOT EXISTS silver")
+    con.execute(
+        """
+        CREATE TABLE silver.signals_daily AS
+        SELECT *
+        FROM (
+            VALUES
+                ('2024-01-31', 1, 'AAA', 5000000.0),
+                ('2024-01-31', 2, 'BBB', 5000000.0)
+        ) AS t(date, asset_id, symbol, avg_dollar_volume_21d)
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE silver.universe_membership_daily AS
+        SELECT *
+        FROM (
+            VALUES
+                ('2024-01-31', 1, 'AAA', 1, 5000000.0, 'test', current_timestamp),
+                ('2024-01-31', 2, 'BBB', 2, 5000000.0, 'test', current_timestamp)
+        ) AS t(
+            member_date,
+            asset_id,
+            symbol,
+            liquidity_rank,
+            rolling_avg_dollar_volume,
+            source,
+            ingested_ts
+        )
+        """
+    )
+    strategy_parameters_df = pd.DataFrame(
+        [
+            {
+                "strategy_id": "fundamental_value_top_1",
+                "parameter_name": "signal_source",
+                "parameter_value": "fundamental_signals_daily",
+                "parameter_type": "string",
+                "effective_start_date": "2000-01-01",
+                "effective_end_date": None,
+                "is_active": True,
+                "description": "",
+                "ingest_ts": pd.Timestamp("2024-01-01"),
+                "asof_ts": pd.Timestamp("2024-01-01"),
+                "run_id": "run-001",
+            },
+            {
+                "strategy_id": "fundamental_value_top_1",
+                "parameter_name": "signal_column",
+                "parameter_value": "free_cash_flow_yield",
+                "parameter_type": "string",
+                "effective_start_date": "2000-01-01",
+                "effective_end_date": None,
+                "is_active": True,
+                "description": "",
+                "ingest_ts": pd.Timestamp("2024-01-01"),
+                "asof_ts": pd.Timestamp("2024-01-01"),
+                "run_id": "run-001",
+            },
+            {
+                "strategy_id": "fundamental_value_top_1",
+                "parameter_name": "ranking_direction",
+                "parameter_value": "desc",
+                "parameter_type": "string",
+                "effective_start_date": "2000-01-01",
+                "effective_end_date": None,
+                "is_active": True,
+                "description": "",
+                "ingest_ts": pd.Timestamp("2024-01-01"),
+                "asof_ts": pd.Timestamp("2024-01-01"),
+                "run_id": "run-001",
+            },
+        ]
+    )
+    con.register("strategy_parameters_df", strategy_parameters_df)
+    con.execute("CREATE TABLE silver.strategy_parameters AS SELECT * FROM strategy_parameters_df")
+
+    strategy = gold_strategy_module.StrategyConfig(
+        strategy_id="fundamental_value_top_1",
+        rebalance_frequency="Monthly",
+        benchmark_symbol="SPY",
+        target_count=1,
+        weighting_method="equal",
+        long_short_flag=False,
+        start_date=date(2024, 1, 1),
+        end_date=None,
+        config={"universe": "universe_membership_daily", "selection_mode": "top_n"},
+        run_id="run-001",
+    )
+
+    row_count = gold_strategy_module._materialize_rankings(
+        con,
+        [strategy],
+        asof_ts=gold_strategy_module._now_utc_naive(),
+    )
+
+    assert row_count == 0
+    rankings_count = con.execute("SELECT count(*) FROM gold.strategy_rankings").fetchone()
+    assert rankings_count is not None
+    assert rankings_count[0] == 0
+
+
 def test_strategy_calendar_helpers_exclude_market_holidays(
     tmp_path: Path,
     monkeypatch,

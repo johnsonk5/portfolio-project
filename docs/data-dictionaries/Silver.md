@@ -558,3 +558,5 @@ DQ checks:
 | `ingest_ts` | `timestamp` | Ingestion timestamp. |
 | `asof_ts` | `timestamp` | Load timestamp. |
 | `run_id` | `object` | Pipeline run identifier that loaded the row. |
+
+Strategy ranking parameters may include `signal_source`. Supported values are `silver_signals_daily` and `fundamental_signals_daily`; omitted values default to `silver_signals_daily`.
